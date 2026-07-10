@@ -20,6 +20,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from aitp_verifier.aid import parse_aid
+from aitp_verifier.b64 import b64url_decode, b64url_encode
+from aitp_verifier.crypto import sha256
 from aitp_verifier.errors import AitpError
 from aitp_verifier.keys import load_kat_keys
 from aitp_verifier.minter import MinterError, mint_input
@@ -34,24 +37,82 @@ PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 SUPPORTED_FEATURES = {"experimental-multihop-delegation", "experimental-session-bundle"}
 
 
-def _run_sequence(inp: dict[str, Any]) -> tuple[str, str]:
-    """Envelope replay sequence (message-id dedup) — env-004 shape."""
-    seen: set[str] = set()
-    for step in inp["sequence"]:
-        if "operation" in step and not supported(step["operation"]):
-            return SKIP, f"unsupported sequence op {step['operation']}"
-        mid = step.get("message_id")
-        expected = step.get("expected", {})
-        if mid in seen:
-            got_outcome, got_code = "failure", "REPLAY_DETECTED"
-        else:
-            seen.add(mid)
-            got_outcome, got_code = "success", None
-        if expected.get("outcome") == "success" and got_outcome != "success":
-            return FAIL, f"step {mid}: expected success, got {got_code}"
-        if expected.get("outcome") == "failure" and got_code != expected.get("error_code"):
-            return FAIL, f"step {mid}: expected {expected.get('error_code')}, got {got_code}"
-    return PASS, "replay sequence"
+class _SeqState:
+    """State carried across the steps of a multi-step conformance sequence."""
+
+    def __init__(self) -> None:
+        self.seen: set[str] = set()
+        self.nonce: str | None = None
+        self.pop_response: dict[str, str] | None = None
+        self.pop_challenge_issued = False
+        self.capability_authorized = False
+
+
+def _pop_required(inp: dict[str, Any]) -> bool:
+    marked = set(inp.get("issuer_policy", {}).get("pop_required_grants", []))
+    return bool(marked & set(inp.get("tct_token_claims", {}).get("grants", [])))
+
+
+def _run_step(state: _SeqState, step: dict[str, Any], inp: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str | None, dict[str, Any]] | None:
+    """Execute one sequence step. Returns (outcome, code, side_effects) or None if unsupported."""
+    op = step.get("operation")
+
+    if op in (None, "process_handshake_message"):  # message-id dedup engine (env-004, mh-001)
+        mid = str(step.get("message_id"))
+        if mid in state.seen:
+            return "failure", "REPLAY_DETECTED", {}
+        state.seen.add(mid)
+        return "success", None, {}
+
+    sub = inp.get("tct_token_claims", {}).get("sub")
+
+    if op == "issue_pop_challenge":  # verifier mints a fresh nonce (RFC-AITP-0005 §6.1)
+        state.nonce = b64url_encode(sha256(b"aitp-pop:" + str(inp.get("tct_token_claims", {}).get("jti")).encode())[:16])
+        state.pop_challenge_issued = True
+        return "success", None, {}
+    if op == "produce_pop_response":  # holder signs sha256(decode(nonce)) with the subject key
+        assert state.nonce is not None
+        sig = keys[sub].sign_digest(sha256(b64url_decode(state.nonce)))
+        state.pop_response = {"nonce_echo": state.nonce, "pop_signature": b64url_encode(sig)}
+        return "success", None, {}
+    if op == "verify_pop_response":  # verifier checks nonce echo + signature under the subject key
+        assert state.nonce is not None and state.pop_response is not None
+        key = parse_aid(str(sub)).public_key
+        ok = state.pop_response["nonce_echo"] == state.nonce and key.verify_digest(
+            sha256(b64url_decode(state.nonce)), b64url_decode(state.pop_response["pop_signature"])
+        )
+        return ("success", None, {}) if ok else ("failure", "POP_RESPONSE_INVALID", {})
+
+    if op == "authorize_capability_invocation":  # marked grant -> verifier MUST issue a challenge (§6.2)
+        if _pop_required(inp):
+            state.pop_challenge_issued = True
+        return "success", None, {}
+    if op == "expect_pop_challenge_issued":
+        return "success", None, {"pop_challenge_issued": state.pop_challenge_issued}
+    if op == "withhold_pop_response":  # no valid response -> reject, do NOT authorize
+        state.capability_authorized = False
+        return "failure", "POP_RESPONSE_INVALID", {"capability_authorized": False}
+
+    return None
+
+
+def _run_sequence(inp: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str]:
+    """Execute a multi-step sequence (replay dedup, PoP challenge/response)."""
+    state = _SeqState()
+    for i, step in enumerate(inp["sequence"]):
+        result = _run_step(state, step, inp, keys)
+        if result is None:
+            return SKIP, f"unsupported sequence op {step.get('operation')}"
+        outcome, code, side = result
+        exp = step.get("expected", {})
+        if exp.get("outcome") == "success" and outcome != "success":
+            return FAIL, f"step {i} ({step.get('operation')}): expected success, got {code}"
+        if exp.get("outcome") == "failure" and not (outcome == "failure" and code == exp.get("error_code")):
+            return FAIL, f"step {i} ({step.get('operation')}): expected {exp.get('error_code')}, got {outcome}/{code}"
+        for k, v in exp.get("side_effects", {}).items():
+            if side.get(k) != v:
+                return FAIL, f"step {i}: side effect {k}={side.get(k)}, expected {v}"
+    return PASS, "sequence"
 
 
 def run_fixture(fixture: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str]:
@@ -59,7 +120,7 @@ def run_fixture(fixture: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str
     expected = fixture.get("expected", {})
 
     if "sequence" in inp:
-        return _run_sequence(inp)
+        return _run_sequence(inp, keys)
 
     op = inp.get("operation")
     if op is None or not supported(op):

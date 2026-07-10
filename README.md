@@ -50,9 +50,10 @@ keypairs and runs it against this implementation:
 python run_conformance.py --spec-dir ../agentidentitytrustprotocol
 ```
 
-Current status: **48 fixtures pass, 0 fail** — every v0.2-required fixture whose
-operation is implemented, plus the Draft multi-hop delegation and session-bundle
-opt-ins (`experimental-multihop-delegation`, `experimental-session-bundle`). The surface — envelope, TCT (incl.
+Current status: **51 fixtures pass, 0 fail** — the entire re-mintable v0.2 pack
+plus both Draft opt-ins (`experimental-multihop-delegation`,
+`experimental-session-bundle`) and all multi-step sequences (PoP
+challenge/response `tct-006`/`tct-007`, handshake replay `mh-001`). The surface — envelope, TCT (incl.
 `alg:none`, alg-confusion, `typ`-confusion, expiry-after-Manifest,
 revocation-ordering), grant voucher, single- **and multi-hop** delegation,
 Manifest, revocation snapshots, and the full mutual-handshake / identity family
@@ -61,17 +62,19 @@ TCT) — is validated byte-for-byte against `known-answer/keypairs.json`,
 `jwk-thumbprints.json`, `jcs-sha256.json`, the `signed-examples/` compact-JWS
 artifacts, and the id-007 pinned-key proof vector.
 
-Operations not yet implemented are reported **SKIP — never a silent pass**
-(exactly as PLACEHOLDERS.md §"Operation key" requires). Remaining toward full
-v0.2 parity:
+Only **two** fixtures are skipped, both for structural reasons rather than
+missing verification logic (SKIP is reported explicitly — never a silent pass,
+per PLACEHOLDERS.md §"Operation key"):
 
-1. **PoP challenge/response sequences** (RFC-AITP-0005 §6): `tct-006`, `tct-007`.
-2. **Multi-step handshake sequence** (`start_handshake` / `process_handshake_message`): `mh-001`.
+- **`mh-002`** — signed by a one-shot "attacker" key whose seed the spec does
+  not publish (only its public AID), so an independent re-minter cannot
+  reproduce its valid proof-of-possession. A runner consuming pre-minted
+  fixtures would have the concrete signature.
+- **`del-004`** — frozen in the retired v0.1 object wire shape
+  (`required_for_v0_1` only); a v0.2 implementation legitimately does not run it.
 
-`mh-002` is skipped for a structural reason, not a gap: it is signed by a
-one-shot "attacker" key whose seed the spec does not publish (only its public
-AID), so an independent re-minter cannot reproduce its valid proof-of-possession
-— a runner consuming pre-minted fixtures would have the concrete signature.
+Every other required-for-v0.2 fixture, both Draft opt-ins, and all multi-step
+sequences pass.
 
 ## Development
 
