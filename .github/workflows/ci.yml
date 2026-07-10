@@ -19,7 +19,7 @@ jobs:
         python: ["3.11", "3.12", "3.13"]
     steps:
       - name: Check out the verifier
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: aitp-verifier-py
       # The conformance runner + tests read the byte-pinned golden vectors from
@@ -27,11 +27,11 @@ jobs:
       # repo genuinely re-verifies against the spec's vectors on every push —
       # the whole point of an independent second implementation.
       - name: Check out the AITP spec
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: agentidentitytrustprotocol/agentidentitytrustprotocol
           path: agentidentitytrustprotocol
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
       - name: Install
