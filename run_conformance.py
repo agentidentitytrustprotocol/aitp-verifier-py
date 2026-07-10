@@ -28,6 +28,11 @@ from aitp_verifier.verify import OPERATIONS, supported
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 
+# Draft opt-in features this implementation now exercises. A non-required
+# fixture is run when its `feature` is one of these; otherwise it is out of
+# scope (Draft not-yet-implemented, or a v0.1-frozen fixture).
+SUPPORTED_FEATURES = {"experimental-multihop-delegation"}
+
 
 def _run_sequence(inp: dict[str, Any]) -> tuple[str, str]:
     """Envelope replay sequence (message-id dedup) — env-004 shape."""
@@ -64,6 +69,7 @@ def run_fixture(fixture: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str
         minted = mint_input(inp, REFERENCE_CLOCK, keys)
     except (MinterError, KeyError) as exc:
         return SKIP, f"could not mint fixture: {exc}"
+    minted["_feature"] = fixture.get("feature")
 
     try:
         OPERATIONS[op](minted)
@@ -103,7 +109,7 @@ def main() -> int:
         if "id" not in fixture or "input" not in fixture:
             continue  # not a scenario fixture (e.g. a schema helper)
         fid = fixture["id"]
-        if not fixture.get("required_for_v0_2", False):
+        if not fixture.get("required_for_v0_2", False) and fixture.get("feature") not in SUPPORTED_FEATURES:
             counts[SKIP] += 1
             rows.append((SKIP, fid, "not required for v0.2 (draft/extension/v0.1-frozen)"))
             continue
