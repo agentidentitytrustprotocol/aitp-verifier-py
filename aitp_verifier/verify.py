@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from . import delegation, envelope, handshake, manifest, revocation, tct, voucher
+from . import delegation, envelope, handshake, manifest, revocation, sessionbundle, tct, voucher
 
 __all__ = ["OPERATIONS", "supported"]
 
@@ -23,6 +23,7 @@ OPERATIONS: dict[str, Verifier] = {
     "verify_delegation_token": delegation.verify_delegation_token,
     "verify_revocation_snapshot": revocation.verify_revocation_snapshot,
     "verify_handshake_payload": handshake.verify_handshake_payload,
+    "verify_session_bundle": sessionbundle.verify_session_bundle,
 }
 
 

@@ -30,4 +30,4 @@ def test_conformance_pack_has_no_failures(spec_dir: Path) -> None:
         elif status == PASS:
             passed += 1
     assert failures == 0
-    assert passed >= 45  # + handshake/identity family + multi-hop delegation
+    assert passed >= 48  # + handshake/identity + multi-hop delegation + session bundle

@@ -275,6 +275,18 @@ def _mint_handshake(inp: dict[str, Any], keys: dict[str, PrivateKey], now: int) 
         inp["resolved_issuer_keys"] = issuer_keys
 
 
+def _mint_bundle(outer: dict[str, Any], keys: dict[str, PrivateKey], now: int) -> None:
+    body = outer["session_bundle"]
+    for p in body.get("participants", []):
+        if isinstance(p.get("tct"), str) and p["tct"] in _JWS_TOKENS and "tct_claims" in p:
+            p["tct"] = _mint_token(p["tct"], p["tct_claims"], keys, now)
+        for k in [k for k in p if k.endswith("_claims")]:
+            del p[k]  # participant entries are additionalProperties:false on the wire
+    if outer.get("signature") == "__VALID_A_SIG__":
+        key = keys[body["coordinator"]]
+        outer["signature"] = b64url_encode(key.sign_digest(sha256(canonicalize(body))))
+
+
 def _peer_nonce(self_aid: str) -> str:
     """A deterministic 16-byte nonce for a peer block (mh-success two-sided shape)."""
     return b64url_encode(sha256(b"aitp-conformance-nonce:" + self_aid.encode())[:16])
@@ -317,6 +329,9 @@ def mint_input(inp: dict[str, Any], now: int, keys: dict[str, PrivateKey]) -> di
     for side in ("peer_a", "peer_b"):
         if isinstance(d.get(side), dict):
             _mint_peer(d[side], keys, now)
+
+    if isinstance(d.get("session_bundle"), dict) and "session_bundle" in d["session_bundle"]:
+        _mint_bundle(d["session_bundle"], keys, now)
 
     if isinstance(d.get("manifest"), dict):
         _sign_manifest(d["manifest"], keys)
