@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 
 from aitp_verifier.keys import load_kat_keys
-from run_conformance import FAIL, PASS, run_fixture
+from run_conformance import FAIL, PASS, SUPPORTED_FEATURES, run_fixture
 
 
 def test_conformance_pack_has_no_failures(spec_dir: Path) -> None:
@@ -21,7 +21,7 @@ def test_conformance_pack_has_no_failures(spec_dir: Path) -> None:
         fixture = json.loads(path.read_text())
         if "id" not in fixture or "input" not in fixture:
             continue
-        if not fixture.get("required_for_v0_2", False):
+        if not fixture.get("required_for_v0_2", False) and fixture.get("feature") not in SUPPORTED_FEATURES:
             continue
         status, detail = run_fixture(fixture, keys)
         if status == FAIL:
@@ -30,4 +30,4 @@ def test_conformance_pack_has_no_failures(spec_dir: Path) -> None:
         elif status == PASS:
             passed += 1
     assert failures == 0
-    assert passed >= 41  # cryptographic surface + handshake/identity family
+    assert passed >= 45  # + handshake/identity family + multi-hop delegation

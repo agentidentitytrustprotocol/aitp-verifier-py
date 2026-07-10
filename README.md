@@ -35,7 +35,7 @@ an HTTP client, not a registry. No network I/O exists anywhere in this codebase.
 | `aitp_verifier.manifest` | Agent Manifest: version, expiry, PoP, signature (RFC-AITP-0003) |
 | `aitp_verifier.tct` | Trust Context Token verification incl. §10.4 Manifest-expiry bound + revocation ordering (RFC-AITP-0005) |
 | `aitp_verifier.voucher` | Grant-voucher verification (RFC-AITP-0005 §8) |
-| `aitp_verifier.delegation` | Single-hop delegation + the multi-hop structural rejection (RFC-AITP-0006) |
+| `aitp_verifier.delegation` | Single-hop delegation + the multi-hop chain (hop limit, chain-hash commitment, transitive scope, per-hop revocation) (RFC-AITP-0006 / RFC-AITP-0011) |
 | `aitp_verifier.revocation` | Revocation-snapshot freshness / signature / fail-mode (RFC-AITP-0008) |
 | `aitp_verifier.identity` | OIDC + pinned-key identity bindings, incl. the five-field pinned-key proof (RFC-AITP-0002) |
 | `aitp_verifier.handshake` | Mutual-handshake payload verification: Manifest, identity, nonce echo, round-2 PoP, embedded TCT (RFC-AITP-0004) |
@@ -49,13 +49,14 @@ keypairs and runs it against this implementation:
 python run_conformance.py --spec-dir ../agentidentitytrustprotocol
 ```
 
-Current status against the v0.2 pack: **41 required-for-v0.2 fixtures pass, 0
-fail.** The implemented surface — envelope, TCT (incl. `alg:none`,
-alg-confusion, `typ`-confusion, expiry-after-Manifest, revocation-ordering),
-grant voucher, single-hop delegation (incl. multi-hop rejection), Manifest,
-revocation snapshots, and the full mutual-handshake / identity family (OIDC and
-pinned-key bindings, nonce echo, round-2 PoP, embedded peer-issued TCT) — is
-validated byte-for-byte against `known-answer/keypairs.json`,
+Current status: **45 fixtures pass, 0 fail** — every v0.2-required fixture whose
+operation is implemented, plus the Draft multi-hop delegation opt-in
+(`experimental-multihop-delegation`). The surface — envelope, TCT (incl.
+`alg:none`, alg-confusion, `typ`-confusion, expiry-after-Manifest,
+revocation-ordering), grant voucher, single- **and multi-hop** delegation,
+Manifest, revocation snapshots, and the full mutual-handshake / identity family
+(OIDC and pinned-key bindings, nonce echo, round-2 PoP, embedded peer-issued
+TCT) — is validated byte-for-byte against `known-answer/keypairs.json`,
 `jwk-thumbprints.json`, `jcs-sha256.json`, the `signed-examples/` compact-JWS
 artifacts, and the id-007 pinned-key proof vector.
 
@@ -65,8 +66,7 @@ v0.2 parity:
 
 1. **PoP challenge/response sequences** (RFC-AITP-0005 §6): `tct-006`, `tct-007`.
 2. **Multi-step handshake sequence** (`start_handshake` / `process_handshake_message`): `mh-001`.
-3. **Multi-hop delegation opt-in** (RFC-AITP-0011): `del-mh-*` (Draft).
-4. **Session trust bundle** (RFC-AITP-0010): `bundle-*` (Draft).
+3. **Session trust bundle** (RFC-AITP-0010): `bundle-*` (Draft).
 
 `mh-002` is skipped for a structural reason, not a gap: it is signed by a
 one-shot "attacker" key whose seed the spec does not publish (only its public

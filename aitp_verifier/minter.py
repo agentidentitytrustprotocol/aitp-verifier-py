@@ -80,6 +80,14 @@ def _mint_claims_object(claims: dict[str, Any], keys: dict[str, PrivateKey], now
         sibling = f"{base}_claims"
         if sibling in out and isinstance(out[base], str) and out[base] in _JWS_TOKENS:
             out[base] = _mint_token(out[base], out[sibling], keys, now)
+    # Multi-hop chain: an array of __JWS_DELEGATION__ tokens with a parallel
+    # `chain_claims` array; then the RFC-AITP-0011 §5 chain_hash commitment.
+    if "chain" in out and "chain_claims" in out:
+        from .delegation import compute_chain_hash
+
+        out["chain"] = [_mint_token("__JWS_DELEGATION__", cc, keys, now) for cc in out["chain_claims"]]
+        if out.get("chain_hash") == "__COMPUTED_CHAIN_HASH__":
+            out["chain_hash"] = compute_chain_hash(out["chain"])
     return {k: v for k, v in out.items() if not k.endswith("_claims")}
 
 
