@@ -47,6 +47,27 @@ def test_jcs_canonical_and_sha256(spec_dir: Path) -> None:
         assert sha256(canon).hex() == v["sha256_hex"]
 
 
+def test_pinned_key_proof_input_matches_golden(spec_dir: Path) -> None:
+    """The id-007 fixture carries a real five-field pinned-key proof — verify it."""
+    fixtures = list((spec_dir / "schemas/conformance").glob("id-007*.json"))
+    if not fixtures:
+        return
+    inp = json.loads(fixtures[0].read_text())["input"]
+    identity = inp["envelope"]["payload"]["identity"]
+    from aitp_verifier.crypto import PublicKey
+    from aitp_verifier.identity import pinned_key_proof_input
+
+    data = pinned_key_proof_input(
+        inp["envelope"]["sender"]["agent_id"],
+        inp["self_aid"],
+        inp["envelope"]["message_id"],
+        inp["envelope"]["timestamp"],
+        inp["envelope"]["payload"]["pop_nonce"],
+    )
+    key = PublicKey.from_raw("ed25519", b64url_decode(identity["public_key"]))
+    assert key.verify_digest(sha256(data), b64url_decode(identity["proof"]))
+
+
 def test_pop_signature_vector(spec_dir: Path) -> None:
     kp = {k["id"]: k for k in _ka(spec_dir, "keypairs.json")["vectors"]}
     for v in _ka(spec_dir, "jcs-sha256.json")["vectors"]:

@@ -13,12 +13,16 @@ byte-stable across implementations (PLACEHOLDERS.md §Reference clock).
 from __future__ import annotations
 
 import copy
+import json
 import re
 from typing import Any, cast
 
-from .b64 import b64url_encode
+from .aid import parse_aid
+from .b64 import b64url_decode, b64url_encode
 from .crypto import PrivateKey, sha256
+from .identity import pinned_key_proof_input
 from .jcs import canonicalize, dumps
+from .jwk import thumbprint
 from .jws import encode_jws
 
 __all__ = ["mint_input", "MinterError"]
@@ -123,12 +127,18 @@ def _sign_envelope(env: dict[str, Any], keys: dict[str, PrivateKey]) -> None:
 
 
 def _sign_manifest(man: dict[str, Any], keys: dict[str, PrivateKey]) -> None:
+    if man["aid"] not in keys:
+        # e.g. mh-002's one-shot "attacker" key: the spec pins only its public
+        # AID, not the seed, so an independent re-minter cannot reproduce its
+        # valid PoP. A runner consuming pre-minted fixtures would have it.
+        raise MinterError(f"no KAT signing key for manifest aid {man['aid']} (one-shot key not pinned in spec)")
     key = keys[man["aid"]]
     pop = man.get("proof_of_possession")
     if pop and pop.get("signature") == "__VALID_POP_SIG__":
-        from .b64 import b64url_decode
-
         pop["signature"] = b64url_encode(key.sign_digest(sha256(b64url_decode(pop["challenge"]))))
+    elif pop and pop.get("signature") == "__INVALID_POP_SIG__":
+        # Sign the wrong digest so the PoP check fails at the crypto layer.
+        pop["signature"] = b64url_encode(key.sign_digest(sha256(b"aitp-invalid-pop")))
     if man.get("signature") in ("__VALID_MANIFEST_SIG__", "__TAMPERED_SIGNATURE__"):
         body = {k: v for k, v in man.items() if k != "signature"}
         sig = b64url_encode(key.sign_digest(sha256(canonicalize(body))))
@@ -151,6 +161,138 @@ def _sign_revocation(snapshot: dict[str, Any], keys: dict[str, PrivateKey]) -> N
     snapshot["signature"] = b64url_encode(key.sign_digest(sha256(canonicalize(body))))
 
 
+# --- handshake payload minting ----------------------------------------------
+
+_OTHER_AID = "aid:pubkey:iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w"  # kat-004, a peer != self
+_WRONG_NONCE = b64url_encode(bytes([0xFF] * 16))  # 22-char b64url, decodes != any real nonce
+
+
+def _issuer_key(issuer: str) -> PrivateKey:
+    """Deterministic synthetic OIDC issuer key (both mint + inline its pubkey)."""
+    return PrivateKey.ed25519_from_seed(sha256(b"aitp-conformance-issuer:" + issuer.encode()))
+
+
+def _mint_oidc_jwt(placeholder: str, identity: dict[str, Any], env: dict[str, Any], inp: dict[str, Any], now: int) -> str:
+    issuer = identity["issuer"]
+    sender = env["sender"]["agent_id"]
+    claims: dict[str, Any] = {
+        "iss": issuer,
+        "sub": identity["subject"],
+        "aud": inp.get("self_aid") or sender,
+        "iat": now,
+        "exp": now + 3600,
+        "nonce": env["payload"].get("pop_nonce"),
+        "cnf": {"jkt": thumbprint(parse_aid(sender))},
+    }
+    if placeholder == "__JWT_MISSING_AUD_CLAIM__":
+        claims.pop("aud")
+    elif placeholder == "__JWT_AUD_TARGETS_DIFFERENT_PEER__":
+        claims["aud"] = _OTHER_AID
+    elif placeholder == "__JWT_MISSING_CNF_JKT_CLAIM__":
+        claims.pop("cnf")
+    header = json.dumps({"alg": "EdDSA", "typ": "JWT"}, separators=(",", ":")).encode()
+    signing_input = b64url_encode(header) + "." + b64url_encode(json.dumps(claims, separators=(",", ":")).encode())
+    sig = _issuer_key(issuer).sign_jose(signing_input.encode("ascii"))
+    return signing_input + "." + b64url_encode(sig)
+
+
+def _mint_pinned_proof(placeholder: str, identity: dict[str, Any], env: dict[str, Any], inp: dict[str, Any], keys: dict[str, PrivateKey]) -> str:
+    sender = env["sender"]["agent_id"]
+    sk = keys[sender]
+    self_aid = inp["self_aid"]
+    mid, ts, nonce = env["message_id"], env["timestamp"], env["payload"]["pop_nonce"]
+    if placeholder == "__CAPTURED_PROOF_FROM_ORIGINAL_HANDSHAKE__":
+        c = inp["captured_proof_context"]
+        data = pinned_key_proof_input(
+            c["original_sender_aid"], c["original_receiver_aid"], c["original_message_id"],
+            c["original_timestamp"], c["original_pop_nonce"],
+        )
+    elif placeholder == "__LEGACY_PINNED_PROOF__":
+        data = f"{mid}|{ts}".encode()  # pre-v0.1 two-field input — must fail five-field reconstruction
+    elif placeholder == "__INVALID_POP_SIG_OVER_WRONG_NONCE__":
+        data = pinned_key_proof_input(sender, self_aid, mid, ts, _WRONG_NONCE)
+    else:
+        data = pinned_key_proof_input(sender, self_aid, mid, ts, nonce)
+    return b64url_encode(sk.sign_digest(sha256(data)))
+
+
+def _mint_pop_signature(payload: dict[str, Any], sender: str, self_nonce: str | None, keys: dict[str, PrivateKey]) -> None:
+    ph = payload.get("pop_signature")
+    if not isinstance(ph, str) or not ph.startswith("__"):
+        return
+    sk = keys[sender]
+    nonce = self_nonce or payload.get("pop_nonce_echo")
+    if ph == "__INVALID_POP_SIG_OVER_WRONG_NONCE__":
+        nonce = _WRONG_NONCE
+    if nonce is None:
+        return
+    payload["pop_signature"] = b64url_encode(sk.sign_digest(sha256(b64url_decode(nonce))))
+
+
+def _mint_handshake(inp: dict[str, Any], keys: dict[str, PrivateKey], now: int) -> None:
+    env = inp["envelope"]
+    payload = env.get("payload", {})
+    issuer_keys: dict[str, str] = {}
+
+    if isinstance(payload.get("manifest"), dict):
+        _sign_manifest(payload["manifest"], keys)
+
+    identity = payload.get("identity")
+    if isinstance(identity, dict) and isinstance(identity.get("proof"), str) and identity["proof"].startswith("__"):
+        if identity.get("type") == "oidc":
+            identity["proof"] = _mint_oidc_jwt(identity["proof"], identity, env, inp, now)
+            issuer_keys[identity["issuer"]] = b64url_encode(_issuer_key(identity["issuer"]).raw_public())
+        elif identity.get("type") == "pinned_key":
+            identity["proof"] = _mint_pinned_proof(identity["proof"], identity, env, inp, keys)
+
+    if isinstance(payload.get("tct"), str) and payload["tct"] in _JWS_TOKENS and "tct_claims" in payload:
+        payload["tct"] = _mint_token(payload["tct"], payload["tct_claims"], keys, now)
+
+    self_nonce = (
+        inp.get("self_pop_nonce_sent_in_hello_ack")
+        or inp.get("self_pop_nonce_sent_in_hello")
+        or inp.get("self_pop_nonce")
+    )
+    _mint_pop_signature(payload, env["sender"]["agent_id"], self_nonce, keys)
+
+    # The wire payload carries no minting artifacts — strip *_claims before the
+    # envelope signature covers the canonical payload bytes.
+    for k in [k for k in payload if k.endswith("_claims")]:
+        del payload[k]
+
+    if isinstance(env.get("signature"), str) and env["signature"].startswith("__VALID_ENVELOPE_SIG__"):
+        _sign_envelope(env, keys)
+
+    if issuer_keys:
+        inp["resolved_issuer_keys"] = issuer_keys
+
+
+def _peer_nonce(self_aid: str) -> str:
+    """A deterministic 16-byte nonce for a peer block (mh-success two-sided shape)."""
+    return b64url_encode(sha256(b"aitp-conformance-nonce:" + self_aid.encode())[:16])
+
+
+def _mint_peer(peer: dict[str, Any], keys: dict[str, PrivateKey], now: int) -> None:
+    payload = peer.get("received_payload", {})
+    self_nonce = _peer_nonce(peer["self_aid"])
+    for k in ("self_pop_nonce_sent_in_hello", "self_pop_nonce_sent_in_hello_ack", "self_pop_nonce"):
+        if peer.get(k) == "__VALID_NONCE__":
+            peer[k] = self_nonce
+
+    issuer = payload.get("tct_claims", {}).get("iss")
+    for base in ("tct", "grant_voucher"):
+        if isinstance(payload.get(base), str) and payload[base] in _JWS_TOKENS and f"{base}_claims" in payload:
+            payload[base] = _mint_token(payload[base], payload[f"{base}_claims"], keys, now)
+
+    if payload.get("pop_signature") == "__VALID_POP_SIG__" and issuer in keys:
+        payload["pop_signature"] = b64url_encode(keys[issuer].sign_digest(sha256(b64url_decode(self_nonce))))
+    if payload.get("pop_nonce_echo") == "__VALID_NONCE_ECHO__":
+        payload["pop_nonce_echo"] = self_nonce
+
+    for k in [k for k in payload if k.endswith("_claims")]:
+        del payload[k]
+
+
 def mint_input(inp: dict[str, Any], now: int, keys: dict[str, PrivateKey]) -> dict[str, Any]:
     """Return a copy of the fixture ``input`` with every placeholder resolved."""
     d = cast("dict[str, Any]", _resolve_times(copy.deepcopy(inp), now))
@@ -161,9 +303,12 @@ def mint_input(inp: dict[str, Any], now: int, keys: dict[str, PrivateKey]) -> di
         if sibling in d and isinstance(d[base], str) and d[base] in _JWS_TOKENS:
             d[base] = _mint_token(d[base], d[sibling], keys, now)
 
-    if isinstance(d.get("envelope"), dict) and isinstance(d["envelope"].get("signature"), str):
-        if d["envelope"]["signature"].startswith("__VALID_ENVELOPE_SIG__"):
-            _sign_envelope(d["envelope"], keys)
+    if isinstance(d.get("envelope"), dict):
+        _mint_handshake(d, keys, now)
+
+    for side in ("peer_a", "peer_b"):
+        if isinstance(d.get(side), dict):
+            _mint_peer(d[side], keys, now)
 
     if isinstance(d.get("manifest"), dict):
         _sign_manifest(d["manifest"], keys)
