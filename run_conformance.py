@@ -31,7 +31,7 @@ PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 # Draft opt-in features this implementation now exercises. A non-required
 # fixture is run when its `feature` is one of these; otherwise it is out of
 # scope (Draft not-yet-implemented, or a v0.1-frozen fixture).
-SUPPORTED_FEATURES = {"experimental-multihop-delegation"}
+SUPPORTED_FEATURES = {"experimental-multihop-delegation", "experimental-session-bundle"}
 
 
 def _run_sequence(inp: dict[str, Any]) -> tuple[str, str]:
