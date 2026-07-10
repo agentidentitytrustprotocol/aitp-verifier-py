@@ -70,6 +70,8 @@ def run_fixture(fixture: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str
         outcome, code = "success", None
     except AitpError as exc:
         outcome, code = "failure", exc.code
+    except Exception as exc:  # noqa: BLE001 - a crash is a fixture failure, not a runner abort
+        return FAIL, f"verifier raised {type(exc).__name__}: {exc}"
 
     if expected.get("outcome") == "success":
         if outcome == "success":

@@ -37,6 +37,8 @@ an HTTP client, not a registry. No network I/O exists anywhere in this codebase.
 | `aitp_verifier.voucher` | Grant-voucher verification (RFC-AITP-0005 §8) |
 | `aitp_verifier.delegation` | Single-hop delegation + the multi-hop structural rejection (RFC-AITP-0006) |
 | `aitp_verifier.revocation` | Revocation-snapshot freshness / signature / fail-mode (RFC-AITP-0008) |
+| `aitp_verifier.identity` | OIDC + pinned-key identity bindings, incl. the five-field pinned-key proof (RFC-AITP-0002) |
+| `aitp_verifier.handshake` | Mutual-handshake payload verification: Manifest, identity, nonce echo, round-2 PoP, embedded TCT (RFC-AITP-0004) |
 
 ## Conformance coverage
 
@@ -47,23 +49,29 @@ keypairs and runs it against this implementation:
 python run_conformance.py --spec-dir ../agentidentitytrustprotocol
 ```
 
-Current status against the v0.2 pack: **26 required-for-v0.2 fixtures pass, 0
-fail.** The implemented cryptographic surface — envelope, TCT (incl. `alg:none`,
+Current status against the v0.2 pack: **41 required-for-v0.2 fixtures pass, 0
+fail.** The implemented surface — envelope, TCT (incl. `alg:none`,
 alg-confusion, `typ`-confusion, expiry-after-Manifest, revocation-ordering),
-grant voucher, single-hop delegation (incl. multi-hop rejection), Manifest, and
-revocation snapshots — is complete and validated byte-for-byte against
-`known-answer/keypairs.json`, `jwk-thumbprints.json`, `jcs-sha256.json`, and the
-`signed-examples/` compact-JWS artifacts.
+grant voucher, single-hop delegation (incl. multi-hop rejection), Manifest,
+revocation snapshots, and the full mutual-handshake / identity family (OIDC and
+pinned-key bindings, nonce echo, round-2 PoP, embedded peer-issued TCT) — is
+validated byte-for-byte against `known-answer/keypairs.json`,
+`jwk-thumbprints.json`, `jcs-sha256.json`, the `signed-examples/` compact-JWS
+artifacts, and the id-007 pinned-key proof vector.
 
 Operations not yet implemented are reported **SKIP — never a silent pass**
-(exactly as PLACEHOLDERS.md §"Operation key" requires). The roadmap toward full
+(exactly as PLACEHOLDERS.md §"Operation key" requires). Remaining toward full
 v0.2 parity:
 
-1. **`verify_handshake_payload`** (RFC-AITP-0002/0004): the OIDC and pinned-key
-   identity bindings and the mutual-handshake message checks (`id-*`, `mh-*`).
-2. **PoP challenge/response sequences** (RFC-AITP-0005 §6): `tct-006`, `tct-007`.
+1. **PoP challenge/response sequences** (RFC-AITP-0005 §6): `tct-006`, `tct-007`.
+2. **Multi-step handshake sequence** (`start_handshake` / `process_handshake_message`): `mh-001`.
 3. **Multi-hop delegation opt-in** (RFC-AITP-0011): `del-mh-*` (Draft).
 4. **Session trust bundle** (RFC-AITP-0010): `bundle-*` (Draft).
+
+`mh-002` is skipped for a structural reason, not a gap: it is signed by a
+one-shot "attacker" key whose seed the spec does not publish (only its public
+AID), so an independent re-minter cannot reproduce its valid proof-of-possession
+— a runner consuming pre-minted fixtures would have the concrete signature.
 
 ## Development
 
