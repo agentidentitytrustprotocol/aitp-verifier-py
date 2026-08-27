@@ -282,9 +282,10 @@ def _mint_bundle(outer: dict[str, Any], keys: dict[str, PrivateKey], now: int) -
             p["tct"] = _mint_token(p["tct"], p["tct_claims"], keys, now)
         for k in [k for k in p if k.endswith("_claims")]:
             del p[k]  # participant entries are additionalProperties:false on the wire
-    if outer.get("signature") == "__VALID_A_SIG__":
+    if body.get("signature") == "__VALID_A_SIG__":
         key = keys[body["coordinator"]]
-        outer["signature"] = b64url_encode(key.sign_digest(sha256(canonicalize(body))))
+        signing_body = {k: v for k, v in body.items() if k != "signature"}
+        body["signature"] = b64url_encode(key.sign_digest(sha256(canonicalize(signing_body))))
 
 
 def _peer_nonce(self_aid: str) -> str:
