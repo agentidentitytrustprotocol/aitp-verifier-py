@@ -1,12 +1,21 @@
 """Session Trust Bundle verification (RFC-AITP-0010 §5).
 
 A coordinator-signed bundle binds a set of participants, each with an embedded
-peer-issued TCT. Verification order is load-bearing: version, then expiry
-(**before** the signature — a stale bundle is rejected even if it would verify),
-then the expiry-window invariant (``expires_at`` == the minimum participant TCT
-``exp``), then the coordinator signature over the JCS-canonical bundle body,
-then each participant TCT (issued by the coordinator, ``aud`` == the participant
-AID), then self-membership.
+peer-issued TCT. The ``signature`` member lives INSIDE the inner
+``session_bundle`` body (RFC-AITP-0010 §3; the bundle is redistributable and
+must carry its own proof across any hop that strips the transport wrapper —
+RFC-AITP-0001 §5.4.1), and is excluded from the bytes it covers: the
+signature verifies over ``sha256(JCS(body))`` with the ``signature`` member
+itself removed, the same convention as the Manifest (``manifest.py``). This
+differs from the revocation snapshot, whose ``signature`` is a sibling of its
+body — deliberately, since a snapshot is polled point-to-point and never
+relayed (see ``revocation.py``).
+
+Verification order is load-bearing: version, then expiry (**before** the
+signature — a stale bundle is rejected even if it would verify), then the
+expiry-window invariant (``expires_at`` == the minimum participant TCT
+``exp``), then the coordinator signature, then each participant TCT (issued
+by the coordinator, ``aud`` == the participant AID), then self-membership.
 
 Draft surface (``experimental-session-bundle``): a core verifier reports SKIP
 for this operation; this module is the opt-in implementation.
@@ -47,8 +56,12 @@ def verify_session_bundle(inp: dict[str, Any], now: int | None = None) -> dict[s
 
     coordinator = body["coordinator"]
     coord = parse_aid(coordinator)
-    raw = decode_tagged_signature(outer["signature"], coord, sig_err="BUNDLE_INVALID_SIGNATURE")
-    if not coord.public_key.verify_digest(sha256(canonicalize(body)), raw):
+    if "signature" not in body:
+        raise AitpError("BUNDLE_INVALID_SIGNATURE", "session bundle body has no signature")
+    signature = body["signature"]
+    signing_body = {k: v for k, v in body.items() if k != "signature"}
+    raw = decode_tagged_signature(signature, coord, sig_err="BUNDLE_INVALID_SIGNATURE")
+    if not coord.public_key.verify_digest(sha256(canonicalize(signing_body)), raw):
         raise AitpError("BUNDLE_INVALID_SIGNATURE", "coordinator signature invalid")
 
     for p in participants:
