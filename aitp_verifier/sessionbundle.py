@@ -13,11 +13,16 @@ relayed (see ``revocation.py``).
 
 Verification order is load-bearing: envelope shape (the wrapper carries no
 member beside ``session_bundle``, the body carries its own ``signature``),
-then version, then expiry (**before** the signature — a stale bundle is
-rejected even if it would verify), then the expiry-window invariant
-(``expires_at`` == the minimum participant TCT ``exp``), then the
-coordinator signature, then each participant TCT (issued
-by the coordinator, ``aud`` == the participant AID), then self-membership.
+then body shape and participant-entry shape (RFC-AITP-0001 §7 — every
+``additionalProperties: false`` object in the schema, not just the wrapper;
+``extensions`` on the body is the one schema-reserved escape hatch and is
+admitted without its contents being inspected, per RFC-AITP-0012 §1 —
+bundle-005-extensions-accepted pins this), then version, then expiry
+(**before** the signature — a stale bundle is rejected even if it would
+verify), then the expiry-window invariant (``expires_at`` == the minimum
+participant TCT ``exp``), then the coordinator signature, then each
+participant TCT (shape, issued by the coordinator, ``aud`` == the participant
+AID), then self-membership.
 
 Shape precedes expiry deliberately: a bundle that is both expired and
 malformed reports ``SESSION_BUNDLE_INVALID``, not ``BUNDLE_EXPIRED``. Only
@@ -35,11 +40,23 @@ from typing import Any
 from .aid import parse_aid
 from .crypto import sha256
 from .errors import AitpError
+from .fields import reject_unknown_fields
 from .jcs import canonicalize
 from .jws import parse_compact, verify_jws
 from .sigfield import decode_tagged_signature
+from .tct import TCT_CLAIM_FIELDS, TCT_CNF_FIELDS
 
 __all__ = ["verify_session_bundle"]
+
+# aitp-session-bundle.schema.json: the inner `session_bundle` body and each
+# `participants[]` entry are additionalProperties: false, same as the
+# transport wrapper checked below. `extensions` is the RFC-AITP-0012 §1
+# slot on the body (bundle-005-extensions-accepted pins it as schema-legal
+# and ignored-inside).
+_BODY_FIELDS = frozenset({
+    "version", "session_id", "coordinator", "issued_at", "expires_at", "participants", "extensions", "signature",
+})
+_PARTICIPANT_FIELDS = frozenset({"aid", "tct"})
 
 
 def verify_session_bundle(inp: dict[str, Any], now: int | None = None) -> dict[str, Any]:
@@ -59,12 +76,11 @@ def verify_session_bundle(inp: dict[str, Any], now: int | None = None) -> dict[s
     # unknown fields outside an explicit ``extensions`` namespace MUST be
     # rejected, and the wrapper sits outside the signed bytes entirely.
     #
-    # Scope: this gate covers the envelope only. Unknown members INSIDE the
-    # signed body or a participant entry are still accepted, though the schema
-    # marks those objects ``additionalProperties: false`` too — a pre-existing
-    # gap, not one this check closes. It is narrower than it sounds: the body
-    # is signed, so this admits only members the coordinator itself signed; a
-    # member stapled on afterwards fails as BUNDLE_INVALID_SIGNATURE.
+    # Scope: this first gate covers the transport wrapper only. The body and
+    # each participant entry get their own ``reject_unknown_fields`` calls
+    # below, once they are known to be objects at all — RFC-AITP-0001 §7
+    # applies to every ``additionalProperties: false`` object in the schema,
+    # not just the wrapper.
     #
     # These raise the RFC-AITP-0010 §5 aggregate rather than a ``BUNDLE_*``
     # code. Specific codes are preferred everywhere else in this module, but no
@@ -89,8 +105,13 @@ def verify_session_bundle(inp: dict[str, Any], now: int | None = None) -> dict[s
         # Schema pins `type: string`; sigfield.py annotates `sig: str` but is
         # handed unvalidated input, so a non-string tracebacks there instead.
         raise AitpError("SESSION_BUNDLE_INVALID", f"signature is {type(body['signature']).__name__}, not a string")
+    reject_unknown_fields(body, _BODY_FIELDS, code="SESSION_BUNDLE_INVALID", what="session bundle body")
 
     participants = body["participants"]
+    for p in participants:
+        if not isinstance(p, dict):
+            raise AitpError("SESSION_BUNDLE_INVALID", f"participant entry is {type(p).__name__}, not an object")
+        reject_unknown_fields(p, _PARTICIPANT_FIELDS, code="SESSION_BUNDLE_INVALID", what="participant entry")
 
     if body.get("version") != "aitp/0.2":
         raise AitpError("BUNDLE_VERSION_MISMATCH", f"unknown bundle version {body.get('version')!r}")
@@ -119,6 +140,9 @@ def verify_session_bundle(inp: dict[str, Any], now: int | None = None) -> dict[s
             typ_err="BUNDLE_PARTICIPANT_TCT_INVALID", alg_err="BUNDLE_PARTICIPANT_TCT_INVALID",
             sig_err="BUNDLE_PARTICIPANT_TCT_INVALID",
         )
+        reject_unknown_fields(claims, TCT_CLAIM_FIELDS, code="BUNDLE_PARTICIPANT_TCT_INVALID", what="participant TCT claims")
+        if isinstance(claims.get("cnf"), dict):
+            reject_unknown_fields(claims["cnf"], TCT_CNF_FIELDS, code="BUNDLE_PARTICIPANT_TCT_INVALID", what="participant TCT claims.cnf")
         if claims.get("iss") != coordinator:
             raise AitpError("BUNDLE_COORDINATOR_ISSUER_MISMATCH", "participant TCT iss != coordinator")
         if claims.get("aud") != p["aid"]:
