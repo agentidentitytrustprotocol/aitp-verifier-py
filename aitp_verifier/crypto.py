@@ -14,6 +14,17 @@ their input differently, so verification is exposed as two operations:
 
 P-256 signatures are the JOSE raw ``R||S`` 64-byte form (RFC 7518 §3.4), not
 ASN.1/DER — converted here.
+
+A third algorithm, RSA (JOSE ``RS256``), is supported for **verification
+only** and **only** as third-party OIDC-issuer key material resolved via
+``jwk.py`` (RFC-AITP-0002 §2, RFC-AITP-0007). RSA is never a valid AID
+algorithm (``aid.py`` only ever parses ``ed25519``/``p256`` identifiers) and
+is unreachable from the AID-keyed ``verify_digest`` profile — an AITP agent's
+own signing key is always Ed25519 or P-256. RSA public keys built here MUST
+carry a modulus of at least 2048 bits, matching the floor
+``ring::signature::RSA_PKCS1_2048_8192_SHA256`` gives the companion Rust
+implementation for free, so both independent implementations accept the same
+issuer keys.
 """
 
 from __future__ import annotations
@@ -21,7 +32,7 @@ from __future__ import annotations
 import hashlib
 
 from cryptography.exceptions import InvalidSignature as _CryptoInvalidSignature
-from cryptography.hazmat.primitives.asymmetric import ec, ed25519, utils
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa, utils
 from cryptography.hazmat.primitives.asymmetric.utils import (
     decode_dss_signature,
     encode_dss_signature,
@@ -29,8 +40,11 @@ from cryptography.hazmat.primitives.asymmetric.utils import (
 
 ALG_ED25519 = "ed25519"
 ALG_P256 = "p256"
+ALG_RSA = "rsa"
 
-__all__ = ["ALG_ED25519", "ALG_P256", "PublicKey", "PrivateKey", "sha256"]
+_MIN_RSA_MODULUS_BITS = 2048
+
+__all__ = ["ALG_ED25519", "ALG_P256", "ALG_RSA", "PublicKey", "PrivateKey", "sha256"]
 
 
 def sha256(data: bytes) -> bytes:
@@ -73,8 +87,26 @@ class PublicKey:
             return cls(alg, ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), raw))
         raise ValueError(f"unknown algorithm: {alg}")
 
+    @classmethod
+    def from_rsa_numbers(cls, n: bytes, e: bytes) -> "PublicKey":
+        """Build a verification-only RSA key from JWK ``n``/``e`` byte strings.
+
+        Reachable only via a third-party OIDC-issuer JWK/JWKS (``jwk.py``) —
+        never via an AID. Rejects any modulus under 2048 bits.
+        """
+        public_numbers = rsa.RSAPublicNumbers(int.from_bytes(e, "big"), int.from_bytes(n, "big"))
+        key = public_numbers.public_key()
+        if key.key_size < _MIN_RSA_MODULUS_BITS:
+            raise ValueError(f"RSA modulus must be at least {_MIN_RSA_MODULUS_BITS} bits, got {key.key_size}")
+        return cls(ALG_RSA, key)
+
     def verify_digest(self, digest: bytes, sig: bytes) -> bool:
-        """Verify a JCS-profile / PoP signature over a 32-byte SHA-256 *digest*."""
+        """Verify a JCS-profile / PoP signature over a 32-byte SHA-256 *digest*.
+
+        This is the AID-keyed profile: RSA is never a valid AID algorithm
+        (``aid.py`` only constructs ``ed25519``/``p256`` keys), so there is no
+        code path that reaches this method with ``self.alg == ALG_RSA``.
+        """
         try:
             if self.alg == ALG_ED25519:
                 assert isinstance(self._key, ed25519.Ed25519PublicKey)
@@ -92,9 +124,14 @@ class PublicKey:
             if self.alg == ALG_ED25519:
                 assert isinstance(self._key, ed25519.Ed25519PublicKey)
                 self._key.verify(sig, signing_input)
-            else:
+            elif self.alg == ALG_P256:
                 assert isinstance(self._key, ec.EllipticCurvePublicKey)
                 self._key.verify(_p256_raw_to_der(sig), signing_input, ec.ECDSA(_SHA256))
+            elif self.alg == ALG_RSA:
+                assert isinstance(self._key, rsa.RSAPublicKey)
+                self._key.verify(sig, signing_input, padding.PKCS1v15(), _SHA256)
+            else:
+                raise ValueError(f"unrecognized algorithm for JOSE verification: {self.alg!r}")
             return True
         except (_CryptoInvalidSignature, ValueError):
             return False
