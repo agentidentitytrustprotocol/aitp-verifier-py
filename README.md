@@ -39,7 +39,7 @@ an HTTP client, not a registry. No network I/O exists anywhere in this codebase.
 | `aitp_verifier.revocation` | Revocation-snapshot freshness / signature / fail-mode (RFC-AITP-0008) |
 | `aitp_verifier.identity` | OIDC + pinned-key identity bindings, incl. the five-field pinned-key proof (RFC-AITP-0002) |
 | `aitp_verifier.handshake` | Mutual-handshake payload verification: Manifest, identity, nonce echo, round-2 PoP, embedded TCT (RFC-AITP-0004) |
-| `aitp_verifier.sessionbundle` | Session Trust Bundle: expiry-before-signature, expiry-window invariant, coordinator signature, per-participant TCT, self-membership (RFC-AITP-0010) |
+| `aitp_verifier.sessionbundle` | Session Trust Bundle: envelope shape, expiry-before-signature, expiry-window invariant, coordinator signature, per-participant TCT, self-membership (RFC-AITP-0010) |
 
 ## Conformance coverage
 
@@ -50,7 +50,7 @@ keypairs and runs it against this implementation:
 python run_conformance.py --spec-dir ../agentidentitytrustprotocol
 ```
 
-Current status: **51 fixtures pass, 0 fail** — the entire re-mintable v0.2 pack
+Current status: **53 fixtures pass, 0 fail** — the entire re-mintable v0.2 pack
 plus both Draft opt-ins (`experimental-multihop-delegation`,
 `experimental-session-bundle`) and all multi-step sequences (PoP
 challenge/response `tct-006`/`tct-007`, handshake replay `mh-001`). The surface — envelope, TCT (incl.

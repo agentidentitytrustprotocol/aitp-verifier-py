@@ -60,10 +60,66 @@ def test_old_sibling_shape_is_rejected(spec_dir: Path) -> None:
     assert "signature" not in sibling["session_bundle"]["session_bundle"]
     with pytest.raises(AitpError) as exc_info:
         verify_session_bundle(sibling)
-    assert exc_info.value.code == "BUNDLE_INVALID_SIGNATURE"
+    # The aggregate, not a BUNDLE_* code: this is a structural rejection (the
+    # wrapper carries a member it may not carry, the body is missing one it
+    # must), and no per-step code covers that. Pinned by conformance fixture
+    # bundle-004-signature-sibling-rejected.
+    assert exc_info.value.code == "SESSION_BUNDLE_INVALID"
 
     # The original (inner-shaped, untouched) input is unaffected by the copy.
     assert body["signature"] == outer["session_bundle"]["signature"]
+
+
+def test_wrapper_rejects_any_extra_member(spec_dir: Path) -> None:
+    """The transport wrapper is `additionalProperties: false`: it carries
+    `session_bundle` and nothing else. Fixture bundle-004 only exercises the
+    `signature` sibling, but the rule is not signature-specific -- an attacker
+    who can staple ANY member onto the wrapper is outside the signed bytes,
+    since the coordinator signature covers only the inner body. This pins the
+    general case so a later narrowing to `if "signature" in outer` would fail.
+    """
+    minted = _minted_bundle_input(spec_dir)
+    assert verify_session_bundle(copy.deepcopy(minted))["ok"] is True
+
+    stapled = copy.deepcopy(minted)
+    stapled["session_bundle"]["routing_hint"] = "https://attacker.example/relay"
+
+    with pytest.raises(AitpError) as exc_info:
+        verify_session_bundle(stapled)
+    assert exc_info.value.code == "SESSION_BUNDLE_INVALID"
+    assert "routing_hint" in exc_info.value.message
+
+
+@pytest.mark.parametrize(
+    ("outer", "expected"),
+    [
+        pytest.param(["session_bundle"], "wrapper is list", id="wrapper-is-a-list"),
+        pytest.param(None, "wrapper is NoneType", id="wrapper-is-null"),
+        pytest.param({}, "no session_bundle member", id="wrapper-is-empty"),
+        pytest.param({"session_bundle": "signature"}, "body is str", id="body-is-a-string"),
+        pytest.param({"session_bundle": None}, "body is NoneType", id="body-is-null"),
+        pytest.param({"session_bundle": []}, "body is list", id="body-is-a-list"),
+        pytest.param({"session_bundle": {}, 1: "y", "zz": "w"}, "non-wrapper member(s)", id="extra-keys-of-mixed-type"),
+    ],
+)
+def test_malformed_envelope_raises_aitp_error_not_a_traceback(outer: Any, expected: str) -> None:
+    """A malformed envelope is a protocol error, never a raw traceback.
+
+    Two cases defeat a naive check specifically. `["session_bundle"]` contains
+    the literal wrapper key, so `set(outer) == {"session_bundle"}` compares
+    equal and a set-only gate waves it through. `{"session_bundle": "signature"}`
+    survives a `"signature" in body` test by *substring* membership. Both then
+    crash one line later. The mixed-type case defeats a bare `sorted()` over
+    the extra keys. A library consumer feeding attacker-shaped input must get
+    an AitpError it can catch, not a TypeError.
+
+    Asserting the message, not just the code, is what pins the three branches
+    apart -- a single collapsed check would still satisfy every `.code` here.
+    """
+    with pytest.raises(AitpError) as exc_info:
+        verify_session_bundle({"self_aid": "aid:pubkey:x", "now": 0, "session_bundle": outer})
+    assert exc_info.value.code == "SESSION_BUNDLE_INVALID"
+    assert expected in exc_info.value.message
 
 
 def test_signature_covering_its_own_member_is_rejected(spec_dir: Path) -> None:
@@ -103,4 +159,4 @@ def test_bundle_body_without_signature_member_is_a_protocol_error(spec_dir: Path
 
     with pytest.raises(AitpError) as exc_info:
         verify_session_bundle(minted)
-    assert exc_info.value.code == "BUNDLE_INVALID_SIGNATURE"
+    assert exc_info.value.code == "SESSION_BUNDLE_INVALID"

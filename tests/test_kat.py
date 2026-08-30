@@ -59,6 +59,10 @@ NON_CANONICAL_VECTORS = {
     "kat-manifest-pop-001",
     "kat-multihop-chain-001",
     "kat-multihop-truncation-001",
+    # Pins a concatenated §3.1 proof input, not the JCS form of an object.
+    # Machine-checked by test_pinned_key_proof_kat below -- allowlisting it
+    # here drops it from THIS test's coverage, not from the suite's.
+    "kat-pinned-key-proof-001",
 }
 
 
@@ -167,3 +171,43 @@ def test_pop_signature_vector(spec_dir: Path) -> None:
         assert digest.hex() == v["sha256_hex"]
         assert b64url_encode(sk.sign_digest(digest)) == v["signature_b64url"]
         assert sk.public_key().verify_digest(digest, sk.sign_digest(digest))
+
+
+def test_pinned_key_proof_kat(spec_dir: Path) -> None:
+    """`kat-pinned-key-proof-001` pins issue #17 erratum 1: the §3.1 timestamp
+    is its base-10 ASCII decimal string, NOT the 8-byte big-endian integer the
+    prose once described. The vector states both obligations, so both are
+    checked -- the negative especially: an implementation that packed the
+    timestamp as 8-byte BE would still satisfy every positive assertion here
+    if all we did was rebuild our own input and compare it to itself.
+    """
+    from aitp_verifier.identity import pinned_key_proof_input
+
+    vectors = {v["id"]: v for v in _ka(spec_dir, "jcs-sha256.json")["vectors"]}
+    v = vectors.get("kat-pinned-key-proof-001")
+    if v is None:  # vector predates this spec revision
+        return
+
+    data = pinned_key_proof_input(
+        v["sender_aid"], v["receiver_aid"], v["message_id"], v["timestamp"], v["pop_nonce"]
+    )
+    assert data == bytes.fromhex(v["proof_input_hex"])
+    assert len(data) == v["proof_input_len_bytes"]
+
+    digest = sha256(data)
+    assert digest.hex() == v["sha256_hex"]
+    assert b64url_encode(digest) == v["sha256_b64url"]
+
+    key = parse_aid(v["signer_aid"]).public_key
+    sig = b64url_decode(v["signature_b64url"])
+    assert key.verify_digest(digest, sig), "pinned signature must verify over the ASCII-decimal proof input"
+
+    # The negative MUST. Same five fields, timestamp packed the way the
+    # erratum'd prose said, which must NOT verify under the pinned signature.
+    be8 = data.replace(
+        str(int(v["timestamp"])).encode("ascii"),
+        int(v["timestamp"]).to_bytes(8, "big", signed=True),
+        1,
+    )
+    assert be8 != data
+    assert not key.verify_digest(sha256(be8), sig), "8-byte big-endian timestamp must NOT verify"
