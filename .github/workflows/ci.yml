@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.12", "3.13"]
+        python: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - name: Check out the verifier
         uses: actions/checkout@v7
@@ -48,3 +48,64 @@ jobs:
       - name: Types (mypy --strict)
         working-directory: aitp-verifier-py
         run: mypy
+
+  # The floors declared in pyproject.toml are a claim: this is the oldest set of
+  # dependencies we support, and it carries no known advisories. The matrix job
+  # above cannot check that claim -- it resolves HIGHEST, so it only ever proves
+  # the newest versions work. This job resolves LOWEST, so the declared floors
+  # are the ones installed, exercised, and audited.
+  #
+  # It also stops the OSV-clean property from decaying silently: Dependabot does
+  # not raise a lower bound that is already satisfiable, so without this the
+  # floors stay green in CI on the day an advisory lands against them.
+  floors:
+    name: declared floors install, pass, and carry no advisories
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the verifier
+        uses: actions/checkout@v7
+        with:
+          path: aitp-verifier-py
+      - name: Check out the AITP spec
+        uses: actions/checkout@v7
+        with:
+          repository: agentidentitytrustprotocol/agentidentitytrustprotocol
+          path: agentidentitytrustprotocol
+      - uses: actions/setup-python@v7
+        with:
+          # The lowest supported interpreter, to match the lowest dependencies.
+          python-version: "3.11"
+      - name: Install at the declared floors
+        working-directory: aitp-verifier-py
+        # uv, because pip has no lowest-resolution mode. `lowest-direct` pins
+        # our own declared bounds while letting transitive deps resolve normally
+        # -- auditing the whole transitive floor would fail on other projects'
+        # bounds, which is not the claim being made here.
+        run: |
+          python -m pip install --upgrade pip uv
+          # setuptools is named explicitly because [build-system] requires
+          # governs only the isolated BUILD env -- it never constrains the
+          # runtime env, which would otherwise keep whatever setuptools the
+          # runner happens to ship and audit that instead of our declared
+          # floor. lowest-direct pins it to exactly the declared 83.0.0.
+          uv pip install --system --resolution lowest-direct -e ".[dev]" "setuptools>=83"
+          uv pip list --system
+      - name: Conformance at the floors
+        working-directory: aitp-verifier-py
+        run: python run_conformance.py --spec-dir ../agentidentitytrustprotocol
+      - name: Unit tests at the floors
+        working-directory: aitp-verifier-py
+        env:
+          AITP_SPEC: ${{ github.workspace }}/agentidentitytrustprotocol
+        run: pytest -q
+      - name: Types at the floors
+        working-directory: aitp-verifier-py
+        run: mypy
+      - name: Advisories against the installed floors
+        working-directory: aitp-verifier-py
+        # --skip-editable: this package is not on PyPI, so it has no advisory
+        # record to look up. Without --strict a skip is not an error; a real
+        # finding still exits non-zero.
+        run: |
+          python -m pip install pip-audit
+          pip-audit --skip-editable
