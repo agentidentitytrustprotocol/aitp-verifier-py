@@ -25,9 +25,14 @@ participant TCT (shape, issued by the coordinator, ``aud`` == the participant
 AID), then self-membership.
 
 Shape precedes expiry deliberately: a bundle that is both expired and
-malformed reports ``SESSION_BUNDLE_INVALID``, not ``BUNDLE_EXPIRED``. Only
-well-formed input is worth evaluating semantically, and bundle-003's
-expiry-before-signature ordering is unaffected — it sits entirely downstream.
+malformed reports its shape defect (``SESSION_BUNDLE_INVALID`` for the
+wrapper, ``UNKNOWN_FIELD`` for an unknown member of the signed body), not
+``BUNDLE_EXPIRED``. Only well-formed input is worth evaluating semantically,
+and bundle-003's expiry-before-signature ordering is unaffected — it sits
+entirely downstream. RFC-AITP-0010 §5 states the same precedence for its own
+reason: an unknown member is rejected "before coordinator key resolution
+(step 5) triggers any network fetch and before any signature verification
+(steps 6–7) is spent on it".
 
 Draft surface (``experimental-session-bundle``): a core verifier reports SKIP
 for this operation; this module is the opt-in implementation.
@@ -82,10 +87,22 @@ def verify_session_bundle(inp: dict[str, Any], now: int | None = None) -> dict[s
     # applies to every ``additionalProperties: false`` object in the schema,
     # not just the wrapper.
     #
-    # These raise the RFC-AITP-0010 §5 aggregate rather than a ``BUNDLE_*``
-    # code. Specific codes are preferred everywhere else in this module, but no
-    # per-step code covers structural rejection, so the aggregate is the only
-    # registry code that fits.
+    # The wrapper and the body deliberately fail with DIFFERENT codes.
+    # RFC-AITP-0010 §5 scopes its member-set check — and the core
+    # ``UNKNOWN_FIELD`` code — to "the received inner ``session_bundle``
+    # body", and says of this gate: "(A ``signature`` sitting beside the
+    # ``session_bundle`` wrapper key instead of inside the body is the
+    # distinct pre-v0.2 shape, rejected per §3 …)". So the wrapper is a §3
+    # transport-shape rule, not a §7 unknown-member one, and keeps the
+    # RFC-AITP-0010 §5 aggregate: no per-step ``BUNDLE_*`` code covers
+    # structural rejection, so the aggregate is the only registry code that
+    # fits. bundle-004 pins the wrapper at ``SESSION_BUNDLE_INVALID`` and
+    # bundle-006 pins the body at ``UNKNOWN_FIELD``; collapsing the two gates
+    # into one would fail whichever fixture it was not collapsed toward.
+    #
+    # (RFC-AITP-0008 §1.5 draws this line differently for the revocation
+    # snapshot, folding that artifact's wrapper INTO its member-set check.
+    # The two artifacts are pinned differently on purpose — see revocation.py.)
     if not isinstance(outer, dict):
         raise AitpError("SESSION_BUNDLE_INVALID", f"transport wrapper is {type(outer).__name__}, not an object")
     if "session_bundle" not in outer:
@@ -105,13 +122,13 @@ def verify_session_bundle(inp: dict[str, Any], now: int | None = None) -> dict[s
         # Schema pins `type: string`; sigfield.py annotates `sig: str` but is
         # handed unvalidated input, so a non-string tracebacks there instead.
         raise AitpError("SESSION_BUNDLE_INVALID", f"signature is {type(body['signature']).__name__}, not a string")
-    reject_unknown_fields(body, _BODY_FIELDS, code="SESSION_BUNDLE_INVALID", what="session bundle body")
+    reject_unknown_fields(body, _BODY_FIELDS, shape_code="SESSION_BUNDLE_INVALID", what="session bundle body")
 
     participants = body["participants"]
     for p in participants:
         if not isinstance(p, dict):
             raise AitpError("SESSION_BUNDLE_INVALID", f"participant entry is {type(p).__name__}, not an object")
-        reject_unknown_fields(p, _PARTICIPANT_FIELDS, code="SESSION_BUNDLE_INVALID", what="participant entry")
+        reject_unknown_fields(p, _PARTICIPANT_FIELDS, shape_code="SESSION_BUNDLE_INVALID", what="participant entry")
 
     if body.get("version") != "aitp/0.2":
         raise AitpError("BUNDLE_VERSION_MISMATCH", f"unknown bundle version {body.get('version')!r}")
@@ -140,9 +157,29 @@ def verify_session_bundle(inp: dict[str, Any], now: int | None = None) -> dict[s
             typ_err="BUNDLE_PARTICIPANT_TCT_INVALID", alg_err="BUNDLE_PARTICIPANT_TCT_INVALID",
             sig_err="BUNDLE_PARTICIPANT_TCT_INVALID",
         )
-        reject_unknown_fields(claims, TCT_CLAIM_FIELDS, code="BUNDLE_PARTICIPANT_TCT_INVALID", what="participant TCT claims")
-        if isinstance(claims.get("cnf"), dict):
-            reject_unknown_fields(claims["cnf"], TCT_CNF_FIELDS, code="BUNDLE_PARTICIPANT_TCT_INVALID", what="participant TCT claims.cnf")
+        # The embedded TCT is the one place §7's generic UNKNOWN_FIELD is
+        # remapped. RFC-AITP-0010 §5 step 7 runs the standard RFC-AITP-0005
+        # §7.2 order over each participant token and then states that "other
+        # TCT-level failures — including TOKEN_TYP_MISMATCH / TOKEN_ALG_MISMATCH
+        # rejections of an embedded token — surface as
+        # BUNDLE_PARTICIPANT_TCT_INVALID". An unrecognized claim is such a
+        # failure, and the three codes just above (typ_err/alg_err/sig_err) are
+        # already collapsed by that same clause, so leaving this one uncollapsed
+        # would report a bare-TCT code from an operation whose §8 error surface
+        # is bundle-scoped. Remapped here, at the call site, rather than by
+        # letting callers choose a code in fields.py: the clause is specific to
+        # this containment, not a per-artifact preference, and the helper's
+        # single-code guarantee is what keeps the other call sites honest.
+        # RFC-AITP-0004 carries no equivalent clause, so the identical claims
+        # check in handshake.py correctly reports UNKNOWN_FIELD.
+        try:
+            reject_unknown_fields(claims, TCT_CLAIM_FIELDS, shape_code="BUNDLE_PARTICIPANT_TCT_INVALID", what="participant TCT claims")
+            if isinstance(claims.get("cnf"), dict):
+                reject_unknown_fields(claims["cnf"], TCT_CNF_FIELDS, shape_code="BUNDLE_PARTICIPANT_TCT_INVALID", what="participant TCT claims.cnf")
+        except AitpError as exc:
+            if exc.code != "UNKNOWN_FIELD":
+                raise
+            raise AitpError("BUNDLE_PARTICIPANT_TCT_INVALID", exc.message) from exc
         if claims.get("iss") != coordinator:
             raise AitpError("BUNDLE_COORDINATOR_ISSUER_MISMATCH", "participant TCT iss != coordinator")
         if claims.get("aud") != p["aid"]:

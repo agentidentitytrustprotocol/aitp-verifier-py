@@ -77,6 +77,14 @@ def test_wrapper_rejects_any_extra_member(spec_dir: Path) -> None:
     who can staple ANY member onto the wrapper is outside the signed bytes,
     since the coordinator signature covers only the inner body. This pins the
     general case so a later narrowing to `if "signature" in outer` would fail.
+
+    Note the code: the wrapper reports `SESSION_BUNDLE_INVALID`, NOT the
+    `UNKNOWN_FIELD` that `test_body_rejects_any_extra_member` just below
+    expects for the same-shaped defect one level in. That asymmetry is
+    RFC-AITP-0010's, not an oversight -- §5 scopes its member-set check (and
+    `UNKNOWN_FIELD`) to the inner body and leaves the wrapper to §3's
+    transport-shape rule. Collapsing the two gates into one code would break
+    bundle-004 or bundle-006 depending on which way it collapsed.
     """
     minted = _minted_bundle_input(spec_dir)
     assert verify_session_bundle(copy.deepcopy(minted))["ok"] is True
@@ -108,7 +116,7 @@ def test_body_rejects_any_extra_member(spec_dir: Path) -> None:
 
     with pytest.raises(AitpError) as exc_info:
         verify_session_bundle(stapled)
-    assert exc_info.value.code == "SESSION_BUNDLE_INVALID"
+    assert exc_info.value.code == "UNKNOWN_FIELD"
     assert "routing_hint" in exc_info.value.message
 
 
@@ -123,7 +131,7 @@ def test_participant_entry_rejects_any_extra_member(spec_dir: Path) -> None:
 
     with pytest.raises(AitpError) as exc_info:
         verify_session_bundle(stapled)
-    assert exc_info.value.code == "SESSION_BUNDLE_INVALID"
+    assert exc_info.value.code == "UNKNOWN_FIELD"
     assert "routing_hint" in exc_info.value.message
 
 
@@ -135,6 +143,16 @@ def test_participant_tct_claims_unknown_field_rejected(spec_dir: Path) -> None:
     (via a fresh mint) rather than stapled onto already-minted output, or the
     TCT signature check would reject it first and this test would not prove
     the claims-shape gate does anything.
+
+    The code is the bundle-scoped one, NOT the `UNKNOWN_FIELD` that the body
+    and participant-entry cases above report: RFC-AITP-0010 §5 step 7 collapses
+    "other TCT-level failures" of an embedded token into
+    `BUNDLE_PARTICIPANT_TCT_INVALID`, the same clause that already collapses
+    `TOKEN_TYP_MISMATCH` and `TOKEN_ALG_MISMATCH` here. No fixture pins this
+    (bundle-006 covers the body, not the embedded TCT), so this test is the
+    only thing holding the remap in place. `handshake.py` runs the identical
+    claims check and correctly reports `UNKNOWN_FIELD`, because RFC-AITP-0004
+    has no equivalent collapsing clause -- filed upstream for confirmation.
     """
     fixture = json.loads((spec_dir / "schemas/conformance/bundle-001-success.json").read_text())
     tampered = copy.deepcopy(fixture["input"])

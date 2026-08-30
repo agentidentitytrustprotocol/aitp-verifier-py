@@ -42,9 +42,9 @@ def verify_tct(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any
         alg_err="TOKEN_ALG_MISMATCH",
         sig_err="TCT_SIGNATURE_INVALID",
     )
-    reject_unknown_fields(claims, TCT_CLAIM_FIELDS, code="TCT_SIGNATURE_INVALID", what="TCT claims")
+    reject_unknown_fields(claims, TCT_CLAIM_FIELDS, shape_code="TCT_SIGNATURE_INVALID", what="TCT claims")
     if isinstance(claims.get("cnf"), dict):
-        reject_unknown_fields(claims["cnf"], TCT_CNF_FIELDS, code="TCT_SIGNATURE_INVALID", what="TCT claims.cnf")
+        reject_unknown_fields(claims["cnf"], TCT_CNF_FIELDS, shape_code="TCT_SIGNATURE_INVALID", what="TCT claims.cnf")
 
     if claims.get("ver") != "aitp/0.2":
         raise AitpError("UNKNOWN_VERSION", f"unknown ver {claims.get('ver')!r}")

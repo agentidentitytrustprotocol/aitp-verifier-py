@@ -51,8 +51,8 @@ def verify_envelope(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str
         return {"ok": True}
 
     env = inp["envelope"]
-    reject_unknown_fields(env, _ENVELOPE_FIELDS, code="INVALID_ENVELOPE", what="envelope")
-    reject_unknown_fields(env["sender"], _SENDER_FIELDS, code="INVALID_ENVELOPE", what="envelope.sender")
+    reject_unknown_fields(env, _ENVELOPE_FIELDS, shape_code="INVALID_ENVELOPE", what="envelope")
+    reject_unknown_fields(env["sender"], _SENDER_FIELDS, shape_code="INVALID_ENVELOPE", what="envelope.sender")
     tolerance = int(inp.get("tolerance_seconds", 300))
     if abs(now - int(env["timestamp"])) > tolerance:
         raise AitpError("TIMESTAMP_EXPIRED", "envelope timestamp outside tolerance window")

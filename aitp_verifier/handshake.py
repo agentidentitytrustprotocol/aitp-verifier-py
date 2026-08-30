@@ -67,7 +67,7 @@ def verify_handshake_payload(inp: dict[str, Any], now: int = REFERENCE_CLOCK) ->
 def _verify_bootstrap(inp: dict[str, Any], env: dict[str, Any], now: int) -> dict[str, Any]:
     payload = env["payload"]
     allowed = _HELLO_ACK_PAYLOAD_FIELDS if env["message_type"] == "mutual_hello_ack" else _HELLO_PAYLOAD_FIELDS
-    reject_unknown_fields(payload, allowed, code="INVALID_ENVELOPE", what=f"{env['message_type']} payload")
+    reject_unknown_fields(payload, allowed, shape_code="INVALID_ENVELOPE", what=f"{env['message_type']} payload")
     man = payload["manifest"]
 
     # Manifest first (mh-002/mh-003 must surface MANIFEST_* before identity).
@@ -76,7 +76,9 @@ def _verify_bootstrap(inp: dict[str, Any], env: dict[str, Any], now: int) -> dic
         raise AitpError("INVALID_ENVELOPE", "manifest.aid != envelope sender")
 
     identity = payload["identity"]
-    if man.get("identity_hint", {}).get("type") != identity.get("type"):
+    # `identity_hint` is REQUIRED and verified to be an object by verify_manifest
+    # above, so no defaulting is needed here.
+    if man["identity_hint"].get("type") != identity.get("type"):
         raise AitpError("IDENTITY_FAILED", "identity_hint.type != identity.type")
 
     verify_identity(
@@ -106,7 +108,7 @@ def _verify_bootstrap(inp: dict[str, Any], env: dict[str, Any], now: int) -> dic
 def _verify_commit(
     inp: dict[str, Any], payload: dict[str, Any], self_aid: str | None, now: int
 ) -> list[str]:
-    reject_unknown_fields(payload, _COMMIT_PAYLOAD_FIELDS, code="INVALID_ENVELOPE", what="mutual_commit(_ack) payload")
+    reject_unknown_fields(payload, _COMMIT_PAYLOAD_FIELDS, shape_code="INVALID_ENVELOPE", what="mutual_commit(_ack) payload")
     sender = inp.get("envelope", {}).get("sender", {}).get("agent_id")
     if sender is None:  # peer_a/peer_b shape carries no envelope; issuer is the TCT iss
         sender = parse_compact(payload["tct"], structural_code="TCT_SIGNATURE_INVALID").claims.get("iss")
@@ -133,9 +135,9 @@ def _verify_commit(
         tct, iss_aid=str(iss), expected_typ="aitp-tct+jwt",
         typ_err="TOKEN_TYP_MISMATCH", alg_err="TOKEN_ALG_MISMATCH", sig_err="TCT_SIGNATURE_INVALID",
     )
-    reject_unknown_fields(claims, TCT_CLAIM_FIELDS, code="TCT_SIGNATURE_INVALID", what="TCT claims")
+    reject_unknown_fields(claims, TCT_CLAIM_FIELDS, shape_code="TCT_SIGNATURE_INVALID", what="TCT claims")
     if isinstance(claims.get("cnf"), dict):
-        reject_unknown_fields(claims["cnf"], TCT_CNF_FIELDS, code="TCT_SIGNATURE_INVALID", what="TCT claims.cnf")
+        reject_unknown_fields(claims["cnf"], TCT_CNF_FIELDS, shape_code="TCT_SIGNATURE_INVALID", what="TCT claims.cnf")
     if claims.get("ver") != "aitp/0.2":
         raise AitpError("UNKNOWN_VERSION", f"unknown ver {claims.get('ver')!r}")
     if self_aid is not None and claims.get("aud") != self_aid:

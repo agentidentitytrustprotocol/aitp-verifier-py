@@ -45,13 +45,20 @@ _ALLOWED_OIDC_ALGS = {"EdDSA", "ES256", "RS256"}
 _FORBIDDEN_HEADER_PARAMS = {"jwk", "jku", "x5u", "x5c", "crit"}
 _IAT_TOLERANCE_SECS = 300
 
-# The handshake-inline IdentityDescriptor ($defs in aitp-mutual-handshake.schema.json)
-# is additionalProperties: false with NO `extensions` slot -- unlike the
-# standalone aitp-identity.schema.json, which does carry one. RFC-AITP-0002 §1's
-# field table lists exactly these five and no `extensions`/`ext` either, so
-# this is deliberate for the descriptor exchanged in the handshake, not a gap
-# this module papers over.
-_IDENTITY_FIELDS = frozenset({"type", "issuer", "subject", "proof", "public_key"})
+# The IdentityDescriptor ($defs in aitp-mutual-handshake.schema.json) is
+# additionalProperties: false and, like every other signed AITP object,
+# reserves an `extensions` slot -- so an unrecognized key INSIDE it is ignored
+# (RFC-AITP-0001 §7) while an unrecognized member beside it is rejected.
+#
+# That slot is new. Two committed schemas used to disagree: the handshake
+# descriptor omitted `extensions` while the standalone aitp-identity.schema.json
+# carried one, and RFC-AITP-0002 §1 named the standalone schema canonical even
+# though the handshake payload is validated against the inline one. This module
+# followed the governing (handshake) schema and rejected `extensions` -- the
+# fail-closed reading of an ambiguity, but a false rejection if the other side
+# was right. Spec PR #42 collapsed the two definitions into one and added
+# `extensions` here; id-009 now pins acceptance.
+_IDENTITY_FIELDS = frozenset({"type", "issuer", "subject", "proof", "public_key", "extensions"})
 
 
 def pinned_key_proof_input(
@@ -83,7 +90,7 @@ def verify_identity(
     now: int,
 ) -> None:
     """Verify the identity binding in a handshake payload. Raises on failure."""
-    reject_unknown_fields(identity, _IDENTITY_FIELDS, code="IDENTITY_FAILED", what="identity descriptor")
+    reject_unknown_fields(identity, _IDENTITY_FIELDS, shape_code="IDENTITY_FAILED", what="identity descriptor")
     itype = identity.get("type")
     if itype == "oidc":
         _verify_oidc(identity, envelope, self_aid, trust_anchors, issuer_keys, now)

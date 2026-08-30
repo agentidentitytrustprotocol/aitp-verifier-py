@@ -36,7 +36,7 @@ def verify_grant_voucher(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dic
         alg_err="TOKEN_ALG_MISMATCH",
         sig_err="DELEGATION_INVALID_VOUCHER",
     )
-    reject_unknown_fields(claims, VOUCHER_CLAIM_FIELDS, code="DELEGATION_INVALID_VOUCHER", what="grant voucher claims")
+    reject_unknown_fields(claims, VOUCHER_CLAIM_FIELDS, shape_code="DELEGATION_INVALID_VOUCHER", what="grant voucher claims")
     if claims.get("ver") != "aitp/0.2":
         raise AitpError("UNKNOWN_VERSION", f"unknown ver {claims.get('ver')!r}")
     if not claims.get("grants"):
