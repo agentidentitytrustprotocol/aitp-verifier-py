@@ -83,7 +83,12 @@ jobs:
         # bounds, which is not the claim being made here.
         run: |
           python -m pip install --upgrade pip uv
-          uv pip install --system --resolution lowest-direct -e ".[dev]"
+          # setuptools is named explicitly because [build-system] requires
+          # governs only the isolated BUILD env -- it never constrains the
+          # runtime env, which would otherwise keep whatever setuptools the
+          # runner happens to ship and audit that instead of our declared
+          # floor. lowest-direct pins it to exactly the declared 83.0.0.
+          uv pip install --system --resolution lowest-direct -e ".[dev]" "setuptools>=83"
           uv pip list --system
       - name: Conformance at the floors
         working-directory: aitp-verifier-py
