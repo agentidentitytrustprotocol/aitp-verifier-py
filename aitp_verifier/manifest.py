@@ -48,14 +48,14 @@ _IDENTITY_HINT_FIELDS = frozenset({"type", "issuer", "subject", "public_key"})
 
 def verify_manifest(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any]:
     man = inp["manifest"]
-    reject_unknown_fields(man, _MANIFEST_FIELDS, code="MANIFEST_SIGNATURE_INVALID", what="manifest")
+    reject_unknown_fields(man, _MANIFEST_FIELDS, shape_code="MANIFEST_SIGNATURE_INVALID", what="manifest")
     reject_unknown_fields(
-        man["proof_of_possession"], _POP_FIELDS, code="MANIFEST_SIGNATURE_INVALID", what="manifest.proof_of_possession"
+        man["proof_of_possession"], _POP_FIELDS, shape_code="MANIFEST_SIGNATURE_INVALID", what="manifest.proof_of_possession"
     )
     if "identity_hint" in man:
         reject_unknown_fields(
             man["identity_hint"], _IDENTITY_HINT_FIELDS,
-            code="MANIFEST_SIGNATURE_INVALID", what="manifest.identity_hint",
+            shape_code="MANIFEST_SIGNATURE_INVALID", what="manifest.identity_hint",
         )
     now = int(inp.get("now", now))
     supported = inp.get("supported_versions", ["aitp/0.2"])

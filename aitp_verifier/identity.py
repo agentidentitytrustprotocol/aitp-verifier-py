@@ -83,7 +83,7 @@ def verify_identity(
     now: int,
 ) -> None:
     """Verify the identity binding in a handshake payload. Raises on failure."""
-    reject_unknown_fields(identity, _IDENTITY_FIELDS, code="IDENTITY_FAILED", what="identity descriptor")
+    reject_unknown_fields(identity, _IDENTITY_FIELDS, shape_code="IDENTITY_FAILED", what="identity descriptor")
     itype = identity.get("type")
     if itype == "oidc":
         _verify_oidc(identity, envelope, self_aid, trust_anchors, issuer_keys, now)

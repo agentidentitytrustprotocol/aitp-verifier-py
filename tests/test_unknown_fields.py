@@ -9,8 +9,9 @@ Every case below pins BOTH directions of the asymmetry directly against the
 verifier functions, independently of the conformance pack (which only pins
 one direction, ``bundle-005-extensions-accepted``, for one artifact):
 
-* a member outside the schema's allowed set is rejected with the artifact's
-  chosen error code;
+* a member outside the schema's allowed set is rejected with the core
+  ``UNKNOWN_FIELD`` code -- one code for every signed AITP object, JCS-profile
+  and compact-JWS alike, never the artifact's own signature-family code;
 * a member INSIDE the artifact's reserved ``extensions``/``ext`` slot,
   carrying an unrecognized key, does not affect the outcome.
 
@@ -68,19 +69,36 @@ def test_reject_unknown_fields_asymmetry() -> None:
     regardless of what is inside it (contents are never inspected).
     """
     allowed = frozenset({"a", "b", "extensions"})
-    reject_unknown_fields({"a": 1, "b": 2}, allowed, code="X", what="obj")  # no raise
-    reject_unknown_fields({"a": 1, "extensions": {"anything": "at all"}}, allowed, code="X", what="obj")  # no raise
+    reject_unknown_fields({"a": 1, "b": 2}, allowed, shape_code="X", what="obj")  # no raise
+    reject_unknown_fields({"a": 1, "extensions": {"anything": "at all"}}, allowed, shape_code="X", what="obj")  # no raise
 
     with pytest.raises(AitpError) as exc:
-        reject_unknown_fields({"a": 1, "c": 3}, allowed, code="MY_CODE", what="obj")
-    assert exc.value.code == "MY_CODE"
+        reject_unknown_fields({"a": 1, "c": 3}, allowed, shape_code="MY_CODE", what="obj")
+    assert exc.value.code == "UNKNOWN_FIELD"
     assert "c" in exc.value.message
 
     # A key literally named "extensions" is only special if the caller put it
     # in *allowed* -- this is what makes the handshake IdentityDescriptor
     # (which has no extensions slot at all) correctly reject one.
     with pytest.raises(AitpError):
-        reject_unknown_fields({"a": 1, "extensions": {}}, frozenset({"a", "b"}), code="X", what="obj")
+        reject_unknown_fields({"a": 1, "extensions": {}}, frozenset({"a", "b"}), shape_code="X", what="obj")
+
+
+def test_unknown_field_code_is_not_the_callers_to_choose() -> None:
+    """§7 has ONE core code for every signed object, so *shape_code* must not
+    reach the unknown-member path.
+
+    The assertion above would still pass if `shape_code` were merely renamed
+    and still used for both branches -- "MY_CODE" would just have to become
+    "UNKNOWN_FIELD" at every call site, and a single site left behind would
+    silently emit the wrong code. Passing a deliberately wrong `shape_code`
+    here proves the code is hard-coded in the helper rather than threaded
+    through, which is what makes divergence across the twenty-six call sites
+    impossible rather than merely unlikely.
+    """
+    with pytest.raises(AitpError) as exc:
+        reject_unknown_fields({"c": 3}, frozenset({"a"}), shape_code="DEFINITELY_NOT_THIS", what="obj")
+    assert exc.value.code == "UNKNOWN_FIELD"
 
 
 def test_reject_unknown_fields_tolerates_non_str_keys() -> None:
@@ -90,7 +108,7 @@ def test_reject_unknown_fields_tolerates_non_str_keys() -> None:
     traceback.
     """
     with pytest.raises(AitpError):
-        reject_unknown_fields({"a": 1, 2: "y"}, frozenset({"a"}), code="X", what="obj")
+        reject_unknown_fields({"a": 1, 2: "y"}, frozenset({"a"}), shape_code="X", what="obj")
 
 
 # ── TCT claims (tct.py, and the same claim shape reused in handshake.py /
@@ -119,7 +137,7 @@ def test_tct_unknown_claim_rejected(spec_dir: Path) -> None:
     token = encode_jws("aitp-tct+jwt", claims, keys[ISSUER], alg="EdDSA")
     with pytest.raises(AitpError) as exc:
         verify_tct({"tct_token": token})
-    assert exc.value.code == "TCT_SIGNATURE_INVALID"
+    assert exc.value.code == "UNKNOWN_FIELD"
     assert "routing_hint" in exc.value.message
 
 
@@ -140,7 +158,7 @@ def test_tct_cnf_unknown_key_rejected(spec_dir: Path) -> None:
     token = encode_jws("aitp-tct+jwt", claims, keys[ISSUER], alg="EdDSA")
     with pytest.raises(AitpError) as exc:
         verify_tct({"tct_token": token})
-    assert exc.value.code == "TCT_SIGNATURE_INVALID"
+    assert exc.value.code == "UNKNOWN_FIELD"
 
 
 # ── Grant voucher claims (voucher.py, reused embedded in delegation.py) ───
@@ -165,7 +183,7 @@ def test_voucher_unknown_claim_rejected(spec_dir: Path) -> None:
     token = encode_jws("aitp-grant+jwt", claims, keys[ISSUER], alg="EdDSA")
     with pytest.raises(AitpError) as exc:
         verify_grant_voucher({"voucher_token": token})
-    assert exc.value.code == "DELEGATION_INVALID_VOUCHER"
+    assert exc.value.code == "UNKNOWN_FIELD"
 
 
 def test_voucher_ext_claim_ignored(spec_dir: Path) -> None:
@@ -205,7 +223,7 @@ def test_delegation_unknown_claim_rejected(spec_dir: Path) -> None:
     token = encode_jws("aitp-delegation+jwt", claims, keys[SUBJECT], alg="EdDSA")
     with pytest.raises(AitpError) as exc:
         verify_delegation_token({"self_aid": ISSUER, "delegation_token": token})
-    assert exc.value.code == "DELEGATION_INVALID_SIGNATURE"
+    assert exc.value.code == "UNKNOWN_FIELD"
 
 
 def test_delegation_ext_claim_ignored(spec_dir: Path) -> None:
@@ -229,7 +247,7 @@ def test_delegation_embedded_voucher_unknown_claim_rejected(spec_dir: Path) -> N
     token = encode_jws("aitp-delegation+jwt", claims, keys[SUBJECT], alg="EdDSA")
     with pytest.raises(AitpError) as exc:
         verify_delegation_token({"self_aid": ISSUER, "delegation_token": token})
-    assert exc.value.code == "DELEGATION_INVALID_VOUCHER"
+    assert exc.value.code == "UNKNOWN_FIELD"
 
 
 # ── Envelope (envelope.py) ────────────────────────────────────────────────
@@ -254,7 +272,7 @@ def test_envelope_unknown_field_rejected(spec_dir: Path) -> None:
     minted = mint_input(_envelope_input(routing_hint="https://attacker.example/relay"), REFERENCE_CLOCK, keys)
     with pytest.raises(AitpError) as exc:
         verify_envelope(minted)
-    assert exc.value.code == "INVALID_ENVELOPE"
+    assert exc.value.code == "UNKNOWN_FIELD"
 
 
 def test_envelope_extensions_accepted(spec_dir: Path) -> None:
@@ -273,7 +291,7 @@ def test_envelope_sender_unknown_field_rejected(spec_dir: Path) -> None:
     minted = mint_input(inp, REFERENCE_CLOCK, keys)
     with pytest.raises(AitpError) as exc:
         verify_envelope(minted)
-    assert exc.value.code == "INVALID_ENVELOPE"
+    assert exc.value.code == "UNKNOWN_FIELD"
 
 
 # ── Manifest (manifest.py) ─────────────────────────────────────────────────
@@ -301,7 +319,7 @@ def test_manifest_unknown_field_rejected(spec_dir: Path) -> None:
     minted = mint_input(_manifest_input(routing_hint="x"), REFERENCE_CLOCK, keys)
     with pytest.raises(AitpError) as exc:
         verify_manifest(minted)
-    assert exc.value.code == "MANIFEST_SIGNATURE_INVALID"
+    assert exc.value.code == "UNKNOWN_FIELD"
 
 
 def test_manifest_extensions_accepted(spec_dir: Path) -> None:
@@ -320,7 +338,7 @@ def test_manifest_pop_unknown_field_rejected(spec_dir: Path) -> None:
     minted = mint_input(inp, REFERENCE_CLOCK, keys)
     with pytest.raises(AitpError) as exc:
         verify_manifest(minted)
-    assert exc.value.code == "MANIFEST_SIGNATURE_INVALID"
+    assert exc.value.code == "UNKNOWN_FIELD"
 
 
 def test_manifest_optional_fields_are_not_rejected(spec_dir: Path) -> None:
@@ -353,7 +371,7 @@ def test_manifest_identity_hint_unknown_field_rejected(spec_dir: Path) -> None:
     minted = mint_input(inp, REFERENCE_CLOCK, keys)
     with pytest.raises(AitpError) as exc:
         verify_manifest(minted)
-    assert exc.value.code == "MANIFEST_SIGNATURE_INVALID"
+    assert exc.value.code == "UNKNOWN_FIELD"
 
 
 def test_manifest_identity_hint_known_fields_accepted(spec_dir: Path) -> None:
@@ -377,12 +395,25 @@ def test_non_object_is_an_aitp_error_not_a_traceback(obj: Any) -> None:
     a crash on remote input.
     """
     with pytest.raises(AitpError) as exc:
-        reject_unknown_fields(obj, frozenset({"a"}), code="INVALID_ENVELOPE", what="thing")
+        reject_unknown_fields(obj, frozenset({"a"}), shape_code="INVALID_ENVELOPE", what="thing")
     assert exc.value.code == "INVALID_ENVELOPE"
     assert "not an object" in exc.value.message
 
 
 # ── Revocation snapshot (revocation.py) ────────────────────────────────────
+
+
+def _revocation_body(**overrides: Any) -> dict[str, Any]:
+    """A well-formed `revocation_list` body, for mutating one member at a time."""
+    body: dict[str, Any] = {
+        "version": "aitp/0.2",
+        "issuer": ISSUER,
+        "published_at": NOW,
+        "expires_at": NOW + 3600,
+        "entries": [],
+    }
+    body.update(overrides)
+    return body
 
 
 def _revocation_input(**body_extra: Any) -> dict[str, Any]:
@@ -405,18 +436,22 @@ def _revocation_input(**body_extra: Any) -> dict[str, Any]:
 
 
 def test_revocation_unknown_field_rejected(spec_dir: Path) -> None:
-    """Shape violations fold into the same sig_ok/fail_mode path this
-    module already uses for a bad signature (no dedicated shape code exists
-    for revocation snapshots in the registry -- see the module comment).
-    Under `fail_closed` a shape-invalid snapshot is "no fresh valid
-    snapshot", i.e. `TCT_REVOKED`, exactly like every other structural
-    failure this module already treats that way.
+    """An unknown member must ESCAPE the fail-closed swallow.
+
+    Revocation is the one module that folds structural failures into a
+    boolean (`except AitpError: sig_ok = False`) and answers from `fail_mode`.
+    RFC-AITP-0008 §1.5 puts member-set validation "before any signature work"
+    and gives it its own core code, so `UNKNOWN_FIELD` has to be re-raised
+    rather than collapsed: reporting `TCT_REVOKED` would be a true statement
+    about the queried jti only by accident, and would say nothing about the
+    defect actually found. `test_revocation_unknown_field_survives_soft_fail`
+    pins the direction where collapsing it is outright wrong.
     """
     keys = load_kat_keys(spec_dir)
     minted = mint_input(_revocation_input(routing_hint="x"), REFERENCE_CLOCK, keys)
     with pytest.raises(AitpError) as exc:
         verify_revocation_snapshot(minted)
-    assert exc.value.code == "TCT_REVOKED"
+    assert exc.value.code == "UNKNOWN_FIELD"
 
 
 def test_revocation_extensions_accepted(spec_dir: Path) -> None:
@@ -433,7 +468,33 @@ def test_revocation_entry_unknown_field_rejected(spec_dir: Path) -> None:
     minted = mint_input(inp, REFERENCE_CLOCK, keys)
     with pytest.raises(AitpError) as exc:
         verify_revocation_snapshot(minted)
-    assert exc.value.code == "TCT_REVOKED"
+    assert exc.value.code == "UNKNOWN_FIELD"
+
+
+def test_revocation_unknown_field_survives_soft_fail(spec_dir: Path) -> None:
+    """`soft_fail` MUST NOT downgrade an unknown member to "merely stale".
+
+    This is the direction that makes the re-raise load-bearing rather than
+    cosmetic. Under `fail_closed`, collapsing UNKNOWN_FIELD into `sig_ok`
+    still rejects (as `TCT_REVOKED`), so the bug hides. Under `soft_fail` the
+    same collapse RETURNS `{"revoked": False, "stale": True}` -- a
+    §7-MUST-reject artifact accepted as a valid-but-stale snapshot, with the
+    caller told only that its revocation data is old. `fail_mode` answers
+    "what if there is no fresh snapshot"; it was never meant to answer "what
+    if the snapshot is malformed", which RFC-AITP-0008 §1.5 decides first.
+
+    The non-object shape guard deliberately keeps the old behavior and is
+    pinned separately by `test_revocation_malformed_entries_still_fail_closed`
+    and `test_revocation_malformed_snapshot_still_fail_closed` -- a scalar
+    carries no member, so it is not an unknown-field defect.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _revocation_input(routing_hint="x")
+    inp["policy"]["fail_mode"] = "soft_fail"
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    with pytest.raises(AitpError) as exc:
+        verify_revocation_snapshot(minted)
+    assert exc.value.code == "UNKNOWN_FIELD"
 
 
 # ── Handshake payload + identity descriptor (handshake.py / identity.py) ──
@@ -481,7 +542,7 @@ def test_handshake_payload_unknown_field_rejected(spec_dir: Path) -> None:
     minted = mint_input(inp, REFERENCE_CLOCK, keys)
     with pytest.raises(AitpError) as exc:
         verify_handshake_payload(minted)
-    assert exc.value.code == "INVALID_ENVELOPE"
+    assert exc.value.code == "UNKNOWN_FIELD"
 
 
 def test_handshake_payload_extensions_accepted(spec_dir: Path) -> None:
@@ -498,7 +559,7 @@ def test_identity_descriptor_unknown_field_rejected(spec_dir: Path) -> None:
     minted = mint_input(inp, REFERENCE_CLOCK, keys)
     with pytest.raises(AitpError) as exc:
         verify_handshake_payload(minted)
-    assert exc.value.code == "IDENTITY_FAILED"
+    assert exc.value.code == "UNKNOWN_FIELD"
 
 
 def test_identity_descriptor_has_no_extensions_slot(spec_dir: Path) -> None:
@@ -519,7 +580,7 @@ def test_identity_descriptor_has_no_extensions_slot(spec_dir: Path) -> None:
     minted = mint_input(inp, REFERENCE_CLOCK, keys)
     with pytest.raises(AitpError) as exc:
         verify_handshake_payload(minted)
-    assert exc.value.code == "IDENTITY_FAILED"
+    assert exc.value.code == "UNKNOWN_FIELD"
 
 
 @pytest.mark.parametrize(
@@ -555,6 +616,54 @@ def test_revocation_malformed_entries_still_fail_closed(entries: Any, label: str
     closed: dict[str, Any] = {
         "policy": {"fail_mode": "fail_closed", "max_staleness_secs": 600},
         "now": 1711900100, "expected_issuer": issuer, "snapshot": snapshot,
+    }
+    with pytest.raises(AitpError) as exc:
+        verify_revocation_snapshot(closed)
+    assert exc.value.code == "TCT_REVOKED"
+
+    soft = dict(closed, policy={"fail_mode": "soft_fail", "max_staleness_secs": 600})
+    assert verify_revocation_snapshot(soft) == {"revoked": False, "stale": True}
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "label"),
+    [
+        pytest.param("pwned", "snapshot-is-a-string", id="snapshot-is-a-string"),
+        pytest.param(None, "snapshot-is-null", id="snapshot-is-null"),
+        pytest.param(5, "snapshot-is-a-scalar", id="snapshot-is-a-scalar"),
+        pytest.param({"revocation_list": "pwned", "signature": "x"}, "body-is-a-string", id="body-is-a-string"),
+        pytest.param({"revocation_list": None, "signature": "x"}, "body-is-null", id="body-is-null"),
+        pytest.param({"revocation_list": {}, "signature": "x"}, "body-is-empty", id="body-is-empty"),
+        pytest.param({"signature": "x"}, "no-body-at-all", id="no-body-at-all"),
+        pytest.param({"revocation_list": _revocation_body()}, "no-signature", id="no-signature"),
+        pytest.param({"revocation_list": _revocation_body(), "signature": None}, "signature-is-null", id="signature-is-null"),
+        pytest.param({"revocation_list": _revocation_body(issuer="aid:pubkey:tooshort"), "signature": "x"}, "issuer-unparseable", id="issuer-unparseable"),
+        pytest.param({"revocation_list": _revocation_body(issuer=None), "signature": "x"}, "issuer-is-null", id="issuer-is-null"),
+        pytest.param({"revocation_list": _revocation_body(published_at="nope"), "signature": "x"}, "published_at-not-numeric", id="published_at-not-numeric"),
+        pytest.param({"revocation_list": _revocation_body(expires_at=None), "signature": "x"}, "expires_at-is-null", id="expires_at-is-null"),
+    ],
+)
+def test_revocation_malformed_snapshot_still_fail_closed(snapshot: Any, label: str) -> None:
+    """A structurally broken snapshot answers from `fail_mode`, never crashes.
+
+    Every case here previously escaped as a RAW exception -- `TypeError` from
+    `snapshot["revocation_list"]`, `KeyError: 'issuer'`, `AttributeError` from
+    `parse_aid` calling `.startswith` on a non-string, `ValueError` from an
+    unparseable AID. The module dereferenced `snapshot` and `body` ABOVE its
+    `try`, so every shape guard inside it was dead code and a caller that
+    correctly wrapped `except AitpError` got a traceback instead of its
+    fail_mode answer. Snapshots are fetched from the issuer's remote endpoint,
+    so each of these is attacker-reachable.
+
+    `UNKNOWN_FIELD` is deliberately absent: none of these carries an
+    unrecognized member, so §7 does not apply and the artifact's structural
+    code folds into `sig_ok` as before. That is the boundary
+    `test_revocation_unknown_field_survives_soft_fail` guards from the other
+    side -- an unknown member must NOT fold, and these must.
+    """
+    closed: dict[str, Any] = {
+        "policy": {"fail_mode": "fail_closed", "max_staleness_secs": 600},
+        "now": NOW + 100, "expected_issuer": ISSUER, "snapshot": snapshot,
     }
     with pytest.raises(AitpError) as exc:
         verify_revocation_snapshot(closed)
