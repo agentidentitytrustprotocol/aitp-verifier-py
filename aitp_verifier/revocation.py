@@ -1,10 +1,29 @@
 """Revocation-snapshot verification (RFC-AITP-0008 §1.5, JCS profile).
 
 A snapshot is a signed ``revocation_list`` body. ``verify_revocation_snapshot``
-checks the issuer, the signature, and freshness, then applies the deny list.
-A stale/invalid snapshot is "no fresh snapshot": under ``fail_closed`` that is
-treated as revoked (``TCT_REVOKED``); under ``soft_fail`` the queried jti is
-reported not-revoked (the safe read-only subset).
+runs the §1.5 order: structural validation, then member-set validation, then
+the signature, then freshness, then the deny list.
+
+The load-bearing distinction is **obtained-but-untrustworthy vs. absent**,
+which RFC-AITP-0008 §1.5 spells out in its own blockquote. A snapshot the peer
+obtained and could not trust reports what was wrong with it, and the policy's
+``fail_mode`` never sees it:
+
+* schema defect (missing REQUIRED member, wrong type) ⇒ ``REVOCATION_SNAPSHOT_INVALID``
+* unknown member outside ``extensions`` ⇒ ``UNKNOWN_FIELD`` (RFC-AITP-0001 §7)
+* signature does not verify ⇒ ``REVOCATION_SNAPSHOT_SIGNATURE_INVALID``
+
+A snapshot that is unreachable, stale beyond ``max_staleness_secs``, or issued
+by someone other than the expected peer is **absent** — the peer never obtained
+one it could evaluate. Only that case consults ``fail_mode``: ``fail_closed``
+treats unknown revocation status as revoked (``TCT_REVOKED``), ``soft_fail``
+reports the queried jti not-revoked and stale (the safe read-only subset).
+
+Every one of those codes is raised, not folded into a boolean. An earlier
+version of this module collapsed all three untrustworthy cases into a
+``sig_ok`` flag and answered from ``fail_mode``; under ``soft_fail`` that
+returned ``{"revoked": False, "stale": True}`` for artifacts the spec says MUST
+be rejected.
 """
 
 from __future__ import annotations
@@ -15,136 +34,165 @@ from .aid import parse_aid
 from .crypto import sha256
 from .errors import AitpError
 from .fields import reject_unknown_fields
-from .jcs import canonicalize
+from .jcs import JcsError, canonicalize
 from .sigfield import decode_tagged_signature
 
 __all__ = ["verify_revocation_snapshot"]
 
-# aitp-revocation-list.schema.json: the wrapper, the `revocation_list` body,
+# aitp-revocation-list.schema.json. The wrapper, the `revocation_list` body,
 # and each `entries[]` item are all additionalProperties: false. RFC-AITP-0008
 # §1.5 includes the wrapper in the member-set check ("the transport wrapper
 # MUST contain exactly the members `revocation_list` and `signature`"), unlike
 # RFC-AITP-0010, which scopes its check to the bundle's inner body and leaves
 # the wrapper to its own §3 shape rule -- the two artifacts are pinned
 # differently on purpose and each is followed as written.
-#
-# An unknown member raises the core UNKNOWN_FIELD (fields.py) and propagates;
-# a non-object where the schema requires one keeps TCT_SIGNATURE_INVALID and
-# folds into the sig_ok/fail_mode path, since no revocation-specific structural
-# code family exists in the registry and such a snapshot is exactly as
-# untrustworthy as one with a bad signature.
 _SNAPSHOT_FIELDS = frozenset({"revocation_list", "signature"})
 _BODY_FIELDS = frozenset({"version", "issuer", "published_at", "expires_at", "entries", "extensions"})
-# The schema's `required` set: `extensions` is the only optional body member.
-# Checked explicitly because `reject_unknown_fields` rejects members that are
-# present and unrecognized, and says nothing about ones that are absent.
-_REQUIRED_BODY_FIELDS = ("version", "issuer", "published_at", "expires_at", "entries")
 _ENTRY_FIELDS = frozenset({"jti", "revoked_at", "reason"})
+
+# The schema's declared types, checked before anything dereferences them.
+# `reject_unknown_fields` rejects members that are PRESENT and unrecognized; it
+# says nothing about ones that are absent or of the wrong type, which is the
+# other half of schema validation and a separate code (REVOCATION_SNAPSHOT_INVALID
+# vs UNKNOWN_FIELD -- the registry: "When the only defect is an unknown member
+# outside `extensions`, use `UNKNOWN_FIELD` instead").
+_BODY_TYPES: dict[str, tuple[type, ...]] = {
+    "version": (str,), "issuer": (str,), "published_at": (int,),
+    "expires_at": (int,), "entries": (list,), "extensions": (dict,),
+}
+_ENTRY_TYPES: dict[str, tuple[type, ...]] = {"jti": (str,), "revoked_at": (int,), "reason": (str,)}
+_REQUIRED_BODY_FIELDS = ("version", "issuer", "published_at", "expires_at", "entries")
+_REQUIRED_ENTRY_FIELDS = ("jti", "revoked_at")
+
+_INVALID = "REVOCATION_SNAPSHOT_INVALID"
+_VERSION = "aitp/0.2"
+
+
+def _typed(obj: dict[str, Any], types: dict[str, tuple[type, ...]], what: str) -> None:
+    """Reject any present member whose value is not of its declared JSON type.
+
+    ``bool`` is excluded from ``int`` deliberately: Python makes ``True`` an
+    ``int``, JSON does not, and a timestamp of ``true`` is a schema defect. The
+    same check is what stops ``json.loads("1e400")`` -- ordinary valid JSON
+    that yields ``float("inf")`` -- from reaching ``int()`` and raising
+    ``OverflowError`` out of the freshness comparison, which is neither a
+    ``TypeError`` nor a ``ValueError``, so it defeats the obvious guard around
+    the freshness arithmetic; rejecting the value as mistyped up here removes
+    the arithmetic hazard entirely rather than enumerating exception types.
+    """
+    for key, allowed in types.items():
+        if key not in obj:
+            continue
+        value = obj[key]
+        if isinstance(value, bool) and bool not in allowed:
+            raise AitpError(_INVALID, f"{what}.{key} is bool, not {allowed[0].__name__}")
+        if int in allowed and isinstance(value, float) and value.is_integer():
+            # JSON Schema `integer` admits `1711900000.0`, and JCS serializes
+            # it to the same bytes as `1711900000` -- so the peer signed what
+            # we would reconstruct, and rejecting it would be a false
+            # rejection. `is_integer()` is False for inf and NaN, so this
+            # widening does not readmit them.
+            continue
+        if not isinstance(value, allowed):
+            raise AitpError(_INVALID, f"{what}.{key} is {type(value).__name__}, not {allowed[0].__name__}")
+
+
+def _validate_shape(snapshot: Any) -> dict[str, Any]:
+    """RFC-AITP-0008 §1.5 step 1: schema conformance, before any signature work.
+
+    Runs to completion before the caller dereferences anything, so no malformed
+    snapshot can reach a bare ``[...]`` index. It does not cover values nested
+    inside ``extensions`` -- §7 forbids inspecting that interior -- so the one
+    remaining hazard, a number JCS cannot serialize, is caught at the
+    ``canonicalize`` call instead. Snapshots are fetched from the
+    issuing peer's remote endpoint, so every branch here is attacker-reachable:
+    before this existed the module raised raw ``TypeError``/``KeyError``/
+    ``AttributeError``/``ValueError``/``OverflowError`` past its own
+    ``except AitpError`` handler and took the caller down instead of returning
+    a verdict.
+    """
+    if not isinstance(snapshot, dict):
+        raise AitpError(_INVALID, f"revocation snapshot is {type(snapshot).__name__}, not an object")
+    if missing := [k for k in ("revocation_list", "signature") if k not in snapshot]:
+        raise AitpError(_INVALID, f"revocation snapshot is missing required member(s) {missing}")
+    if not isinstance(snapshot["signature"], str):
+        raise AitpError(_INVALID, f"revocation snapshot signature is {type(snapshot['signature']).__name__}, not a string")
+
+    body = snapshot["revocation_list"]
+    if not isinstance(body, dict):
+        raise AitpError(_INVALID, f"revocation_list is {type(body).__name__}, not an object")
+    if missing := [k for k in _REQUIRED_BODY_FIELDS if k not in body]:
+        raise AitpError(_INVALID, f"revocation_list is missing required member(s) {missing}")
+    _typed(body, _BODY_TYPES, "revocation_list")
+    if body["version"] != _VERSION:
+        # §1.5: "every value inside its grammar". The schema pins
+        # `const: "aitp/0.2"`, and this is load-bearing rather than pedantic --
+        # §1.5's migration note records that rc.3-era implementations signed
+        # the WRAPPED form, so evaluating a body that declares an older version
+        # under v0.2 signing rules is a version-confusion surface.
+        raise AitpError(_INVALID, f"revocation_list version is {body['version']!r}, not {_VERSION!r}")
+
+    for i, entry in enumerate(body["entries"]):
+        if not isinstance(entry, dict):
+            raise AitpError(_INVALID, f"revocation_list entries[{i}] is {type(entry).__name__}, not an object")
+        if missing := [k for k in _REQUIRED_ENTRY_FIELDS if k not in entry]:
+            raise AitpError(_INVALID, f"revocation_list entries[{i}] is missing required member(s) {missing}")
+        _typed(entry, _ENTRY_TYPES, f"revocation_list entries[{i}]")
+    return body
 
 
 def verify_revocation_snapshot(inp: dict[str, Any], now: int | None = None) -> dict[str, Any]:
     policy = inp["policy"]
-    snapshot = inp["snapshot"]
     now = int(inp["now"]) if now is None else now
     fail_mode = policy.get("fail_mode", "fail_closed")
 
-    # `body` and `usable` are established INSIDE the try, not above it. They
-    # used to be dereferenced before it (`snapshot["revocation_list"]`, then
-    # `parse_aid(body["issuer"])`), which made every shape guard below dead
-    # code: a non-object snapshot or body raised a raw TypeError, and a body
-    # missing `issuer` a raw KeyError, one line before the handler that exists
-    # to catch exactly that. Snapshots are fetched from the issuer's remote
-    # endpoint, so this is attacker-reachable: a caller that correctly wrapped
-    # `except AitpError` still got a traceback instead of its fail_mode answer.
-    #
-    # `usable` records whether the body reached a state worth evaluating
-    # semantically. The freshness and issuer comparisons below index `body`
-    # directly, so they may only run once it is known to be a dict carrying
-    # every required member.
-    body: Any = None
-    usable = False
-    sig_ok = True
-    # The `shape_code=` passed below never reaches the caller: a non-object
-    # where the schema requires one is swallowed into sig_ok, and the outcome
-    # comes from fail_mode. It is supplied because reject_unknown_fields
-    # requires one, and TCT_SIGNATURE_INVALID keeps this consistent with the
-    # structural-signature failures just below. UNKNOWN_FIELD is the exception
-    # -- see the handler.
+    # 1. Structural validation (rev-007).
+    body = _validate_shape(inp["snapshot"])
+    snapshot = inp["snapshot"]
+
+    # 2. Member-set validation (rev-005/006). Reached only once the snapshot is
+    #    otherwise schema-valid, which is what makes UNKNOWN_FIELD mean "the
+    #    unknown member is the ONLY defect", per the registry.
+    reject_unknown_fields(snapshot, _SNAPSHOT_FIELDS, shape_code=_INVALID, what="revocation snapshot")
+    reject_unknown_fields(body, _BODY_FIELDS, shape_code=_INVALID, what="revocation_list")
+    for entry in body["entries"]:
+        reject_unknown_fields(entry, _ENTRY_FIELDS, shape_code=_INVALID, what="revocation_list entry")
+
+    # 3. Signature (rev-008). `parse_aid` signals a malformed AID with a bare
+    #    ValueError, so an unparseable remote issuer would otherwise escape as
+    #    a traceback rather than a verdict.
     try:
-        if not isinstance(snapshot, dict):
-            raise AitpError("TCT_SIGNATURE_INVALID", f"revocation snapshot is {type(snapshot).__name__}, not an object")
-        reject_unknown_fields(snapshot, _SNAPSHOT_FIELDS, shape_code="TCT_SIGNATURE_INVALID", what="revocation snapshot")
-        if not isinstance(snapshot.get("signature"), str):
-            # Schema pins `type: string`. `decode_tagged_signature` annotates
-            # `sig: str` but is handed unvalidated remote input, so a missing
-            # or non-string value tracebacks inside it rather than here.
-            raise AitpError("TCT_SIGNATURE_INVALID", f"revocation snapshot signature is {type(snapshot.get('signature')).__name__}, not a string")
-        body = snapshot.get("revocation_list")
-        reject_unknown_fields(body, _BODY_FIELDS, shape_code="TCT_SIGNATURE_INVALID", what="revocation_list")
-        if missing := [k for k in _REQUIRED_BODY_FIELDS if k not in body]:
-            raise AitpError("TCT_SIGNATURE_INVALID", f"revocation_list is missing required member(s) {missing}")
-        if not isinstance(body["issuer"], str):
-            # `parse_aid` calls `.startswith` on its argument, so a non-string
-            # issuer raises AttributeError -- not the ValueError handled below.
-            raise AitpError("TCT_SIGNATURE_INVALID", f"revocation_list issuer is {type(body['issuer']).__name__}, not a string")
-        usable = True
-        entries = body.get("entries", [])
-        if not isinstance(entries, list):
-            # `for entry in entries` would raise a raw TypeError on a scalar,
-            # escaping the AitpError-only handler below and crashing instead of
-            # failing closed. Snapshots arrive from the issuer's remote
-            # endpoint, so this is attacker-reachable input.
-            raise AitpError("TCT_SIGNATURE_INVALID", f"revocation_list entries is {type(entries).__name__}, not an array")
-        for entry in entries:
-            reject_unknown_fields(entry, _ENTRY_FIELDS, shape_code="TCT_SIGNATURE_INVALID", what="revocation_list entry")
-        try:
-            issuer = parse_aid(body["issuer"])
-        except ValueError as exc:
-            # `parse_aid` signals a malformed AID with a bare ValueError, not
-            # an AitpError, so it would sail past the handler below. The issuer
-            # string is remote-supplied, so an unparseable one has to fail
-            # closed like any other structural defect rather than crash the
-            # caller.
-            raise AitpError("TCT_SIGNATURE_INVALID", f"revocation_list issuer is not a valid AID: {exc}") from exc
-        raw = decode_tagged_signature(snapshot["signature"], issuer, sig_err="TCT_SIGNATURE_INVALID")
-        sig_ok = issuer.public_key.verify_digest(sha256(canonicalize(body)), raw)
-    except AitpError as exc:
-        # UNKNOWN_FIELD is the one failure in this block that MUST reach the
-        # caller intact. RFC-AITP-0008 §1.5 puts member-set validation first,
-        # "before any signature work", and gives it its own core code: an
-        # unknown member that one implementation hashes into the reconstructed
-        # JCS signing input and another drops must never reach the signature
-        # check at all. Folding it into sig_ok would report TCT_REVOKED under
-        # fail_closed -- a true statement about the queried jti only by
-        # accident, and under soft_fail it would report the snapshot merely
-        # stale, silently accepting an artifact §7 says MUST be rejected. The
-        # policy's fail_mode answers "what if there is no fresh snapshot"; a
-        # malformed one is a different question, decided before freshness.
-        if exc.code == "UNKNOWN_FIELD":
-            raise
-        sig_ok = False
+        issuer = parse_aid(body["issuer"])
+    except ValueError as exc:
+        raise AitpError(_INVALID, f"revocation_list issuer is not a valid AID: {exc}") from exc
+    raw = decode_tagged_signature(snapshot["signature"], issuer, sig_err="REVOCATION_SNAPSHOT_SIGNATURE_INVALID")
+    try:
+        digest = sha256(canonicalize(body))
+    except JcsError as exc:
+        # `JcsError` subclasses ValueError, so it is NOT an AitpError and
+        # escapes the caller's handler. `_typed` cannot prevent this on its
+        # own: the offending value can sit anywhere inside `extensions`, whose
+        # interior §7 forbids inspecting, and a plain `"published_at": 1` with
+        # 400 zeros is a valid JSON integer of a magnitude JCS refuses to
+        # serialize. Both arrive as ordinary valid JSON from an unauthenticated
+        # endpoint, so this is caught at the one point every such value must
+        # pass through.
+        raise AitpError(_INVALID, f"revocation_list is not canonicalizable: {exc}") from exc
+    if not issuer.public_key.verify_digest(digest, raw):
+        raise AitpError("REVOCATION_SNAPSHOT_SIGNATURE_INVALID", "snapshot signature does not verify under the issuing peer's key")
 
-    # A body that never reached `usable` cannot be compared or dated, so the
-    # two checks below are skipped rather than guarded individually. The
-    # outcome is the same one an unverifiable signature produces: this is
-    # "no fresh valid snapshot", which RFC-AITP-0008 §3 hands to the policy.
-    issuer_ok = usable and body["issuer"] == inp.get("expected_issuer")
-    fresh = False
-    if usable:
-        try:
-            fresh = (now - int(body["published_at"])) <= int(policy["max_staleness_secs"]) and now < int(body["expires_at"])
-        except (TypeError, ValueError):
-            # Timestamps are `type: integer` in the schema, but a remote peer
-            # can send anything; a non-numeric one is a stale-equivalent
-            # defect, not a crash.
-            fresh = False
-
-    if not (sig_ok and issuer_ok and fresh):
+    # 4. Absence semantics (rev-001/002). ONLY reached by a snapshot that was
+    #    obtained and is trustworthy, so this is the one branch `fail_mode`
+    #    answers: stale, or issued by someone other than the expected peer,
+    #    both mean the peer has no usable revocation data.
+    issuer_ok = body["issuer"] == inp.get("expected_issuer")
+    fresh = (now - int(body["published_at"])) <= int(policy["max_staleness_secs"]) and now < int(body["expires_at"])
+    if not (issuer_ok and fresh):
         if fail_mode == "soft_fail":
             return {"revoked": False, "stale": True}
         raise AitpError("TCT_REVOKED", "no fresh valid revocation snapshot (fail_closed)")
 
     queried = inp.get("queried_jti")
-    if queried is not None and any(e.get("jti") == queried for e in body.get("entries", [])):
+    if queried is not None and any(e.get("jti") == queried for e in body["entries"]):
         raise AitpError("TCT_REVOKED", "queried jti is on the deny list")
     return {"revoked": False}

@@ -19,16 +19,18 @@ verifier. ``reject_unknown_fields`` only ever looks at *obj*'s own top-level
 key set; the caller includes its extension-member name (if the schema
 reserves one) in *allowed*, and this function does not recurse into it. That
 is sufficient and correct: an object with no extension slot at all in its
-schema (e.g. the handshake ``IdentityDescriptor``) simply omits any such name
-from *allowed*, and any attempt to smuggle unknown data in under a
-same-named-but-unreserved key is rejected like any other unknown member.
+schema simply omits any such name from *allowed*, and any attempt to smuggle
+unknown data in under a same-named-but-unreserved key is rejected like any
+other unknown member. (Every artifact currently reserves one. The handshake
+``IdentityDescriptor`` was the lone exception until spec PR #42 unified it
+with the standalone identity schema — see ``identity.py``.)
 
 **The code is not the caller's to choose.** §7's MUST has one core code,
 ``UNKNOWN_FIELD`` (registries/error-codes.md; not retryable), shared by every
 signed AITP object rather than split into per-artifact variants — the failing
 object is whichever one was being verified, exactly as for ``UNKNOWN_VERSION``.
 Hard-coding it here, instead of threading it through each call site, is what
-makes divergence between the twenty-six call sites impossible. Before the code
+makes divergence between the twenty-four call sites impossible. Before the code
 existed, this verifier raised each artifact's signature-family code instead
 (``MANIFEST_SIGNATURE_INVALID``, ``TCT_SIGNATURE_INVALID``, …); that was a
 stopgap, and upstream issue #37 — filed because enforcing §7 here left the
@@ -44,11 +46,14 @@ where it applies rather than by reopening the code as a parameter.
 *shape_code* survives for a genuinely different failure: *obj* not being an
 object at all. A scalar where the schema requires an object carries no member,
 so it is not an unknown-field defect and keeps the artifact's own structural
-code. Note that most call sites cannot actually reach it — ``jws.py`` already
-guarantees a dict for every compact-JWS claims object, and several JCS sites
-are pre-guarded by an explicit ``isinstance`` — so it is observable at roughly
-a third of them. It is kept for those, and because the alternative at an
-unguarded site is a raw ``TypeError`` escaping an ``except AitpError`` caller.
+code. Note that most call sites cannot actually reach it: ``jws.py`` already
+guarantees a dict for every compact-JWS claims object (14 sites), and
+``manifest.py``, ``revocation.py`` and ``sessionbundle.py`` now validate shape
+explicitly before calling in (6 more). Only ``envelope.py``'s two and
+``handshake.py``'s two payload checks can still observe it. It is kept for
+those — and as a standing guarantee, since the alternative at any future
+unguarded site is a raw ``TypeError`` escaping an ``except AitpError`` caller
+rather than a verdict.
 """
 
 from __future__ import annotations
@@ -74,10 +79,12 @@ def reject_unknown_fields(obj: dict[Any, Any], allowed: Container[str], *, shape
     """
     if not isinstance(obj, dict):
         # Guarding here, not at each call site, because the alternative is a
-        # raw TypeError from `for k in obj` -- and callers that fold shape
-        # failures into a boolean (revocation.py's `except AitpError: sig_ok =
-        # False`) catch AitpError only, so a TypeError escapes the verifier
-        # entirely and turns a fail-closed path into a crash. A non-object
+        # raw TypeError from `for k in obj`. Every caller is a verifier entry
+        # point whose contract is "AitpError or a verdict", and the objects
+        # reaching it come off the wire, so a TypeError escapes past whatever
+        # `except AitpError` the caller wrote and crashes it instead of
+        # producing a verdict. `revocation.py` is what forced this: it fed
+        # remotely-fetched snapshot bodies straight in. A non-object
         # where the schema requires one is a shape defect like any other --
         # and NOT an unknown-field one: nothing was carried, so this keeps the
         # caller's structural code rather than UNKNOWN_FIELD.

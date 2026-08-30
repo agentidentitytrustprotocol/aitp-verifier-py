@@ -76,7 +76,9 @@ def _verify_bootstrap(inp: dict[str, Any], env: dict[str, Any], now: int) -> dic
         raise AitpError("INVALID_ENVELOPE", "manifest.aid != envelope sender")
 
     identity = payload["identity"]
-    if man.get("identity_hint", {}).get("type") != identity.get("type"):
+    # `identity_hint` is REQUIRED and verified to be an object by verify_manifest
+    # above, so no defaulting is needed here.
+    if man["identity_hint"].get("type") != identity.get("type"):
         raise AitpError("IDENTITY_FAILED", "identity_hint.type != identity.type")
 
     verify_identity(
