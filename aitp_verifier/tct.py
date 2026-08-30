@@ -14,11 +14,21 @@ from typing import Any
 
 from .aid import parse_aid
 from .errors import AitpError
+from .fields import reject_unknown_fields
 from .jwk import thumbprint
 from .jws import parse_compact, verify_jws
 from .timeutil import REFERENCE_CLOCK
 
-__all__ = ["verify_tct"]
+__all__ = ["verify_tct", "TCT_CLAIM_FIELDS", "TCT_CNF_FIELDS"]
+
+# aitp-tct.schema.json: additionalProperties: false. `ext` is the
+# RFC-AITP-0012 §1.1 extensions slot on this claims object -- listing it here
+# permits its presence without inspecting its contents (unknown keys inside
+# `ext` MUST be ignored). No dedicated shape-rejection code exists in the
+# registry for the TCT, so TCT_SIGNATURE_INVALID is reused, matching the
+# `structural_code` convention jws.parse_compact already applies.
+TCT_CLAIM_FIELDS = frozenset({"ver", "jti", "iss", "sub", "aud", "iat", "exp", "grants", "cnf", "ext"})
+TCT_CNF_FIELDS = frozenset({"jkt"})
 
 
 def verify_tct(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any]:
@@ -32,6 +42,9 @@ def verify_tct(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any
         alg_err="TOKEN_ALG_MISMATCH",
         sig_err="TCT_SIGNATURE_INVALID",
     )
+    reject_unknown_fields(claims, TCT_CLAIM_FIELDS, code="TCT_SIGNATURE_INVALID", what="TCT claims")
+    if isinstance(claims.get("cnf"), dict):
+        reject_unknown_fields(claims["cnf"], TCT_CNF_FIELDS, code="TCT_SIGNATURE_INVALID", what="TCT claims.cnf")
 
     if claims.get("ver") != "aitp/0.2":
         raise AitpError("UNKNOWN_VERSION", f"unknown ver {claims.get('ver')!r}")

@@ -11,10 +11,18 @@ from __future__ import annotations
 from typing import Any
 
 from .errors import AitpError
+from .fields import reject_unknown_fields
 from .jws import parse_compact, verify_jws
 from .timeutil import REFERENCE_CLOCK
 
-__all__ = ["verify_grant_voucher"]
+__all__ = ["verify_grant_voucher", "VOUCHER_CLAIM_FIELDS"]
+
+# aitp-grant-voucher.schema.json: additionalProperties: false. `ext` is the
+# RFC-AITP-0012 §1.1 extensions slot (also reserved as the future
+# `ext.sd_grant` selective-disclosure hook, §4). No dedicated voucher-shape
+# code exists in the registry; DELEGATION_INVALID_VOUCHER is already this
+# module's structural code for every other malformed-voucher case.
+VOUCHER_CLAIM_FIELDS = frozenset({"ver", "iss", "sub", "grants", "iat", "exp", "src_jti", "ext"})
 
 
 def verify_grant_voucher(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any]:
@@ -28,6 +36,7 @@ def verify_grant_voucher(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dic
         alg_err="TOKEN_ALG_MISMATCH",
         sig_err="DELEGATION_INVALID_VOUCHER",
     )
+    reject_unknown_fields(claims, VOUCHER_CLAIM_FIELDS, code="DELEGATION_INVALID_VOUCHER", what="grant voucher claims")
     if claims.get("ver") != "aitp/0.2":
         raise AitpError("UNKNOWN_VERSION", f"unknown ver {claims.get('ver')!r}")
     if not claims.get("grants"):

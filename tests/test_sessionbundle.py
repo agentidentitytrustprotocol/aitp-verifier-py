@@ -90,6 +90,63 @@ def test_wrapper_rejects_any_extra_member(spec_dir: Path) -> None:
     assert "routing_hint" in exc_info.value.message
 
 
+def test_body_rejects_any_extra_member(spec_dir: Path) -> None:
+    """The inner `session_bundle` body is ALSO `additionalProperties: false`
+    (RFC-AITP-0001 §7) -- this is the gap the module docstring used to call
+    out explicitly as unenforced ("Unknown members INSIDE the signed body or
+    a participant entry are still accepted"). A member stapled onto the body
+    is inside the coordinator-signed bytes, unlike the wrapper member above,
+    so this pins a distinct code path: the shape check must run BEFORE the
+    signature check fires, or a self-consistently-signed extra field would
+    verify and this test would need to re-sign to be meaningful. Because the
+    shape gate runs first, mutating an already-minted (validly signed) body
+    post-hoc is sufficient to prove the rejection is real.
+    """
+    minted = _minted_bundle_input(spec_dir)
+    stapled = copy.deepcopy(minted)
+    stapled["session_bundle"]["session_bundle"]["routing_hint"] = "https://attacker.example/relay"
+
+    with pytest.raises(AitpError) as exc_info:
+        verify_session_bundle(stapled)
+    assert exc_info.value.code == "SESSION_BUNDLE_INVALID"
+    assert "routing_hint" in exc_info.value.message
+
+
+def test_participant_entry_rejects_any_extra_member(spec_dir: Path) -> None:
+    """Each `participants[]` entry is `additionalProperties: false` too
+    ({"aid", "tct"} only) -- the other half of the same pre-existing gap
+    `test_body_rejects_any_extra_member` closes for the body itself.
+    """
+    minted = _minted_bundle_input(spec_dir)
+    stapled = copy.deepcopy(minted)
+    stapled["session_bundle"]["session_bundle"]["participants"][0]["routing_hint"] = "x"
+
+    with pytest.raises(AitpError) as exc_info:
+        verify_session_bundle(stapled)
+    assert exc_info.value.code == "SESSION_BUNDLE_INVALID"
+    assert "routing_hint" in exc_info.value.message
+
+
+def test_participant_tct_claims_unknown_field_rejected(spec_dir: Path) -> None:
+    """The embedded participant TCT is a compact-JWS claims object with its
+    own `additionalProperties: false` schema (aitp-tct.schema.json). Unlike
+    the body/participant-entry cases above, an unknown TCT claim is inside
+    the TCT's OWN signature, not the bundle's -- so it must be re-signed
+    (via a fresh mint) rather than stapled onto already-minted output, or the
+    TCT signature check would reject it first and this test would not prove
+    the claims-shape gate does anything.
+    """
+    fixture = json.loads((spec_dir / "schemas/conformance/bundle-001-success.json").read_text())
+    tampered = copy.deepcopy(fixture["input"])
+    tampered["session_bundle"]["session_bundle"]["participants"][0]["tct_claims"]["routing_hint"] = "x"
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(tampered, REFERENCE_CLOCK, keys)
+
+    with pytest.raises(AitpError) as exc_info:
+        verify_session_bundle(minted)
+    assert exc_info.value.code == "BUNDLE_PARTICIPANT_TCT_INVALID"
+
+
 @pytest.mark.parametrize(
     ("outer", "expected"),
     [

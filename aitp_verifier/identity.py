@@ -35,6 +35,7 @@ from .aid import parse_aid
 from .b64 import b64url_decode
 from .crypto import sha256
 from .errors import AitpError
+from .fields import reject_unknown_fields
 from .jwk import IssuerKey, issuer_keys_from, thumbprint
 from .jws import parse_compact
 
@@ -43,6 +44,14 @@ __all__ = ["pinned_key_proof_input", "verify_identity"]
 _ALLOWED_OIDC_ALGS = {"EdDSA", "ES256", "RS256"}
 _FORBIDDEN_HEADER_PARAMS = {"jwk", "jku", "x5u", "x5c", "crit"}
 _IAT_TOLERANCE_SECS = 300
+
+# The handshake-inline IdentityDescriptor ($defs in aitp-mutual-handshake.schema.json)
+# is additionalProperties: false with NO `extensions` slot -- unlike the
+# standalone aitp-identity.schema.json, which does carry one. RFC-AITP-0002 §1's
+# field table lists exactly these five and no `extensions`/`ext` either, so
+# this is deliberate for the descriptor exchanged in the handshake, not a gap
+# this module papers over.
+_IDENTITY_FIELDS = frozenset({"type", "issuer", "subject", "proof", "public_key"})
 
 
 def pinned_key_proof_input(
@@ -74,6 +83,7 @@ def verify_identity(
     now: int,
 ) -> None:
     """Verify the identity binding in a handshake payload. Raises on failure."""
+    reject_unknown_fields(identity, _IDENTITY_FIELDS, code="IDENTITY_FAILED", what="identity descriptor")
     itype = identity.get("type")
     if itype == "oidc":
         _verify_oidc(identity, envelope, self_aid, trust_anchors, issuer_keys, now)

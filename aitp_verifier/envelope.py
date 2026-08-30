@@ -14,12 +14,22 @@ from typing import Any
 from .aid import parse_aid
 from .crypto import sha256
 from .errors import AitpError
+from .fields import reject_unknown_fields
 from .jcs import canonicalize
 from .jws import parse_compact
 from .sigfield import decode_tagged_signature
 from .timeutil import REFERENCE_CLOCK
 
 __all__ = ["verify_envelope", "envelope_signing_input"]
+
+# aitp-envelope.schema.json: additionalProperties: false. `payload` is
+# message-type-specific (its own shape lives in aitp-mutual-handshake.schema.json
+# and is enforced by handshake.py, not here -- the envelope schema itself
+# leaves `payload` an unconstrained object).
+_ENVELOPE_FIELDS = frozenset({
+    "version", "message_type", "message_id", "timestamp", "sender", "payload", "signature", "extensions",
+})
+_SENDER_FIELDS = frozenset({"agent_id"})
 
 
 def envelope_signing_input(env: dict[str, Any]) -> bytes:
@@ -41,6 +51,8 @@ def verify_envelope(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str
         return {"ok": True}
 
     env = inp["envelope"]
+    reject_unknown_fields(env, _ENVELOPE_FIELDS, code="INVALID_ENVELOPE", what="envelope")
+    reject_unknown_fields(env["sender"], _SENDER_FIELDS, code="INVALID_ENVELOPE", what="envelope.sender")
     tolerance = int(inp.get("tolerance_seconds", 300))
     if abs(now - int(env["timestamp"])) > tolerance:
         raise AitpError("TIMESTAMP_EXPIRED", "envelope timestamp outside tolerance window")

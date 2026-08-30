@@ -22,17 +22,29 @@ from .b64 import b64url_decode
 from .crypto import sha256
 from .envelope import envelope_signing_input
 from .errors import AitpError
+from .fields import reject_unknown_fields
 from .identity import verify_identity
 from .jwk import thumbprint
 from .jws import parse_compact, verify_jws
 from .manifest import verify_manifest
 from .sigfield import decode_tagged_signature
+from .tct import TCT_CLAIM_FIELDS, TCT_CNF_FIELDS
 from .timeutil import REFERENCE_CLOCK
 
 __all__ = ["verify_handshake_payload"]
 
 _BOOTSTRAP = {"mutual_hello", "mutual_hello_ack"}
 _COMMIT = {"mutual_commit", "mutual_commit_ack"}
+
+# aitp-mutual-handshake.schema.json $defs, all additionalProperties: false.
+# `mutual_hello` and `mutual_hello_ack` share MutualHello(Ack)Payload except
+# for `pop_nonce_echo` (ack-only, echoes the initiator's nonce -- mh-005).
+# `mutual_commit`/`mutual_commit_ack` share one field set (MutualCommitPayload
+# == MutualCommitAckPayload). Each carries its own `extensions` slot
+# (RFC-AITP-0012 §1); unknown keys inside it are never inspected.
+_HELLO_PAYLOAD_FIELDS = frozenset({"identity", "manifest", "requested_grants", "pop_nonce", "extensions"})
+_HELLO_ACK_PAYLOAD_FIELDS = _HELLO_PAYLOAD_FIELDS | {"pop_nonce_echo"}
+_COMMIT_PAYLOAD_FIELDS = frozenset({"tct", "grant_voucher", "pop_signature", "pop_nonce_echo", "extensions"})
 
 
 def verify_handshake_payload(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any]:
@@ -54,6 +66,8 @@ def verify_handshake_payload(inp: dict[str, Any], now: int = REFERENCE_CLOCK) ->
 
 def _verify_bootstrap(inp: dict[str, Any], env: dict[str, Any], now: int) -> dict[str, Any]:
     payload = env["payload"]
+    allowed = _HELLO_ACK_PAYLOAD_FIELDS if env["message_type"] == "mutual_hello_ack" else _HELLO_PAYLOAD_FIELDS
+    reject_unknown_fields(payload, allowed, code="INVALID_ENVELOPE", what=f"{env['message_type']} payload")
     man = payload["manifest"]
 
     # Manifest first (mh-002/mh-003 must surface MANIFEST_* before identity).
@@ -92,6 +106,7 @@ def _verify_bootstrap(inp: dict[str, Any], env: dict[str, Any], now: int) -> dic
 def _verify_commit(
     inp: dict[str, Any], payload: dict[str, Any], self_aid: str | None, now: int
 ) -> list[str]:
+    reject_unknown_fields(payload, _COMMIT_PAYLOAD_FIELDS, code="INVALID_ENVELOPE", what="mutual_commit(_ack) payload")
     sender = inp.get("envelope", {}).get("sender", {}).get("agent_id")
     if sender is None:  # peer_a/peer_b shape carries no envelope; issuer is the TCT iss
         sender = parse_compact(payload["tct"], structural_code="TCT_SIGNATURE_INVALID").claims.get("iss")
@@ -118,6 +133,9 @@ def _verify_commit(
         tct, iss_aid=str(iss), expected_typ="aitp-tct+jwt",
         typ_err="TOKEN_TYP_MISMATCH", alg_err="TOKEN_ALG_MISMATCH", sig_err="TCT_SIGNATURE_INVALID",
     )
+    reject_unknown_fields(claims, TCT_CLAIM_FIELDS, code="TCT_SIGNATURE_INVALID", what="TCT claims")
+    if isinstance(claims.get("cnf"), dict):
+        reject_unknown_fields(claims["cnf"], TCT_CNF_FIELDS, code="TCT_SIGNATURE_INVALID", what="TCT claims.cnf")
     if claims.get("ver") != "aitp/0.2":
         raise AitpError("UNKNOWN_VERSION", f"unknown ver {claims.get('ver')!r}")
     if self_aid is not None and claims.get("aud") != self_aid:
