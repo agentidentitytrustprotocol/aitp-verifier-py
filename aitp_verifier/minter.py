@@ -15,7 +15,7 @@ from __future__ import annotations
 import copy
 import json
 import re
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 from .aid import parse_aid
 from .b64 import b64url_decode, b64url_encode
@@ -175,12 +175,45 @@ _OTHER_AID = "aid:pubkey:iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w"  # kat-004
 _WRONG_NONCE = b64url_encode(bytes([0xFF] * 16))  # 22-char b64url, decodes != any real nonce
 
 
-def _issuer_key(issuer: str) -> PrivateKey:
-    """Deterministic synthetic OIDC issuer key (both mint + inline its pubkey)."""
-    return PrivateKey.ed25519_from_seed(sha256(b"aitp-conformance-issuer:" + issuer.encode()))
+_P256_ORDER = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
 
 
-def _mint_oidc_jwt(placeholder: str, identity: dict[str, Any], env: dict[str, Any], inp: dict[str, Any], now: int) -> str:
+def _issuer_key(issuer: str, alg: str = "EdDSA") -> PrivateKey:
+    """Deterministic synthetic OIDC issuer key (both mint + inline its pubkey).
+
+    Only ``EdDSA`` (Ed25519) and ``ES256`` (P-256) are derivable here — the
+    two algorithms ``PrivateKey`` supports (AITP's AID algorithms). RS256 test
+    vectors sign through a separately pinned RSA key supplied via
+    ``_mint_oidc_jwt``'s ``sign_override`` — RSA is deliberately never wired
+    into ``PrivateKey`` (it is verify-only, third-party issuer key material;
+    see ``crypto.py``).
+    """
+    seed = sha256(b"aitp-conformance-issuer:" + issuer.encode())
+    if alg == "ES256":
+        scalar = (int.from_bytes(seed, "big") % (_P256_ORDER - 1)) + 1
+        return PrivateKey.p256_from_scalar(scalar)
+    return PrivateKey.ed25519_from_seed(seed)
+
+
+def _mint_oidc_jwt(
+    placeholder: str,
+    identity: dict[str, Any],
+    env: dict[str, Any],
+    inp: dict[str, Any],
+    now: int,
+    *,
+    alg: str = "EdDSA",
+    kid: str | None = None,
+    sign_override: Callable[[bytes], bytes] | None = None,
+) -> str:
+    """Mint a compact-JWS OIDC identity JWT.
+
+    ``alg``/``kid`` default to the original hardcoded shape (bare
+    ``{"alg":"EdDSA","typ":"JWT"}``, no ``kid``) so existing conformance
+    fixtures re-mint byte-identically. ``sign_override`` lets a caller (e.g.
+    a test building an RS256 vector) supply the raw signing function instead
+    of deriving one from ``_issuer_key``.
+    """
     issuer = identity["issuer"]
     sender = env["sender"]["agent_id"]
     claims: dict[str, Any] = {
@@ -198,9 +231,15 @@ def _mint_oidc_jwt(placeholder: str, identity: dict[str, Any], env: dict[str, An
         claims["aud"] = _OTHER_AID
     elif placeholder == "__JWT_MISSING_CNF_JKT_CLAIM__":
         claims.pop("cnf")
-    header = json.dumps({"alg": "EdDSA", "typ": "JWT"}, separators=(",", ":")).encode()
+    header_obj: dict[str, Any] = {"alg": alg, "typ": "JWT"}
+    if kid is not None:
+        header_obj["kid"] = kid
+    header = json.dumps(header_obj, separators=(",", ":")).encode()
     signing_input = b64url_encode(header) + "." + b64url_encode(json.dumps(claims, separators=(",", ":")).encode())
-    sig = _issuer_key(issuer).sign_jose(signing_input.encode("ascii"))
+    if sign_override is not None:
+        sig = sign_override(signing_input.encode("ascii"))
+    else:
+        sig = _issuer_key(issuer, alg).sign_jose(signing_input.encode("ascii"))
     return signing_input + "." + b64url_encode(sig)
 
 
