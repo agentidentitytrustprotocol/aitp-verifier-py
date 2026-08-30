@@ -4,15 +4,49 @@ on:
   push:
     branches: [main]
   pull_request:
+  # This repo does not pin the spec: the "Check out the AITP spec" step below
+  # always pulls agentidentitytrustprotocol@main, floating on purpose (the
+  # spec's own notify-spec-consumers.yml says so explicitly: "aitp-verifier-py
+  # tracks the spec on `main` (floating), so it is intentionally not
+  # notified"). That means a spec merge can turn this repo red with zero
+  # commits here, and without a schedule nobody finds out until the next
+  # unrelated push. This cron is that canary.
+  schedule:
+    # 06:17 UTC daily. Picked, not defaulted: by this time most spec merges
+    # from both US-evening and APAC-morning contributors have landed, so a
+    # drift check here is unlikely to just be racing an in-flight PR. The
+    # :17 (not :00) dodges the top-of-hour queueing GitHub's own docs warn
+    # scheduled workflows are subject to.
+    - cron: "17 6 * * *"
+  # Lets anyone re-run the drift check on demand instead of waiting for the
+  # next 06:17 UTC tick, e.g. right after watching a spec PR merge.
+  workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # event_name is part of the group, not just ref, because schedule and
+  # workflow_dispatch runs resolve github.ref to the same
+  # refs/heads/main as an ordinary push to main. Without this, a routine
+  # push could cancel the scheduled drift canary mid-run (cancel-in-progress
+  # would silently eat the one signal this job exists to produce), or a
+  # manual re-run could cancel/be-cancelled by unrelated push CI. Keeping
+  # push, pull_request, schedule, and workflow_dispatch in separate groups
+  # preserves the original behavior (rapid pushes to the same ref still
+  # supersede each other; each PR ref is already its own group) while giving
+  # the canary its own lane.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
   conformance:
     name: conformance + tests + types
     runs-on: ubuntu-latest
+    # Deliberately NOT an os matrix. GitHub appends every matrix dimension to
+    # the generated check name, so adding `os` here would rename these checks
+    # from "conformance + tests + types (3.11)" to "... (ubuntu-latest, 3.11)".
+    # Those names are the exact strings in main's required status checks, so
+    # the rename would leave every PR waiting forever on contexts that never
+    # appear. Cross-platform coverage lives in its own job below, which can
+    # add new context names without invalidating these.
     strategy:
       fail-fast: false
       matrix:
@@ -109,3 +143,139 @@ jobs:
         run: |
           python -m pip install pip-audit
           pip-audit --skip-editable
+
+  # The matrix above is ubuntu-only, so nothing proves this works off Linux.
+  # Kept as a separate job rather than an `os` dimension on `conformance`
+  # precisely so it adds new check names instead of renaming the ones main's
+  # branch protection already requires.
+  #
+  # One representative interpreter, not the full range: nothing here is
+  # platform-sensitive per Python version, so a 4x3 cross product would buy
+  # nothing for 12 jobs. 3.13 is neither the oldest supported nor the newest.
+  #
+  # Verified before adding these runners: cryptography 50.0.1 (this project's
+  # floor) ships cp39-abi3-macosx_11_0_arm64 and cp39-abi3-win_amd64 wheels,
+  # both covering cp313 via the stable ABI. This matters because cryptography
+  # dropped win32 and Intel-macOS wheels at 49.0.0 (see pyproject.toml's floor
+  # comment) — macos-latest is arm64 and windows-latest is x64, so neither
+  # lands on a dropped target and neither needs a Rust toolchain.
+  cross-platform:
+    # Distinct from the `conformance` job's name on purpose: two jobs sharing
+    # a display name would produce confusingly similar check contexts.
+    name: cross-platform
+    runs-on: ${{ matrix.os }}
+    # Windows defaults to pwsh, where the `&&` chaining and `".[dev]"` quoting
+    # below are not valid. windows-latest ships Git Bash, so pinning bash keeps
+    # one set of steps for all platforms rather than forking per-OS. Runner
+    # path expressions stay correct because the Actions runner resolves
+    # working-directory and github.workspace itself; they reach the shell as
+    # plain strings and are only ever handed to Python.
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        python: ["3.13"]
+    steps:
+      - name: Check out the verifier
+        uses: actions/checkout@v7
+        with:
+          path: aitp-verifier-py
+      - name: Check out the AITP spec
+        uses: actions/checkout@v7
+        with:
+          repository: agentidentitytrustprotocol/agentidentitytrustprotocol
+          path: agentidentitytrustprotocol
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        working-directory: aitp-verifier-py
+        run: python -m pip install --upgrade pip && pip install -e ".[dev]"
+      - name: Conformance (independent re-derivation of every golden vector)
+        working-directory: aitp-verifier-py
+        run: python run_conformance.py --spec-dir ../agentidentitytrustprotocol
+      - name: Unit tests
+        working-directory: aitp-verifier-py
+        env:
+          AITP_SPEC: ${{ github.workspace }}/agentidentitytrustprotocol
+        run: pytest -q
+      - name: Types (mypy --strict)
+        working-directory: aitp-verifier-py
+        run: mypy
+
+  # None of the jobs above ever install this package non-editably. `pip install
+  # -e` symlinks straight back to the source tree, so packaging mistakes --
+  # package data / py.typed not included in the wheel, wrong `packages.find`
+  # include, a file missing from SOURCES.txt -- are invisible to every job
+  # above and would only surface after a real PyPI publish. This job builds
+  # the actual sdist/wheel artifacts, installs the WHEEL (not the checkout,
+  # not editable) into a throwaway venv, and exercises it from a working
+  # directory that is neither the repo nor a parent of it, so `import
+  # aitp_verifier` can only resolve to what's on site-packages.
+  wheel-smoke-test:
+    name: build + install the wheel (non-editable) and smoke-test it
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the verifier
+        uses: actions/checkout@v7
+        with:
+          path: aitp-verifier-py
+      - name: Check out the AITP spec
+        uses: actions/checkout@v7
+        with:
+          repository: agentidentitytrustprotocol/agentidentitytrustprotocol
+          path: agentidentitytrustprotocol
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Build sdist + wheel
+        working-directory: aitp-verifier-py
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Install the wheel into a clean, throwaway venv
+        # Deliberately not `-e`, and not `pip install ./aitp-verifier-py`:
+        # either of those would install (or point back to) the source tree
+        # rather than the built artifact. Installing the single dist/*.whl by
+        # path installs exactly the package that build produced.
+        run: |
+          python -m venv "${{ runner.temp }}/wheel-smoke-venv"
+          "${{ runner.temp }}/wheel-smoke-venv/bin/pip" install aitp-verifier-py/dist/*.whl
+
+      - name: Run from a working directory that is not the source tree
+        # pyproject.toml sets `pythonpath = ["."]` for pytest, which is exactly
+        # the kind of source-tree shadowing this job exists to avoid -- so this
+        # step deliberately does not use pytest, does not cd into
+        # aitp-verifier-py, and copies only the runner script (not the
+        # aitp_verifier/ package directory) out to a neutral directory. If
+        # `import aitp_verifier` were to resolve to the checkout instead of
+        # site-packages, this job would still pass for the wrong reason, which
+        # is precisely the failure mode being tested for.
+        run: |
+          mkdir -p "${{ runner.temp }}/wheel-smoke-run"
+          cp aitp-verifier-py/run_conformance.py "${{ runner.temp }}/wheel-smoke-run/"
+          cd "${{ runner.temp }}/wheel-smoke-run"
+
+          PY="${{ runner.temp }}/wheel-smoke-venv/bin/python"
+
+          "$PY" -c "
+          import pathlib, sys, aitp_verifier
+          pkg_dir = pathlib.Path(aitp_verifier.__file__).parent
+          resolved = pkg_dir.resolve()
+          workspace = pathlib.Path('${{ github.workspace }}').resolve()
+          assert workspace not in resolved.parents and resolved != workspace, (
+              f'aitp_verifier imported from the checkout, not the installed wheel: {resolved}'
+          )
+          assert 'site-packages' in resolved.parts, (
+              f'aitp_verifier did not resolve into site-packages: {resolved}'
+          )
+          py_typed = pkg_dir / 'py.typed'
+          assert py_typed.is_file(), f'py.typed missing from installed package: {py_typed}'
+          print(f'OK: aitp_verifier installed non-editably at {resolved}')
+          "
+
+          "$PY" run_conformance.py --spec-dir "${{ github.workspace }}/agentidentitytrustprotocol"
