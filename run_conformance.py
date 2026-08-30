@@ -178,6 +178,15 @@ def main() -> int:
         counts[status] += 1
         rows.append((status, fid, detail))
 
+    # Windows' default stdout encoding is cp1252, which cannot encode the
+    # ✓/✗/– markers below -- the runner died with UnicodeEncodeError there
+    # before this, while passing everywhere else. Reconfiguring beats
+    # downgrading the markers to ASCII for every other platform, and
+    # errors="replace" means a console that still cannot represent them
+    # prints a placeholder instead of taking the whole run down.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     width = max(len(fid) for _, fid, _ in rows) if rows else 10
     for status, fid, detail in rows:
         if status == SKIP and not args.verbose:

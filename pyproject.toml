@@ -20,6 +20,26 @@ requires-python = ">=3.11"
 dependencies = [
     "cryptography>=50.0",
 ]
+# No `License ::` classifier here: this project declares its license with the
+# PEP 639 / setuptools>=77 SPDX form (`license = "Apache-2.0"` + `license-files`
+# above), and pairing that with a classifier-form license is a build error, not
+# a warning. Every string below was checked against PyPI's live classifier list
+# (https://pypi.org/pypi?%3Aaction=list_classifiers) so none is invented.
+# "3 - Alpha" is the honest status for a 0.1.0 release that has not been
+# published to PyPI yet.
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security :: Cryptography",
+    # Justified by aitp_verifier/py.typed, which ships in the built wheel --
+    # confirmed by unzipping dist/*.whl (see the CI wheel-smoke-test job).
+    "Typing :: Typed",
+]
 
 [project.optional-dependencies]
 # mypy is floored at its first cp314 release, not for an advisory (it has
