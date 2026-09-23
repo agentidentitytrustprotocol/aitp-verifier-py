@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from .aid import parse_aid
 from .b64 import b64url_decode, b64url_encode
@@ -75,12 +75,22 @@ def verify_jws(
     typ_err: str,
     alg_err: str,
     sig_err: str,
+    after_typ_check: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Parse + verify a compact JWS, returning its decoded claims.
 
-    Runs the §5.4.5 order: strict parse → ``typ`` → AID-pinned ``alg`` →
-    signature. Each failure raises ``AitpError`` with the caller-supplied code.
-    Structural failures raise ``sig_err`` (the artifact's signature-family code).
+    Runs the §5.4.5 order: strict parse → ``typ`` → (optionally, *after_typ_check*)
+    → AID-pinned ``alg`` → signature. Each failure raises ``AitpError`` with the
+    caller-supplied code. Structural failures raise ``sig_err`` (the artifact's
+    signature-family code).
+
+    *after_typ_check*, when given, runs on the decoded claims right after ``typ``
+    is confirmed and before ``alg``/signature are checked at all -- this is what
+    lets a caller (``tct.py``) run RFC-AITP-0005 §7.2's claims-membership check in
+    the position its text now makes explicit (between ``typ`` and ``alg``-pin),
+    without forcing every other artifact (grant voucher, delegation) that has no
+    equivalent ordering requirement to restructure its own call. It raises
+    ``AitpError`` itself on a shape defect; this function does not catch it.
     """
     parsed = parse_compact(token, structural_code=sig_err)
 
@@ -90,6 +100,9 @@ def verify_jws(
 
     if parsed.header.get("typ") != expected_typ:
         raise AitpError(typ_err, f"typ {parsed.header.get('typ')!r} != {expected_typ!r}")
+
+    if after_typ_check is not None:
+        after_typ_check(parsed.claims)
 
     aid = parse_aid(iss_aid)
     if parsed.header.get("alg") != aid.jose_alg:

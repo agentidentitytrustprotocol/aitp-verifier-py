@@ -161,6 +161,69 @@ def test_tct_cnf_unknown_key_rejected(spec_dir: Path) -> None:
     assert exc.value.code == "UNKNOWN_FIELD"
 
 
+def test_tct_unknown_claim_and_bad_alg_reports_unknown_field(spec_dir: Path) -> None:
+    """RFC-AITP-0005 §7.2 step 1's claims-membership check now runs BEFORE
+    step 3's alg-pin (spec commit 993da8c's now-explicit sub-step order:
+    segment-parse -> typ -> claims-membership -> alg-pin -> signature). A TCT
+    carrying BOTH an unrecognized claim and a header `alg` that does not
+    match the issuer AID's pinned algorithm must report `UNKNOWN_FIELD`, not
+    `TOKEN_ALG_MISMATCH` -- even though the alg defect alone reports the
+    latter (`tct-009`). Before this ordering fix, `verify_jws` ran alg-pin
+    (and signature) fully, internally, before claims-membership was ever
+    checked, so this combined-defect case would have reported
+    `TOKEN_ALG_MISMATCH` instead.
+    """
+    keys = load_kat_keys(spec_dir)
+    claims = _tct_claims(routing_hint="https://attacker.example/relay")
+    # Signed with the issuer's real Ed25519 key, but the header claims ES256
+    # -- a mismatch against the AID's pinned EdDSA, independent of the
+    # unrecognized claim above.
+    token = encode_jws("aitp-tct+jwt", claims, keys[ISSUER], alg="ES256")
+    with pytest.raises(AitpError) as exc:
+        verify_tct({"tct_token": token})
+    assert exc.value.code == "UNKNOWN_FIELD"
+
+
+def test_tct_unknown_claim_and_bad_alg_reports_unknown_field_via_handshake(spec_dir: Path) -> None:
+    """Same combined defect as above, exercised through the handshake's
+    embedded-TCT path (`handshake.py::_verify_commit`), which runs the
+    identical check via the shared `check_tct_claims_shape` helper rather
+    than its own copy -- this pins that the two call sites do not drift.
+
+    Uses the `peer_a`/`peer_b` input shape (no envelope signature required)
+    since this test is about the embedded TCT's internal ordering, not the
+    envelope crypto around it; `peer_a` is processed first and raises before
+    `peer_b` is ever touched.
+    """
+    keys = load_kat_keys(spec_dir)
+    claims = _tct_claims(routing_hint="x")
+    token = encode_jws("aitp-tct+jwt", claims, keys[ISSUER], alg="ES256")
+    inp = {
+        "peer_a": {"self_aid": SUBJECT, "received_payload": {"tct": token}},
+        "peer_b": {"self_aid": SUBJECT, "received_payload": {}},
+    }
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(inp)
+    assert exc.value.code == "UNKNOWN_FIELD"
+
+
+def test_tct_typ_mismatch_still_wins_over_unknown_claim(spec_dir: Path) -> None:
+    """Negative control for the ordering fix: `typ` is still checked before
+    claims-membership (RFC-AITP-0005 §7.2 step 2 before step 1's
+    claims-membership sub-clause) -- a token whose `typ` is wrong AND whose
+    claims carry an unrecognized field must still report `TOKEN_TYP_MISMATCH`,
+    not `UNKNOWN_FIELD`. Already covered at the fixture level by `tct-010`;
+    pinned here directly since this phase changes the surrounding order and
+    this is the other half of the ordering contract it must not invert.
+    """
+    keys = load_kat_keys(spec_dir)
+    claims = _tct_claims(routing_hint="x")
+    token = encode_jws("aitp-grant+jwt", claims, keys[ISSUER], alg="EdDSA")
+    with pytest.raises(AitpError) as exc:
+        verify_tct({"tct_token": token})
+    assert exc.value.code == "TOKEN_TYP_MISMATCH"
+
+
 # ── Grant voucher claims (voucher.py, reused embedded in delegation.py) ───
 
 

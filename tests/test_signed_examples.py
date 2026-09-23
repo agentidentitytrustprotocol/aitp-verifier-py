@@ -201,9 +201,20 @@ def test_session_bundle_signed_example_runs_the_real_verifier(spec_dir: Path) ->
 def test_revocation_signed_example_runs_the_real_verifier(spec_dir: Path) -> None:
     """Drive the production `verify_revocation_snapshot` over the committed
     bytes, not just the crypto primitives -- so a regression in the verifier
-    itself (not only in canonicalization) is caught here too."""
-    snapshot = _se(spec_dir, "revocation/kat-keypair-001-snapshot.json")
-    snapshot.pop("_kat_input", None)
+    itself (not only in canonicalization) is caught here too.
+
+    The fixture file carries non-artifact companion metadata beside the real
+    wire members (`_kat_input`, and now `signing_input` -- added by spec PR
+    #45/#51 to self-declare the W-P5 signing-input convention machine-readably).
+    An allow-list of the two real wire members, not an enumerated pop() of each
+    known companion key, is what `verify_revocation_snapshot`'s strict
+    `reject_unknown_fields` check actually needs: a `.pop("_kat_input", None)`
+    here once already went stale the moment `signing_input` was added, and an
+    enumerate-what-to-remove list is inherently incomplete against the next
+    one, too.
+    """
+    loaded = _se(spec_dir, "revocation/kat-keypair-001-snapshot.json")
+    snapshot = {k: v for k, v in loaded.items() if k in ("revocation_list", "signature")}
     body = snapshot["revocation_list"]
 
     out = verify_revocation_snapshot(

@@ -49,7 +49,7 @@ from .fields import reject_unknown_fields
 from .jcs import canonicalize
 from .jws import parse_compact, verify_jws
 from .sigfield import decode_tagged_signature
-from .tct import TCT_CLAIM_FIELDS, TCT_CNF_FIELDS
+from .tct import check_tct_claims_shape
 
 __all__ = ["verify_session_bundle"]
 
@@ -152,11 +152,6 @@ def verify_session_bundle(inp: dict[str, Any], now: int | None = None) -> dict[s
 
     for p in participants:
         iss = parse_compact(p["tct"], structural_code="BUNDLE_PARTICIPANT_TCT_INVALID").claims.get("iss")
-        claims = verify_jws(
-            p["tct"], iss_aid=str(iss), expected_typ="aitp-tct+jwt",
-            typ_err="BUNDLE_PARTICIPANT_TCT_INVALID", alg_err="BUNDLE_PARTICIPANT_TCT_INVALID",
-            sig_err="BUNDLE_PARTICIPANT_TCT_INVALID",
-        )
         # The embedded TCT is the one place §7's generic UNKNOWN_FIELD is
         # remapped. RFC-AITP-0010 §5 step 7 runs the standard RFC-AITP-0005
         # §7.2 order over each participant token and then states that "other
@@ -172,10 +167,19 @@ def verify_session_bundle(inp: dict[str, Any], now: int | None = None) -> dict[s
         # single-code guarantee is what keeps the other call sites honest.
         # RFC-AITP-0004 carries no equivalent clause, so the identical claims
         # check in handshake.py correctly reports UNKNOWN_FIELD.
+        #
+        # The claims-shape check now runs INSIDE verify_jws, via
+        # after_typ_check -- between typ and alg, matching §7.2's now-explicit
+        # sub-step order -- so it can raise from inside the call below rather
+        # than only after it returns; the try/except here wraps the whole call
+        # for exactly that reason, not just a trailing reject_unknown_fields.
         try:
-            reject_unknown_fields(claims, TCT_CLAIM_FIELDS, shape_code="BUNDLE_PARTICIPANT_TCT_INVALID", what="participant TCT claims")
-            if isinstance(claims.get("cnf"), dict):
-                reject_unknown_fields(claims["cnf"], TCT_CNF_FIELDS, shape_code="BUNDLE_PARTICIPANT_TCT_INVALID", what="participant TCT claims.cnf")
+            claims = verify_jws(
+                p["tct"], iss_aid=str(iss), expected_typ="aitp-tct+jwt",
+                typ_err="BUNDLE_PARTICIPANT_TCT_INVALID", alg_err="BUNDLE_PARTICIPANT_TCT_INVALID",
+                sig_err="BUNDLE_PARTICIPANT_TCT_INVALID",
+                after_typ_check=lambda c: check_tct_claims_shape(c, shape_code="BUNDLE_PARTICIPANT_TCT_INVALID"),
+            )
         except AitpError as exc:
             if exc.code != "UNKNOWN_FIELD":
                 raise

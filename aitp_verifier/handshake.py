@@ -28,7 +28,7 @@ from .jwk import thumbprint
 from .jws import parse_compact, verify_jws
 from .manifest import verify_manifest
 from .sigfield import decode_tagged_signature
-from .tct import TCT_CLAIM_FIELDS, TCT_CNF_FIELDS
+from .tct import check_tct_claims_shape
 from .timeutil import REFERENCE_CLOCK
 
 __all__ = ["verify_handshake_payload"]
@@ -134,10 +134,8 @@ def _verify_commit(
     claims = verify_jws(
         tct, iss_aid=str(iss), expected_typ="aitp-tct+jwt",
         typ_err="TOKEN_TYP_MISMATCH", alg_err="TOKEN_ALG_MISMATCH", sig_err="TCT_SIGNATURE_INVALID",
+        after_typ_check=lambda c: check_tct_claims_shape(c, shape_code="TCT_SIGNATURE_INVALID"),
     )
-    reject_unknown_fields(claims, TCT_CLAIM_FIELDS, shape_code="TCT_SIGNATURE_INVALID", what="TCT claims")
-    if isinstance(claims.get("cnf"), dict):
-        reject_unknown_fields(claims["cnf"], TCT_CNF_FIELDS, shape_code="TCT_SIGNATURE_INVALID", what="TCT claims.cnf")
     if claims.get("ver") != "aitp/0.2":
         raise AitpError("UNKNOWN_VERSION", f"unknown ver {claims.get('ver')!r}")
     if self_aid is not None and claims.get("aud") != self_aid:
