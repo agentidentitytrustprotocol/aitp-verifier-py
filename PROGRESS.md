@@ -135,4 +135,9 @@ together with one full green suite run than as two tiny separate PRs. Branch:
   skipped (unchanged). `mypy`: clean. No new `ASSUMPTIONS.md` entry — the test-home
   deviation was a decided, verified-reasonable call, not an open/unconfirmed one. Docs:
   `tct.py`'s module docstring updated per the plan's Phase 2 Docs field. Next: Phase 3.
-- Phase 3: TODO
+- **Phase 3: DONE** (2026-09-23). Verification-only, no files touched beyond the tracked
+  ones here. `run_conformance.py`: 68 passed / 0 failed / 1 skipped (`del-004`, confirmed
+  the correct expected skip — `mh-002` passes live, contradicting the repo's own stale
+  README claim that it's also skipped; that README staleness is out of this plan's scope).
+  `pytest tests/ -v`: 166 passed, 0 failed. `mypy`: clean. Next: finalization pass, then
+  hand off to `/ship`.

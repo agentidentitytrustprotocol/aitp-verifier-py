@@ -415,7 +415,9 @@ doesn't describe verification order at this granularity).
 
 ### Phase 3 — Full-suite verification gate
 
-**Status:** TODO
+**Status:** DONE. Ran exactly as planned: `run_conformance.py` → 68 passed / 0 failed / 1
+skipped (`del-004`); `pytest tests/ -v` → 166 passed, 0 failed; `mypy` → clean. No
+divergence from the planned approach.
 
 **Delivers:** Confirmation that Phases 1 and 2 together leave the repo in the same state
 CI will independently confirm on its next run — this phase exists so a human/reviewer has
