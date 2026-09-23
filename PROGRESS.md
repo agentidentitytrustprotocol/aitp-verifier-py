@@ -563,3 +563,39 @@ Baseline confirmed green before starting: `pytest tests/`: 166 passed. `run_conf
   assume this harness alone proves it.
 - **What's next:** commit Phase 7 (this diff), then run PR 1's finalization pass
   (`/implement` §4 — Phases 1-7 collectively close #25 and #23) before handing off to `/ship`.
+
+## PR 1 finalization (2026-09-23)
+
+Phase 7 committed as `fddbffb`. Confirmed branch is current with `origin/main` (no rebase
+needed; merge-base `fba3a95` == `origin/main` HEAD). Doc sweep: every phase's own `Docs`
+field was already applied inline during that phase's own commit (module docstrings in
+`manifest.py`/`envelope.py`/`sessionbundle.py`/`fields.py`/`tct.py`); no repo-level
+`README`/`CLAUDE.md` enumerates individual test files, so no further doc update needed.
+Whole-feature integration coverage: `tests/test_boundary_contract.py` (Phase 7) already
+functions as the cross-phase integration test — it exercises every entry point's guards in
+combination on real minted input, which is the closest thing to an I/O/network/DB boundary
+this pure-Python, dependency-free library has; no additional integration tests were needed.
+
+**Final whole-PR verification (fresh Opus, cumulative diff `main...HEAD`, all 7 phases
+against the plan as a whole): PASS.** Confirmed: issues #25 and #23 are genuinely closed by
+the combined diff (not just phase-by-phase); `fields.py`'s shared helpers are used
+consistently everywhere (no module reinvented its own copy); `handshake.py` cleanly uses
+`envelope.validate_envelope_shape` with no residual partial duplicate; Phase 7's shared
+claims-shape validators are used at every claimed call site including both of
+`sessionbundle.py`'s TCT checks and both of `delegation.py`'s embedded-voucher checks;
+`revocation.py` itself has no residual #23-class gap (already closed by PR #22); the two
+`tct.py`/`delegation.py` revocation-trust gaps noted are correctly deferred to Phase 8/PR 2
+(issue #24), not a PR-1 scope miss. Independently re-ran and confirmed: `pytest tests/ -q`
+→ 270 passed; `run_conformance.py` → 68/0/1; `mypy aitp_verifier tests` → clean, 34 files.
+Two non-blocking observations, both pre-existing/out-of-scope (not regressions): an
+unguarded `inp[side]["self_aid"]` index in `handshake.py`'s peer_a/peer_b commit-simulation
+branch (byte-identical to the merge-base, predates this PR, same excluded
+"Python-calling-convention, not a wire artifact" class Phase 7 already scoped out) and a
+bare-`AttributeError` risk in `tct.py`/`delegation.py`'s revocation-entry handling (issue
+#24's exact subject, correctly deferred to Phase 8).
+
+No gaps. Ready for `/ship`.
+
+## Ship checkpoints
+
+- pushed hardening-issues-23-27 fddbffb9b9a202257cebb97ebd543bebb36cc653
