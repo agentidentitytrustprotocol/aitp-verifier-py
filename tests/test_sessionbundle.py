@@ -266,3 +266,115 @@ def test_bundle_body_without_signature_member_is_a_protocol_error(spec_dir: Path
     with pytest.raises(AitpError) as exc_info:
         verify_session_bundle(minted)
     assert exc_info.value.code == "SESSION_BUNDLE_INVALID"
+
+
+# ── body/participant required-member and type validation (issue #23, item 1
+#    "sessionbundle.py") ───────────────────────────────────────────────────
+#
+# Before this phase, `participants`, `expires_at`, and `coordinator` were
+# dereferenced directly with no presence guard, and participant entries got
+# only a member-*set* check, never a required-member check for `aid`/`tct`.
+# Minting note, same as `tests/test_manifest.py`/`tests/test_envelope.py`:
+# hostile/missing values are injected *after* `mint_input` mints a
+# well-formed fixture (`_minted_bundle_input`, above), never passed through
+# minting itself -- `minter.py::_mint_bundle` canonicalizes `signing_body`
+# and looks up `keys[body["coordinator"]]` while producing a valid
+# signature, so a hostile value present at mint time raises there instead of
+# in the code under test.
+
+
+@pytest.mark.parametrize("dropped", [
+    "version", "session_id", "coordinator", "issued_at", "expires_at", "participants",
+])
+def test_bundle_body_every_required_member_is_enforced(dropped: str, spec_dir: Path) -> None:
+    minted = _minted_bundle_input(spec_dir)
+    assert verify_session_bundle(minted)["ok"] is True
+
+    body = minted["session_bundle"]["session_bundle"]
+    del body[dropped]
+    with pytest.raises(AitpError) as exc_info:
+        verify_session_bundle(minted)
+    assert exc_info.value.code == "SESSION_BUNDLE_INVALID"
+    assert dropped in exc_info.value.message
+
+
+@pytest.mark.parametrize(("member", "value"), [
+    ("participants", 5),
+    ("expires_at", "soon"),
+    ("session_id", 5),
+    ("issued_at", "not a number"),
+])
+def test_bundle_body_mistyped_member_is_a_structural_rejection(member: str, value: Any, spec_dir: Path) -> None:
+    minted = _minted_bundle_input(spec_dir)
+    body = minted["session_bundle"]["session_bundle"]
+    body[member] = value
+    with pytest.raises(AitpError) as exc_info:
+        verify_session_bundle(minted)
+    assert exc_info.value.code == "SESSION_BUNDLE_INVALID"
+
+
+def test_bundle_participant_missing_both_required_members_is_enforced(spec_dir: Path) -> None:
+    """A participant entry `{}` (missing both `aid` and `tct`) raises
+    AitpError, not a raw KeyError from `p["tct"]`/`p["aid"]` downstream.
+    """
+    minted = _minted_bundle_input(spec_dir)
+    body = minted["session_bundle"]["session_bundle"]
+    body["participants"].append({})
+    with pytest.raises(AitpError) as exc_info:
+        verify_session_bundle(minted)
+    assert exc_info.value.code == "SESSION_BUNDLE_INVALID"
+
+
+@pytest.mark.parametrize(("member", "value"), [("aid", 5), ("tct", 5)])
+def test_bundle_participant_mistyped_member_is_a_structural_rejection(member: str, value: Any, spec_dir: Path) -> None:
+    minted = _minted_bundle_input(spec_dir)
+    body = minted["session_bundle"]["session_bundle"]
+    body["participants"][0][member] = value
+    with pytest.raises(AitpError) as exc_info:
+        verify_session_bundle(minted)
+    assert exc_info.value.code == "SESSION_BUNDLE_INVALID"
+
+
+# ── JcsError must not escape (issue #23 item 1, sessionbundle.py) ─────────
+
+
+def test_bundle_infinite_extension_value_does_not_crash(spec_dir: Path) -> None:
+    """`json.loads("1e400")` returns `float("inf")` from ordinary valid JSON.
+    `extensions`'s interior is never inspected (RFC-AITP-0001 §7), so no
+    member/type check can catch this -- only the `canonicalize` call itself
+    (now wrapped by `canonical_bytes`) can.
+    """
+    minted = _minted_bundle_input(spec_dir)
+    body = minted["session_bundle"]["session_bundle"]
+    body["extensions"] = {"x": json.loads("1e400")}
+    with pytest.raises(AitpError) as exc_info:
+        verify_session_bundle(minted)
+    assert exc_info.value.code == "SESSION_BUNDLE_INVALID"
+
+
+def test_bundle_huge_issued_at_does_not_crash(spec_dir: Path) -> None:
+    """A 400-digit integer is a valid Python/JSON `int` (no overflow), so it
+    passes `check_types` -- only JCS's own representable-range check catches
+    it. `issued_at` is otherwise unused by any comparison in this module.
+    """
+    minted = _minted_bundle_input(spec_dir)
+    body = minted["session_bundle"]["session_bundle"]
+    body["issued_at"] = json.loads("1" + "0" * 400)
+    with pytest.raises(AitpError) as exc_info:
+        verify_session_bundle(minted)
+    assert exc_info.value.code == "SESSION_BUNDLE_INVALID"
+
+
+# ── malformed coordinator AID (issue #23, adjacent completeness) ──────────
+
+
+def test_bundle_malformed_coordinator_does_not_crash(spec_dir: Path) -> None:
+    """`parse_aid` signals a malformed AID with a bare `ValueError`, which is
+    not an `AitpError` -- must be caught and reported as SESSION_BUNDLE_INVALID.
+    """
+    minted = _minted_bundle_input(spec_dir)
+    body = minted["session_bundle"]["session_bundle"]
+    body["coordinator"] = "not-an-aid"
+    with pytest.raises(AitpError) as exc_info:
+        verify_session_bundle(minted)
+    assert exc_info.value.code == "SESSION_BUNDLE_INVALID"

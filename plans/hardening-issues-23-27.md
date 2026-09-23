@@ -501,7 +501,13 @@ validation — check and update if misleading after the change).
 
 ### Phase 5 — `sessionbundle.py` hardening (issue #23, item 1 "sessionbundle.py", plus adjacent completeness gaps)
 
-**Status:** TODO
+**Status:** DONE. Implemented as specified, interleaved `require_members`/`check_types`/
+`reject_unknown_fields` convention matching `manifest.py`. One minor divergence: `_BODY_TYPES`
+additionally type-checks the optional `extensions` member as `(dict,)` (the plan's table only
+listed the seven required members) — a benign superset consistent with the schema, confirmed
+non-breaking by the Phase 5 verifier. Fresh-Opus verifier PASS round 1; verifier additionally
+fault-injected all 16 new tests against the pre-fix code (via `git stash`) and confirmed every
+one fails with the exact hazard claimed, proving none are vacuous.
 
 **Delivers:** `sessionbundle.py`'s body- and participant-level required-member/type
 validation is completed (today: `signature` presence/type is checked explicitly, but

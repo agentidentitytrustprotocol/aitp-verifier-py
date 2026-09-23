@@ -17,7 +17,11 @@ then body shape and participant-entry shape (RFC-AITP-0001 §7 — every
 ``additionalProperties: false`` object in the schema, not just the wrapper;
 ``extensions`` on the body is the one schema-reserved escape hatch and is
 admitted without its contents being inspected, per RFC-AITP-0012 §1 —
-bundle-005-extensions-accepted pins this), then version, then expiry
+bundle-005-extensions-accepted pins this). Body and participant-entry shape
+now covers required-member presence and declared type as well as the member
+set, so every other member the rest of this module dereferences (``participants``,
+``expires_at``, ``coordinator``, each entry's ``aid``/``tct``) is guaranteed
+present and correctly typed by the time it is used. Then version, then expiry
 (**before** the signature — a stale bundle is rejected even if it would
 verify), then the expiry-window invariant (``expires_at`` == the minimum
 participant TCT ``exp``), then the coordinator signature, then each
@@ -45,8 +49,7 @@ from typing import Any
 from .aid import parse_aid
 from .crypto import sha256
 from .errors import AitpError
-from .fields import reject_unknown_fields
-from .jcs import canonicalize
+from .fields import canonical_bytes, check_types, reject_unknown_fields, require_members
 from .jws import parse_compact, verify_jws
 from .sigfield import decode_tagged_signature
 from .tct import check_tct_claims_shape
@@ -62,6 +65,20 @@ _BODY_FIELDS = frozenset({
     "version", "session_id", "coordinator", "issued_at", "expires_at", "participants", "extensions", "signature",
 })
 _PARTICIPANT_FIELDS = frozenset({"aid", "tct"})
+# `extensions` is the lone optional body member (RFC-AITP-0012 §1); every
+# other member here is dereferenced somewhere in this module (directly, or
+# via `signing_body`/`canonical_bytes`) with no presence guard before this
+# phase. `issued_at`'s type check exists for completeness/fail-fast reasons
+# -- it is carried through into the signed body but never itself compared,
+# so `canonical_bytes` alone already prevented a crash from it; nothing here
+# additionally depends on its type being checked early.
+_REQUIRED_BODY_FIELDS = ("version", "session_id", "coordinator", "issued_at", "expires_at", "participants", "signature")
+_BODY_TYPES: dict[str, tuple[type, ...]] = {
+    "version": (str,), "session_id": (str,), "coordinator": (str,), "issued_at": (int,),
+    "expires_at": (int,), "participants": (list,), "extensions": (dict,), "signature": (str,),
+}
+_REQUIRED_PARTICIPANT_FIELDS = ("aid", "tct")
+_PARTICIPANT_TYPES: dict[str, tuple[type, ...]] = {"aid": (str,), "tct": (str,)}
 
 
 def verify_session_bundle(inp: dict[str, Any], now: int | None = None) -> dict[str, Any]:
@@ -116,18 +133,20 @@ def verify_session_bundle(inp: dict[str, Any], now: int | None = None) -> dict[s
     body = outer["session_bundle"]
     if not isinstance(body, dict):
         raise AitpError("SESSION_BUNDLE_INVALID", f"session bundle body is {type(body).__name__}, not an object")
-    if "signature" not in body:
-        raise AitpError("SESSION_BUNDLE_INVALID", "session bundle body has no signature")
-    if not isinstance(body["signature"], str):
-        # Schema pins `type: string`; sigfield.py annotates `sig: str` but is
-        # handed unvalidated input, so a non-string tracebacks there instead.
-        raise AitpError("SESSION_BUNDLE_INVALID", f"signature is {type(body['signature']).__name__}, not a string")
+    # Presence -> type -> member-set, matching `manifest.py`'s interleaved
+    # convention (Phase 4 also adopts it for envelope.py) rather than
+    # revocation.py's deferred one: this validates one flat object (plus its
+    # `participants[]` entries, each independently) rather than a tree.
+    require_members(body, _REQUIRED_BODY_FIELDS, shape_code="SESSION_BUNDLE_INVALID", what="session bundle body")
+    check_types(body, _BODY_TYPES, shape_code="SESSION_BUNDLE_INVALID", what="session bundle body")
     reject_unknown_fields(body, _BODY_FIELDS, shape_code="SESSION_BUNDLE_INVALID", what="session bundle body")
 
     participants = body["participants"]
     for p in participants:
         if not isinstance(p, dict):
             raise AitpError("SESSION_BUNDLE_INVALID", f"participant entry is {type(p).__name__}, not an object")
+        require_members(p, _REQUIRED_PARTICIPANT_FIELDS, shape_code="SESSION_BUNDLE_INVALID", what="participant entry")
+        check_types(p, _PARTICIPANT_TYPES, shape_code="SESSION_BUNDLE_INVALID", what="participant entry")
         reject_unknown_fields(p, _PARTICIPANT_FIELDS, shape_code="SESSION_BUNDLE_INVALID", what="participant entry")
 
     if body.get("version") != "aitp/0.2":
@@ -143,11 +162,27 @@ def verify_session_bundle(inp: dict[str, Any], now: int | None = None) -> dict[s
         raise AitpError("BUNDLE_EXPIRY_WINDOW_INVARIANT", "expires_at != min participant TCT exp")
 
     coordinator = body["coordinator"]
-    coord = parse_aid(coordinator)
+    try:
+        coord = parse_aid(coordinator)
+    except ValueError as exc:
+        # `parse_aid` signals a malformed AID with a bare ValueError, which is
+        # not an AitpError and escapes this module's caller. `coordinator` is
+        # a schema-typed string, so this is a grammar defect ->
+        # SESSION_BUNDLE_INVALID, matching manifest.py's/envelope.py's own
+        # `parse_aid` guard.
+        raise AitpError("SESSION_BUNDLE_INVALID", f"session bundle coordinator is not a valid AID: {exc}") from exc
     signature = body["signature"]
     signing_body = {k: v for k, v in body.items() if k != "signature"}
     raw = decode_tagged_signature(signature, coord, sig_err="BUNDLE_INVALID_SIGNATURE")
-    if not coord.public_key.verify_digest(sha256(canonicalize(signing_body)), raw):
+    # `canonical_bytes` converts `JcsError` (a ValueError, not an AitpError,
+    # so it would otherwise escape this module's caller) to
+    # SESSION_BUNDLE_INVALID. The offending value can sit anywhere inside
+    # `extensions`, whose interior RFC-AITP-0001 §7 forbids inspecting, or in
+    # `issued_at`/`expires_at`, both plain `int`-typed fields wide enough that
+    # JCS refuses to serialize a sufficiently large one -- both arrive as
+    # ordinary valid JSON from an unauthenticated coordinator.
+    digest = sha256(canonical_bytes(signing_body, shape_code="SESSION_BUNDLE_INVALID", what="session bundle body"))
+    if not coord.public_key.verify_digest(digest, raw):
         raise AitpError("BUNDLE_INVALID_SIGNATURE", "coordinator signature invalid")
 
     for p in participants:

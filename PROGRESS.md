@@ -406,3 +406,36 @@ Baseline confirmed green before starting: `pytest tests/`: 166 passed. `run_conf
   judgment call.
 - **What's next:** Phase 5 (`sessionbundle.py` hardening — issue #23 item 1/sessionbundle,
   plus adjacent completeness gaps).
+
+### Phase 5 — `sessionbundle.py` hardening (issue #23 item 1/sessionbundle, plus completeness gaps) — DONE (2026-09-23)
+
+- **Verdict:** PASS, round 1, fresh Opus verifier (not critical per the Autonomy ladder —
+  internal validation hardening mirroring `manifest.py`'s/`envelope.py`'s already-established
+  pattern, no public-contract change). Verifier additionally fault-injected: it stashed the
+  production diff, ran all 16 new tests against the pre-fix code, and confirmed every one
+  fails with the exact hazard claimed (raw `KeyError`/`TypeError`/`ValueError`/`JcsError`) —
+  proving none are vacuous — then restored the working tree.
+- **Files touched:** `aitp_verifier/sessionbundle.py` (`_REQUIRED_BODY_FIELDS`/`_BODY_TYPES`/
+  `_REQUIRED_PARTICIPANT_FIELDS`/`_PARTICIPANT_TYPES` tables added; body and participant
+  validation routed through `require_members`→`check_types`→`reject_unknown_fields`, matching
+  `manifest.py`'s interleaved convention, inside the existing shape stage — before version/
+  expiry, preserving `bundle-003`'s "shape precedes expiry" ordering invariant; `coordinator`'s
+  `parse_aid` wrapped in try/except → `SESSION_BUNDLE_INVALID`; `canonicalize(signing_body)`
+  routed through `canonical_bytes`; module docstring updated one line), `tests/test_sessionbundle.py`
+  (+16 tests: required-member coverage for all 6 body fields, mistyped-member coverage for 4
+  body fields, participant missing-both-members, participant mistyped `aid`/`tct`, `extensions`
+  1e400-hazard, huge-int `issued_at`-hazard, malformed-coordinator-hazard).
+- **Tests:** `pytest tests/ -q` → 237 passed (baseline 221: +16 in `test_sessionbundle.py`).
+  `run_conformance.py` → 68/0/1, unchanged; `bundle-003` individually re-confirmed →
+  `BUNDLE_EXPIRED` (the load-bearing ordering invariant, untouched). `mypy` → clean, 33 source
+  files. All 16 new hostile-mutation tests mint a well-formed `bundle-001` fixture first via
+  `_minted_bundle_input`, then mutate afterward — never pass a hostile value through
+  `mint_input`/`_mint_bundle` itself (the same minting-order-of-operations trap as Phases 1/3/4).
+- **Gap rounds:** 0 — PASS on first verify.
+- **ASSUMPTIONS.md:** none logged this phase. One minor implementation divergence noted
+  directly in `plans/hardening-issues-23-27.md`'s Phase 5 section instead (not ambiguous
+  enough to warrant an `ASSUMPTIONS.md` entry): `_BODY_TYPES` additionally type-checks the
+  optional `extensions` member as `(dict,)`, a benign superset the plan's table didn't list,
+  confirmed non-breaking by the verifier.
+- **What's next:** Phase 6 (`handshake.py` — dispatcher-level gaps plus `_verify_bootstrap`
+  gaps, issue #23 item 3).
