@@ -12,14 +12,14 @@ removed (§6.1); the PoP covers ``sha256(base64url_decode(challenge))``
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .aid import parse_aid
 from .b64 import b64url_decode
 from .crypto import sha256
 from .errors import AitpError
-from .fields import reject_unknown_fields
-from .jcs import canonicalize
+from .fields import canonical_bytes, check_types, decode_b64url, reject_unknown_fields, require_members
 from .sigfield import decode_tagged_signature
 from .timeutil import REFERENCE_CLOCK
 
@@ -80,21 +80,8 @@ def _shape(obj: Any, required: tuple[str, ...], allowed: frozenset[str],
     """
     if not isinstance(obj, dict):
         raise AitpError("MANIFEST_INVALID", f"{what} is {type(obj).__name__}, not an object")
-    if missing := [k for k in required if k not in obj]:
-        raise AitpError("MANIFEST_INVALID", f"{what} is missing required member(s) {missing}")
-    for key, allowed_types in types.items():
-        if key not in obj:
-            continue
-        value = obj[key]
-        # `bool` is excluded from `int` deliberately: Python makes True an int,
-        # JSON does not. An integral float IS a valid JSON `integer` and
-        # canonicalizes identically, so it is admitted.
-        if isinstance(value, bool) and bool not in allowed_types:
-            raise AitpError("MANIFEST_INVALID", f"{what}.{key} is bool, not {allowed_types[0].__name__}")
-        if int in allowed_types and isinstance(value, float) and value.is_integer():
-            continue
-        if not isinstance(value, allowed_types):
-            raise AitpError("MANIFEST_INVALID", f"{what}.{key} is {type(value).__name__}, not {allowed_types[0].__name__}")
+    require_members(obj, required, shape_code="MANIFEST_INVALID", what=what)
+    check_types(obj, types, shape_code="MANIFEST_INVALID", what=what)
     # Last, so that an object which is BOTH mistyped and carrying an unknown
     # member reports the structural code. The registry scopes UNKNOWN_FIELD to
     # "when the only defect is an unknown member", and revocation.py orders it
@@ -114,6 +101,47 @@ _REQUIRED_MANIFEST_FIELDS = (
 # handshake.py:82 reads it, so leaving it open would have been a real hole
 # behind an indirection.
 _IDENTITY_HINT_FIELDS = frozenset({"type", "issuer", "subject", "public_key"})
+# $defs/IdentityHint's own conditional requirements, beyond `_shape`'s flat
+# presence/type/member-set check: `if type == "oidc"` -> `issuer` required,
+# `public_key` forbidden; `else` -> `public_key` required. `type`'s `enum` and
+# `public_key`'s `pattern` (both from the schema, not invented here) are
+# likewise unenforced by `_shape`, which only confirms both are strings.
+_IDENTITY_HINT_TYPE_VALUES = frozenset({"oidc", "pinned_key"})
+_PUBLIC_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43,44}$")
+
+
+def _validate_identity_hint(hint: dict[str, Any]) -> None:
+    """Enforce `$defs/IdentityHint`'s conditional requirements, enum, and pattern.
+
+    `_shape` has already confirmed `type`/`subject` are present and every
+    present member is correctly typed -- this covers what a flat
+    presence/type/member-set check cannot express. `type`'s enum is checked
+    first so an unrecognized value reports itself rather than a spurious
+    "public_key required" for a type that was never valid to begin with.
+    """
+    hint_type = hint["type"]
+    if hint_type not in _IDENTITY_HINT_TYPE_VALUES:
+        raise AitpError(
+            "MANIFEST_INVALID",
+            f"manifest.identity_hint.type is {hint_type!r}, not one of {sorted(_IDENTITY_HINT_TYPE_VALUES)}",
+        )
+    if hint_type == "oidc":
+        if "issuer" not in hint:
+            raise AitpError(
+                "MANIFEST_INVALID",
+                "manifest.identity_hint is missing required member(s) ['issuer'] (required when type is 'oidc')",
+            )
+        if "public_key" in hint:
+            raise AitpError(
+                "MANIFEST_INVALID", "manifest.identity_hint.public_key is forbidden when type is 'oidc'",
+            )
+    elif "public_key" not in hint:
+        raise AitpError(
+            "MANIFEST_INVALID",
+            "manifest.identity_hint is missing required member(s) ['public_key'] (required when type is not 'oidc')",
+        )
+    if "public_key" in hint and not _PUBLIC_KEY_PATTERN.match(hint["public_key"]):
+        raise AitpError("MANIFEST_INVALID", "manifest.identity_hint.public_key does not match the required pattern")
 
 
 def verify_manifest(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any]:
@@ -128,6 +156,19 @@ def verify_manifest(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str
     _shape(man["proof_of_possession"], _REQUIRED_POP_FIELDS, _POP_FIELDS, _POP_TYPES, "manifest.proof_of_possession")
     _shape(man["identity_hint"], _REQUIRED_IDENTITY_HINT_FIELDS, _IDENTITY_HINT_FIELDS,
            _IDENTITY_HINT_TYPES, "manifest.identity_hint")
+    _validate_identity_hint(man["identity_hint"])
+    # Grammar, not just type: `challenge` is confirmed a `str` above, but a
+    # non-base64url string (or one carrying '=' padding) would otherwise reach
+    # the raw `b64url_decode` below unguarded and escape this module's
+    # `except AitpError` caller as a bare ValueError/binascii.Error. The
+    # registry scopes MANIFEST_INVALID to include "a value outside its
+    # grammar", so this stays part of the structural pass -- the PoP
+    # signature step is never reached for a malformed challenge, keeping a
+    # structural defect from being reported as a signature-family failure.
+    decode_b64url(
+        man["proof_of_possession"]["challenge"], code="MANIFEST_INVALID",
+        what="manifest.proof_of_possession.challenge",
+    )
     now = int(inp.get("now", now))
     supported = inp.get("supported_versions", ["aitp/0.2"])
 
@@ -152,7 +193,16 @@ def verify_manifest(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str
 
     man_sig = decode_tagged_signature(man["signature"], aid, sig_err="MANIFEST_SIGNATURE_INVALID")
     body = {k: v for k, v in man.items() if k != "signature"}
-    if not aid.public_key.verify_digest(sha256(canonicalize(body)), man_sig):
+    # `canonical_bytes` converts `JcsError` (a ValueError, not an AitpError,
+    # so it would otherwise escape this module's `except AitpError` caller) to
+    # MANIFEST_INVALID. `check_types`/`_shape` cannot prevent this on their
+    # own: the offending value can sit anywhere inside `extensions`, whose
+    # interior RFC-AITP-0001 §7 forbids inspecting, and a plain `"published_at":
+    # 1` with 400 zeros is a valid JSON integer of a magnitude JCS refuses to
+    # serialize -- both arrive as ordinary valid JSON from a remote peer via
+    # handshake.py's inline manifest.
+    digest = sha256(canonical_bytes(body, shape_code="MANIFEST_INVALID", what="manifest"))
+    if not aid.public_key.verify_digest(digest, man_sig):
         raise AitpError("MANIFEST_SIGNATURE_INVALID", "manifest signature invalid")
 
     return {"aid": man["aid"]}

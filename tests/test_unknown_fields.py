@@ -39,6 +39,7 @@ from aitp_verifier.envelope import verify_envelope
 from aitp_verifier.errors import AitpError
 from aitp_verifier.fields import reject_unknown_fields
 from aitp_verifier.handshake import verify_handshake_payload
+from aitp_verifier.identity import verify_identity
 from aitp_verifier.jwk import thumbprint_for_aid
 from aitp_verifier.jws import encode_jws
 from aitp_verifier.keys import load_kat_keys
@@ -235,6 +236,7 @@ def _voucher_claims(**overrides: Any) -> dict[str, Any]:
         "grants": ["macp.mode.task.v1"],
         "iat": NOW,
         "exp": NOW + 3600,
+        "src_jti": str(uuid.uuid4()),
     }
     base.update(overrides)
     return base
@@ -272,6 +274,7 @@ def _delegation_claims(voucher_token: str, **overrides: Any) -> dict[str, Any]:
         "aud": ISSUER,
         "scope": ["macp.mode.task.v1"],
         "exp": NOW + 3600,
+        "cnf": {"jkt": "not-checked-for-single-hop"},
         "voucher": voucher_token,
         "jti": str(uuid.uuid4()),
     }
@@ -440,14 +443,68 @@ def test_manifest_identity_hint_unknown_field_rejected(spec_dir: Path) -> None:
     assert exc.value.code == "UNKNOWN_FIELD"
 
 
-def test_manifest_identity_hint_known_fields_accepted(spec_dir: Path) -> None:
+def test_manifest_identity_hint_oidc_known_fields_accepted(spec_dir: Path) -> None:
+    """`oidc` with `issuer` and no `public_key` -- the shape `$defs/IdentityHint`
+    actually requires for that type (RFC-AITP-0003, schema `if/then/else`).
+
+    Until this phase, this test instead asserted an `oidc` entry CARRYING
+    `public_key` was accepted -- the exact under-enforcement issue #23 item 4
+    reports. See `test_manifest_identity_hint_conditional_requirements_enforced`
+    for the now-covered rejection of that combined shape.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _manifest_input()
+    inp["manifest"]["identity_hint"] = {"type": "oidc", "issuer": "https://issuer.example", "subject": "s"}
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    assert verify_manifest(minted) == {"aid": SUBJECT}
+
+
+def test_manifest_identity_hint_pinned_key_known_fields_accepted(spec_dir: Path) -> None:
+    """`pinned_key` with a `public_key` matching the schema's pattern
+    (`^[A-Za-z0-9_-]{43,44}$`) -- the paired positive for the `pinned_key`
+    branch, reusing a real 43-char AID key so the grammar is exercised
+    against actual key material, not a placeholder.
+    """
     keys = load_kat_keys(spec_dir)
     inp = _manifest_input()
     inp["manifest"]["identity_hint"] = {
-        "type": "oidc", "issuer": "https://issuer.example", "subject": "s", "public_key": "k",
+        "type": "pinned_key", "subject": "s", "public_key": SUBJECT.split(":")[-1],
     }
     minted = mint_input(inp, REFERENCE_CLOCK, keys)
     assert verify_manifest(minted) == {"aid": SUBJECT}
+
+
+@pytest.mark.parametrize(
+    ("hint", "label"),
+    [
+        pytest.param(
+            {"type": "oidc", "issuer": "https://issuer.example", "subject": "s", "public_key": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"},
+            "oidc-with-forbidden-public-key", id="oidc-with-forbidden-public-key",
+        ),
+        pytest.param({"type": "oidc", "subject": "s"}, "oidc-missing-issuer", id="oidc-missing-issuer"),
+        pytest.param({"type": "pinned_key", "subject": "s"}, "pinned-key-missing-public-key", id="pinned-key-missing-public-key"),
+        pytest.param({"type": "bogus", "subject": "s"}, "unrecognized-type", id="unrecognized-type"),
+        pytest.param(
+            {"type": "pinned_key", "subject": "s", "public_key": "too-short"},
+            "public-key-fails-pattern", id="public-key-fails-pattern",
+        ),
+    ],
+)
+def test_manifest_identity_hint_conditional_requirements_enforced(hint: dict[str, Any], label: str, spec_dir: Path) -> None:
+    """`$defs/IdentityHint`'s `if/then/else` (oidc <-> issuer required/public_key
+    forbidden; else <-> public_key required), `type` enum, and `public_key`
+    pattern -- issue #23 item 4. `_shape`'s flat presence/type/member-set check
+    cannot express any of these; before this phase they were silently
+    unenforced (`test_manifest_identity_hint_known_fields_accepted` used to
+    assert the `oidc-with-forbidden-public-key` shape below was ACCEPTED).
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _manifest_input()
+    inp["manifest"]["identity_hint"] = hint
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    with pytest.raises(AitpError) as exc:
+        verify_manifest(minted)
+    assert exc.value.code == "MANIFEST_INVALID", label
 
 
 @pytest.mark.parametrize("obj", [None, 5, "text", ["a"], True])
@@ -654,6 +711,181 @@ def test_identity_descriptor_extensions_accepted(spec_dir: Path) -> None:
     assert verify_handshake_payload(minted) == {"ok": True}
 
 
+# ── handshake.py: validate before dereferencing (issue #23 item 3, plus a
+#    review-round finding) ─────────────────────────────────────────────────
+#
+# `handshake.py` never calls `verify_envelope()` -- it parses the envelope
+# shape itself, inline -- so none of `envelope.py`'s Phase 4 hardening
+# covers it. The checks below all run BEFORE any manifest/identity/envelope
+# signature verification, so (unlike the identity-type-check case further
+# down) they need no minted crypto -- a raw, unminted `verify_handshake_payload`
+# call reaches them directly.
+
+
+def test_handshake_missing_envelope_is_a_structural_rejection() -> None:
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload({"self_aid": ISSUER})
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+@pytest.mark.parametrize("envelope", [5, "not-an-object", None, []])
+def test_handshake_mistyped_envelope_is_a_structural_rejection(envelope: Any) -> None:
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload({"self_aid": ISSUER, "envelope": envelope})
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+def test_handshake_missing_message_type_is_a_structural_rejection() -> None:
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload({"self_aid": ISSUER, "envelope": {}})
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+@pytest.mark.parametrize("message_type", [5, None, [], {}])
+def test_handshake_mistyped_message_type_is_a_structural_rejection(message_type: Any) -> None:
+    """`message_type` as a `list`/`dict` (unhashable) previously raised a raw
+    `TypeError` from `mtype in _BOOTSTRAP`, not just `KeyError` for the
+    missing case -- both must be a structural `AitpError` now.
+    """
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload({"self_aid": ISSUER, "envelope": {"message_type": message_type}})
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+def test_handshake_hello_missing_payload_is_a_structural_rejection() -> None:
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload({"self_aid": ISSUER, "envelope": {"message_type": "mutual_hello"}})
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+def test_handshake_commit_missing_payload_is_a_structural_rejection() -> None:
+    """Same hazard, the dispatcher's own `env["payload"]` dereference for the
+    `mutual_commit`/`mutual_commit_ack` branch (distinct code path from the
+    bootstrap branch above -- guarded in `verify_handshake_payload` itself,
+    not in `_verify_bootstrap`).
+    """
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload({"self_aid": ISSUER, "envelope": {"message_type": "mutual_commit"}})
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+@pytest.mark.parametrize("sender", ["not-an-object", ["a"], 5, None], ids=["string", "list", "int", "null"])
+def test_handshake_hello_mistyped_sender_is_a_structural_rejection(sender: Any, spec_dir: Path) -> None:
+    """`env["sender"]`'s first dereference in `_verify_bootstrap` (the
+    `manifest.aid != sender.agent_id` comparison) runs AFTER `verify_manifest`
+    -- so, like the identity-type-check test below, this needs a genuinely
+    valid, minted manifest+envelope to reach; a bare dict input would fail
+    manifest verification first and never get here.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _hello_input(ISSUER, SUBJECT)
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    minted["envelope"]["sender"] = sender
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+def test_handshake_hello_payload_missing_manifest_is_a_structural_rejection() -> None:
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload({
+            "self_aid": ISSUER,
+            "envelope": {
+                "message_type": "mutual_hello",
+                "sender": {"agent_id": SUBJECT},
+                "payload": {"identity": {}},
+            },
+        })
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+def test_handshake_hello_payload_missing_identity_is_a_structural_rejection(spec_dir: Path) -> None:
+    """Unlike the missing-`manifest` case above, an empty `{"manifest": {}}`
+    payload can't pin this: an empty manifest fails `verify_manifest`'s own
+    structural check (MANIFEST_INVALID) before the code ever reaches
+    `payload["identity"]`, so it would mask the very hazard this test needs
+    to prove -- a raw `KeyError` from that dereference. Needs a genuinely
+    valid, minted manifest (which passes `verify_manifest` cleanly) so the
+    code actually reaches the `identity` presence check afterward.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _hello_input(ISSUER, SUBJECT)
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    del minted["envelope"]["payload"]["identity"]
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+def test_handshake_hello_missing_pop_nonce_with_valid_manifest_is_a_structural_rejection(spec_dir: Path) -> None:
+    """Same reasoning as the missing-`identity` case above, for `pop_nonce`:
+    needs a genuinely valid, minted manifest+identity (which pass
+    `verify_manifest` cleanly) so the code actually reaches
+    `verify_identity`'s pinned-key path -- `identity.py::_verify_pinned_key`'s
+    own `envelope["payload"]["pop_nonce"]` dereference is what a missing
+    `pop_nonce` would otherwise crash on with a raw `KeyError`, if this
+    presence check (added for issue #23's Phase-7 sweep finding) didn't catch
+    it first. Unlike the identity/manifest guards, this one specifically
+    guards a field `test_boundary_contract.py`'s own harness cannot reach --
+    `minter.py::_mint_pinned_proof` dereferences the same key during minting,
+    so a mutation deleting it there is intercepted (and skipped) before ever
+    reaching the verifier, the same minting-time-interception blind spot
+    `ASSUMPTIONS.md` already documents for the `manifest.py`/`JcsError` case.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _hello_input(ISSUER, SUBJECT)
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    del minted["envelope"]["payload"]["pop_nonce"]
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+def test_verify_identity_pinned_key_missing_pop_nonce_is_identity_failed_not_a_crash(spec_dir: Path) -> None:
+    """Defense in depth for the same hazard as the test above, exercised at
+    `identity.verify_identity`'s own public call surface directly --
+    bypassing `handshake.py`'s new presence guard entirely, the way
+    `test_boundary_contract_identity_never_raises_a_bare_exception` calls
+    `verify_identity` directly with no other caller-side guarantee.
+    `_verify_pinned_key`'s except tuple now also catches `KeyError`.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _hello_input(ISSUER, SUBJECT)
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    env = minted["envelope"]
+    del env["payload"]["pop_nonce"]
+    with pytest.raises(AitpError) as exc:
+        verify_identity(
+            env["payload"]["identity"],
+            env,
+            minted.get("self_aid", ""),
+            trust_anchors=minted.get("self_trust_anchors"),
+            trust_store=minted.get("trust_store"),
+            issuer_keys=minted.get("resolved_issuer_keys", {}),
+            now=REFERENCE_CLOCK,
+        )
+    assert exc.value.code == "IDENTITY_FAILED"
+
+
+@pytest.mark.parametrize("identity", ["not-an-object", ["a"], 5, None])
+def test_handshake_hello_mistyped_identity_reports_identity_failed(identity: Any, spec_dir: Path) -> None:
+    """Unlike the checks above, this one runs AFTER `verify_manifest` (mh-002/
+    mh-003's own "manifest surfaces MANIFEST_* before identity" ordering), so
+    it needs a genuinely valid, minted manifest+envelope to reach -- a bare
+    dict input would fail manifest verification first and never get here.
+    Deliberately `IDENTITY_FAILED`, not `INVALID_ENVELOPE`: this is the same
+    code `identity.py`'s own (otherwise unreachable, via this call path)
+    non-dict guard uses for the identical defect.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _hello_input(ISSUER, SUBJECT)
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    minted["envelope"]["payload"]["identity"] = identity
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "IDENTITY_FAILED"
+
+
 @pytest.mark.parametrize(
     ("entries", "label"),
     [
@@ -784,6 +1016,54 @@ def test_revocation_unknown_field_yields_to_a_structural_defect() -> None:
                     "now": NOW + 100, "expected_issuer": ISSUER, "snapshot": snapshot,
                 })
             assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID", f"{extra_defect}/{mode}"
+
+
+def test_revocation_wrapper_unknown_field_yields_to_body_type_defect() -> None:
+    """An unrecognized WRAPPER-level member (a top-level key beside
+    `revocation_list`/`signature`) combined with a body-level type defect
+    still reports `REVOCATION_SNAPSHOT_INVALID`, not `UNKNOWN_FIELD`.
+
+    `test_revocation_unknown_field_yields_to_a_structural_defect` already
+    pins this ordering for a BODY-level unknown member; this pins it
+    independently for a WRAPPER-level one, since `reject_unknown_fields` is
+    called separately for the wrapper and the body (`revocation.py`'s
+    deferred member-set pass), and a refactor that collapsed the two into one
+    sweep could pass the body-level case while still getting this one wrong.
+    """
+    snapshot = {
+        "revocation_list": _revocation_body(published_at="nope"),
+        "signature": "x",
+        "list_owner": "x",  # unrecognized wrapper-level member
+    }
+    for mode in ("fail_closed", "soft_fail"):
+        with pytest.raises(AitpError) as exc:
+            verify_revocation_snapshot({
+                "policy": {"fail_mode": mode, "max_staleness_secs": 600},
+                "now": NOW + 100, "expected_issuer": ISSUER, "snapshot": snapshot,
+            })
+        assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID", mode
+
+
+def test_revocation_entry_unknown_field_yields_to_entry_type_defect() -> None:
+    """An unrecognized member inside a body-level `entries[]` item, combined
+    with a type defect on that SAME entry, still reports
+    `REVOCATION_SNAPSHOT_INVALID`, not `UNKNOWN_FIELD`.
+
+    Pins the entry-level ordering dependency (`_typed`/`check_types` on the
+    entry running before `reject_unknown_fields` is ever called on it)
+    independently of the body-level and wrapper-level cases above -- a
+    refactor that fixed those two but left the entry-level check deferred
+    ahead of its own type check would still pass both other tests.
+    """
+    body = _revocation_body(entries=[{"jti": 5, "revoked_at": NOW, "source": "attacker-supplied"}])
+    snapshot = {"revocation_list": body, "signature": "x"}
+    for mode in ("fail_closed", "soft_fail"):
+        with pytest.raises(AitpError) as exc:
+            verify_revocation_snapshot({
+                "policy": {"fail_mode": mode, "max_staleness_secs": 600},
+                "now": NOW + 100, "expected_issuer": ISSUER, "snapshot": snapshot,
+            })
+        assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID", mode
 
 
 @pytest.mark.parametrize("raw_json", ['1e400', '-1e400', '1e999'])

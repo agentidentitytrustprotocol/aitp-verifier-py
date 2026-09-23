@@ -16,11 +16,11 @@ from typing import Any
 from .b64 import b64url_encode
 from .crypto import sha256
 from .errors import AitpError
-from .fields import reject_unknown_fields
+from .fields import check_types, reject_unknown_fields, require_members
 from .jcs import canonicalize
 from .jws import parse_compact, verify_jws
 from .timeutil import REFERENCE_CLOCK
-from .voucher import VOUCHER_CLAIM_FIELDS
+from .voucher import check_voucher_claims_shape
 
 __all__ = ["verify_delegation_token", "compute_chain_hash"]
 
@@ -38,6 +38,32 @@ _DELEGATION_CLAIM_FIELDS = frozenset({
     "ver", "iss", "sub", "aud", "scope", "exp", "cnf", "voucher", "jti", "chain", "chain_hash", "ext",
 })
 _DELEGATION_CNF_FIELDS = frozenset({"jkt"})
+# aitp-delegation.schema.json `required`. Every one of these is dereferenced
+# unguarded downstream in both the single-hop path (`claims["iss"]`,
+# `int(claims["exp"])`, `set(claims["scope"])`) and the multi-hop per-hop
+# loop (the identical pattern on `hc`) -- `_check_delegation_claims_shape`
+# below is what closes both at once instead of each guessing at its own copy.
+# `voucher`/`jti`/`chain`/`chain_hash` are schema-optional (checked
+# contextually in code, not required here).
+_DELEGATION_REQUIRED_CLAIMS = ("ver", "iss", "sub", "aud", "scope", "exp", "cnf")
+_DELEGATION_CLAIM_TYPES: dict[str, tuple[type, ...]] = {
+    "ver": (str,), "iss": (str,), "sub": (str,), "aud": (str,), "scope": (list,),
+    "exp": (int,), "cnf": (dict,), "voucher": (str,), "jti": (str,), "chain": (list,), "chain_hash": (str,),
+}
+
+
+def _check_delegation_claims_shape(claims: dict[str, Any], *, shape_code: str) -> None:
+    """RFC-AITP-0006 §4's delegation claims-membership + required-member/type
+    check. One property set covers both the single-hop token and each
+    multi-hop hop (see the module docstring), so this runs identically for
+    both -- ``claims`` (single-hop) and each ``hc`` (multi-hop) below.
+    """
+    require_members(claims, _DELEGATION_REQUIRED_CLAIMS, shape_code=shape_code, what="delegation claims")
+    check_types(claims, _DELEGATION_CLAIM_TYPES, shape_code=shape_code, what="delegation claims")
+    if not all(isinstance(s, str) for s in claims["scope"]):
+        raise AitpError(shape_code, "delegation claims.scope must be an array of strings")
+    reject_unknown_fields(claims, _DELEGATION_CLAIM_FIELDS, shape_code=shape_code, what="delegation claims")
+    reject_unknown_fields(claims["cnf"], _DELEGATION_CNF_FIELDS, shape_code=shape_code, what="delegation claims.cnf")
 
 
 def compute_chain_hash(chain: list[str]) -> str:
@@ -69,9 +95,7 @@ def verify_delegation_token(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> 
         alg_err="TOKEN_ALG_MISMATCH",
         sig_err="DELEGATION_INVALID_SIGNATURE",
     )
-    reject_unknown_fields(claims, _DELEGATION_CLAIM_FIELDS, shape_code="DELEGATION_INVALID_SIGNATURE", what="delegation claims")
-    if isinstance(claims.get("cnf"), dict):
-        reject_unknown_fields(claims["cnf"], _DELEGATION_CNF_FIELDS, shape_code="DELEGATION_INVALID_SIGNATURE", what="delegation claims.cnf")
+    _check_delegation_claims_shape(claims, shape_code="DELEGATION_INVALID_SIGNATURE")
 
     if claims["iss"] == claims["sub"]:
         raise AitpError("DELEGATION_INVALID_SIGNATURE", "self-delegation")
@@ -95,7 +119,7 @@ def verify_delegation_token(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> 
         alg_err="TOKEN_ALG_MISMATCH",
         sig_err="DELEGATION_INVALID_VOUCHER",
     )
-    reject_unknown_fields(vclaims, VOUCHER_CLAIM_FIELDS, shape_code="DELEGATION_INVALID_VOUCHER", what="embedded voucher claims")
+    check_voucher_claims_shape(vclaims, shape_code="DELEGATION_INVALID_VOUCHER")
 
     if vclaims.get("sub") != claims["iss"]:
         raise AitpError("DELEGATION_INVALID_VOUCHER", "voucher.sub != delegator (delegator lacked the grant)")
@@ -145,16 +169,24 @@ def _verify_multihop(
             expected_typ="aitp-delegation+jwt", typ_err="TOKEN_TYP_MISMATCH",
             alg_err="TOKEN_ALG_MISMATCH", sig_err="DELEGATION_INVALID_SIGNATURE",
         )
-        reject_unknown_fields(hc, _DELEGATION_CLAIM_FIELDS, shape_code="DELEGATION_INVALID_SIGNATURE", what="delegation hop claims")
-        if isinstance(hc.get("cnf"), dict):
-            reject_unknown_fields(hc["cnf"], _DELEGATION_CNF_FIELDS, shape_code="DELEGATION_INVALID_SIGNATURE", what="delegation hop claims.cnf")
+        _check_delegation_claims_shape(hc, shape_code="DELEGATION_INVALID_SIGNATURE")
         if hc.get("ver") != "aitp/0.2":
             raise AitpError("UNKNOWN_VERSION", "unknown ver")
         if hc["iss"] == hc["sub"]:
             raise AitpError("DELEGATION_INVALID_SIGNATURE", "self-delegation")
         if hc.get("aud") != self_aid:
             raise AitpError("DELEGATION_AUDIENCE_MISMATCH", "hop aud is not this verifier")
-        if hc.get("cnf", {}).get("jkt") != thumbprint(parse_aid(str(hc["sub"]))):
+        try:
+            sub_aid = parse_aid(str(hc["sub"]))
+        except ValueError as exc:
+            # `parse_aid` signals a malformed AID with a bare ValueError,
+            # which is not an AitpError and escapes this module's caller.
+            # `sub` is a claims-shape-typed string by now, so this is a
+            # grammar defect -> DELEGATION_INVALID_VOUCHER, matching the
+            # code this same cnf.jkt-binding check already uses on the line
+            # below for every other "hop is malformed" defect.
+            raise AitpError("DELEGATION_INVALID_VOUCHER", f"hop claims.sub is not a valid AID: {exc}") from exc
+        if hc.get("cnf", {}).get("jkt") != thumbprint(sub_aid):
             raise AitpError("DELEGATION_INVALID_VOUCHER", "hop cnf.jkt does not bind sub key")
         jti = hc.get("jti")
         if not jti or jti in seen_jti:
@@ -176,7 +208,7 @@ def _verify_multihop(
                 voucher, iss_aid=str(v_iss), expected_typ="aitp-grant+jwt", typ_err="TOKEN_TYP_MISMATCH",
                 alg_err="TOKEN_ALG_MISMATCH", sig_err="DELEGATION_INVALID_VOUCHER",
             )
-            reject_unknown_fields(root_voucher, VOUCHER_CLAIM_FIELDS, shape_code="DELEGATION_INVALID_VOUCHER", what="root voucher claims")
+            check_voucher_claims_shape(root_voucher, shape_code="DELEGATION_INVALID_VOUCHER")
             if root_voucher.get("sub") != hc["iss"]:
                 raise AitpError("DELEGATION_INVALID_VOUCHER", "voucher.sub != root delegator")
             if now >= int(root_voucher["exp"]) or int(hc["exp"]) > int(root_voucher["exp"]):

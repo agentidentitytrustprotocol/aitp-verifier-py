@@ -12,10 +12,15 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from aitp_verifier.aid import parse_aid
+from aitp_verifier.b64 import b64url_encode
 from aitp_verifier.crypto import PrivateKey, sha256
+from aitp_verifier.errors import AitpError
 from aitp_verifier.jcs import canonicalize
 from aitp_verifier.jws import encode_jws, verify_jws
+from aitp_verifier.manifest import verify_manifest
 from aitp_verifier.revocation import verify_revocation_snapshot
 from aitp_verifier.sessionbundle import verify_session_bundle
 from aitp_verifier.sigfield import decode_tagged_signature
@@ -94,6 +99,40 @@ def test_manifest_signed_example_verifies_over_inner_body(spec_dir: Path) -> Non
     assert not issuer.public_key.verify_digest(
         sha256(canonicalize({"manifest": body})), raw
     ), "manifest signature verified over the WRAPPED form (RFC-AITP-0001 §5.4.1)"
+
+
+def test_manifest_signed_example_runs_the_real_verifier(spec_dir: Path) -> None:
+    """Drive the production `verify_manifest` over the committed bytes.
+
+    The crypto-primitive check above proves the signature covers the inner
+    body, not the wrapper -- but that is a fact about `decode_tagged_signature`
+    and `canonicalize`, not about `verify_manifest` itself. This exercises the
+    real entry point: the positive case over the untouched fixture, and a
+    negative built by re-signing the WRAPPED form with the same key, which
+    must fail closed rather than be silently accepted.
+    """
+    wrapped = _se(spec_dir, "manifest/kat-keypair-001-manifest.json")
+    man = wrapped["manifest"]
+    now = int(man["published_at"]) + 100
+    assert now < int(man["expires_at"]), "fixture must not be expired at the chosen `now`"
+
+    out = verify_manifest({"manifest": man, "now": now})
+    assert out == {"aid": man["aid"]}
+
+    # Negative: re-sign the WRAPPED form with the same key (kat-keypair-001,
+    # the seed behind `man["aid"]`) and confirm the real verifier rejects it
+    # instead of accepting a signature over the transport wrapper
+    # (RFC-AITP-0001 §5.4.1).
+    seed = bytes.fromhex("00" * 32)  # kat-keypair-001
+    sk = PrivateKey.ed25519_from_seed(seed)
+    body = {k: v for k, v in man.items() if k != "signature"}
+    wrapper_sig = sk.sign_digest(sha256(canonicalize({"manifest": body})))
+    rewrapped = dict(man)
+    rewrapped["signature"] = b64url_encode(wrapper_sig)
+
+    with pytest.raises(AitpError) as exc_info:
+        verify_manifest({"manifest": rewrapped, "now": now})
+    assert exc_info.value.code == "MANIFEST_SIGNATURE_INVALID"
 
 
 def test_revocation_signed_example_verifies_over_inner_body(spec_dir: Path) -> None:
