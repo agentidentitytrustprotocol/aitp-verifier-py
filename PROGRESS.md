@@ -342,3 +342,36 @@ Baseline confirmed green before starting: `pytest tests/`: 166 passed. `run_conf
   fully specified by the plan (itself already corrected for this exact ordering question
   during the plan's own Round 1 review), not a new judgment call made during implementation.
 - **What's next:** Phase 3 (`manifest.py` hardening — issue #23 items 1/manifest, 2, 4).
+
+### Phase 3 — `manifest.py` hardening (issue #23 items 1/manifest, 2, 4) — DONE (2026-09-23)
+
+- **Verdict:** PASS (functional/acceptance criteria), round 1, fresh Opus verifier (not
+  critical per the Autonomy ladder — internal validation hardening, no public-contract
+  change beyond the already-flagged, already-logged identity_hint flip). One-line why: the
+  behavior flip is schema-mandated and pre-approved by the plan's own review round, not a
+  new judgment call at implementation time. Verifier flagged 2 non-functional process gaps
+  (missing `ASSUMPTIONS.md`, plan `Status` not yet flipped) — both closed immediately as part
+  of this phase's own tracked-file closeout (see below), not a re-verify-worthy code gap.
+- **Files touched:** `aitp_verifier/manifest.py` (challenge-grammar check via `decode_b64url`
+  inserted into the structural pass; `_validate_identity_hint` added, enforcing the schema's
+  `if/then/else`, `type` enum, `public_key` pattern; final signature digest now via
+  `canonical_bytes`), `tests/test_unknown_fields.py` (the one required test rewrite, split
+  into 2 positive + 1 five-case-parametrized-negative), `tests/test_manifest.py` (new, 8
+  tests: JcsError-escape direct + via-handshake, PoP-challenge-grammar direct + via-handshake
+  + an empty-challenge control case), `ASSUMPTIONS.md` (new file, this phase's behavior-flip
+  entry).
+- **Tests:** `pytest tests/ -q` → 200 passed (baseline 186: +8 `test_manifest.py`, net +6 in
+  `test_unknown_fields.py`). `run_conformance.py` → 68/0/1, unchanged. `mypy` → clean, 32
+  source files. Verifier independently cross-checked `_validate_identity_hint` against the
+  actual JSON schema (`$defs/IdentityHint` in the sibling spec checkout) character-for-
+  character, confirmed every new test avoids the `mint_input`-signs-the-hostile-value-itself
+  trap (hostile values injected only after minting a well-formed fixture), and confirmed
+  every existing manifest test outside the one required rewrite is byte-for-byte unmodified.
+- **Gap rounds:** 0 code gaps — PASS on first verify. 2 non-blocking process gaps (both
+  closed same-turn, see above): `ASSUMPTIONS.md` didn't exist yet (created now, with this
+  phase's entry); plan `Status` line wasn't yet flipped (flipped now).
+- **ASSUMPTIONS.md:** 1 entry logged this phase — the `identity_hint` oidc+public_key
+  accept→reject flip, marked `UNCONFIRMED` pending the end-of-plan `/reconcile` pass, per the
+  plan's own Open-questions note that this is a "record and proceed" item.
+- **What's next:** Phase 4 (`envelope.py` hardening — issue #23 item 1/envelope, plus
+  adjacent completeness gaps).

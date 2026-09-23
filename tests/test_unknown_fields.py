@@ -440,14 +440,68 @@ def test_manifest_identity_hint_unknown_field_rejected(spec_dir: Path) -> None:
     assert exc.value.code == "UNKNOWN_FIELD"
 
 
-def test_manifest_identity_hint_known_fields_accepted(spec_dir: Path) -> None:
+def test_manifest_identity_hint_oidc_known_fields_accepted(spec_dir: Path) -> None:
+    """`oidc` with `issuer` and no `public_key` -- the shape `$defs/IdentityHint`
+    actually requires for that type (RFC-AITP-0003, schema `if/then/else`).
+
+    Until this phase, this test instead asserted an `oidc` entry CARRYING
+    `public_key` was accepted -- the exact under-enforcement issue #23 item 4
+    reports. See `test_manifest_identity_hint_conditional_requirements_enforced`
+    for the now-covered rejection of that combined shape.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _manifest_input()
+    inp["manifest"]["identity_hint"] = {"type": "oidc", "issuer": "https://issuer.example", "subject": "s"}
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    assert verify_manifest(minted) == {"aid": SUBJECT}
+
+
+def test_manifest_identity_hint_pinned_key_known_fields_accepted(spec_dir: Path) -> None:
+    """`pinned_key` with a `public_key` matching the schema's pattern
+    (`^[A-Za-z0-9_-]{43,44}$`) -- the paired positive for the `pinned_key`
+    branch, reusing a real 43-char AID key so the grammar is exercised
+    against actual key material, not a placeholder.
+    """
     keys = load_kat_keys(spec_dir)
     inp = _manifest_input()
     inp["manifest"]["identity_hint"] = {
-        "type": "oidc", "issuer": "https://issuer.example", "subject": "s", "public_key": "k",
+        "type": "pinned_key", "subject": "s", "public_key": SUBJECT.split(":")[-1],
     }
     minted = mint_input(inp, REFERENCE_CLOCK, keys)
     assert verify_manifest(minted) == {"aid": SUBJECT}
+
+
+@pytest.mark.parametrize(
+    ("hint", "label"),
+    [
+        pytest.param(
+            {"type": "oidc", "issuer": "https://issuer.example", "subject": "s", "public_key": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"},
+            "oidc-with-forbidden-public-key", id="oidc-with-forbidden-public-key",
+        ),
+        pytest.param({"type": "oidc", "subject": "s"}, "oidc-missing-issuer", id="oidc-missing-issuer"),
+        pytest.param({"type": "pinned_key", "subject": "s"}, "pinned-key-missing-public-key", id="pinned-key-missing-public-key"),
+        pytest.param({"type": "bogus", "subject": "s"}, "unrecognized-type", id="unrecognized-type"),
+        pytest.param(
+            {"type": "pinned_key", "subject": "s", "public_key": "too-short"},
+            "public-key-fails-pattern", id="public-key-fails-pattern",
+        ),
+    ],
+)
+def test_manifest_identity_hint_conditional_requirements_enforced(hint: dict[str, Any], label: str, spec_dir: Path) -> None:
+    """`$defs/IdentityHint`'s `if/then/else` (oidc <-> issuer required/public_key
+    forbidden; else <-> public_key required), `type` enum, and `public_key`
+    pattern -- issue #23 item 4. `_shape`'s flat presence/type/member-set check
+    cannot express any of these; before this phase they were silently
+    unenforced (`test_manifest_identity_hint_known_fields_accepted` used to
+    assert the `oidc-with-forbidden-public-key` shape below was ACCEPTED).
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _manifest_input()
+    inp["manifest"]["identity_hint"] = hint
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    with pytest.raises(AitpError) as exc:
+        verify_manifest(minted)
+    assert exc.value.code == "MANIFEST_INVALID", label
 
 
 @pytest.mark.parametrize("obj", [None, 5, "text", ["a"], True])

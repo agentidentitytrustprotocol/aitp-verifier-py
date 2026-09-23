@@ -317,7 +317,13 @@ stays each caller's own decision, not something this module imposes).
 
 ### Phase 3 — `manifest.py` hardening (issue #23, items 1 "manifest.py", 2, 4)
 
-**Status:** TODO
+**Status:** DONE. Implemented exactly as planned: `canonical_bytes` wraps the signature
+digest's canonicalize call, `decode_b64url` validates the PoP challenge's grammar inside the
+structural pass (before the PoP signature step, reporting `MANIFEST_INVALID` never
+`MANIFEST_POP_FAILED`), and `_validate_identity_hint` enforces the schema's `if/then/else`,
+`type` enum, and `public_key` pattern (enum checked first). The
+`test_manifest_identity_hint_known_fields_accepted` accept→reject flip was made and logged
+in `ASSUMPTIONS.md`, per this phase's own acceptance criteria.
 
 **Delivers:** The three manifest-specific gaps close: `canonicalize(body)` at
 `manifest.py:155` no longer lets `JcsError` escape; `proof_of_possession.challenge`'s
