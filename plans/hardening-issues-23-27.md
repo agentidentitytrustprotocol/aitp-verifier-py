@@ -589,7 +589,18 @@ there, not a rewrite.
 
 ### Phase 6 — `handshake.py`: validate before dereferencing, at both the dispatcher and the bootstrap payload (issue #23, item 3, plus a review-round finding)
 
-**Status:** TODO
+**Status:** DONE. Implemented exactly as specified: presence-and-type checks for
+`inp["envelope"]`/`env["message_type"]` in the dispatcher, `env["payload"]` in both the
+dispatcher's commit branch and `_verify_bootstrap`, `env["sender"]` in `_verify_bootstrap`,
+explicit `manifest`/`identity` presence, and `isinstance(identity, dict)` → `IDENTITY_FAILED`
+(no symmetric `manifest` check added, as directed — `verify_manifest` already covers it).
+`identity.py` correctly left untouched. Fresh-Opus verifier PASS round 1, which fault-injected
+20/22 new tests against pre-fix code (via `git stash`) and confirmed each fails with the exact
+raw exception claimed; it flagged one test-precision nuance (the missing-`identity` test's
+`manifest: {}` fixture hit `MANIFEST_INVALID` before ever reaching the hazard it meant to
+prove) — tightened post-verify by switching that one test to mint a genuinely valid manifest
+first, then delete `identity` afterward; re-confirmed by hand it now fails with the literal
+`KeyError: 'identity'` pre-fix.
 
 **Delivers:** Two gaps in the same module close together, both the same "reads before
 validating" class of bug: (1) — **new in this phase, found during this plan's review

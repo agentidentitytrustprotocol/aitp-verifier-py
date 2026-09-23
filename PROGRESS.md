@@ -439,3 +439,44 @@ Baseline confirmed green before starting: `pytest tests/`: 166 passed. `run_conf
   confirmed non-breaking by the verifier.
 - **What's next:** Phase 6 (`handshake.py` — dispatcher-level gaps plus `_verify_bootstrap`
   gaps, issue #23 item 3).
+
+### Phase 6 — `handshake.py`: validate before dereferencing (issue #23 item 3, plus a review-round finding) — DONE (2026-09-23)
+
+- **Verdict:** PASS, round 1, fresh Opus verifier (not critical per the Autonomy ladder —
+  internal validation hardening, no public-contract change). Verifier `git stash`-fault-injected
+  20 of the 22 new tests against the pre-fix module and confirmed each fails with the exact raw
+  exception claimed (`KeyError`, `TypeError: unhashable type`, `TypeError: ... not
+  subscriptable`, `AttributeError`); the other 2 (`message_type` mistyped to `5`/`None`) pass
+  even pre-fix by design — they fall through to the pre-existing "unsupported message_type"
+  fallback rather than the unhashable-type crash the `[]`/`{}` cases specifically target.
+- **Files touched:** `aitp_verifier/handshake.py` (presence/type guards for `inp["envelope"]`,
+  `env["message_type"]`, `env["payload"]` at both its dereference sites — the dispatcher's
+  commit branch and `_verify_bootstrap` — and `env["sender"]` in `_verify_bootstrap`, all
+  raising `INVALID_ENVELOPE`; explicit `manifest`/`identity` presence check inserted right
+  after the existing `reject_unknown_fields` call; `isinstance(identity, dict)` check raising
+  `IDENTITY_FAILED` — deliberately the same code `identity.py`'s own otherwise-unreachable
+  non-dict guard already uses for this defect; no symmetric `manifest` dict-check added, since
+  `verify_manifest` already covers that). `tests/test_unknown_fields.py` (+22 tests). `identity.py`
+  deliberately untouched (confirmed empty diff) — its own non-dict guard remains correctly
+  unreachable in production via this call path (dead code reached only through
+  `verify_identity`'s direct-call test path); this is fine and expected, not a defect, per the
+  plan's own acceptance criteria.
+- **Tests:** `pytest tests/ -q` → 259 passed (baseline 237: +22 in `test_unknown_fields.py`).
+  `run_conformance.py` → 68/0/1, unchanged. `mypy` → clean, 33 source files. All checks that run
+  before any crypto (envelope/message_type/payload/manifest-presence/identity-presence) use raw
+  dict input with no minting; the two checks positioned after `verify_manifest()` succeeds (the
+  sender-type-check and identity-type-check tests) mint a well-formed fixture via `mint_input`
+  first, then mutate the hostile value in afterward — the same minting-order-of-operations
+  pattern as every prior phase.
+- **Gap rounds:** 0 code gaps — PASS on first verify. 1 non-blocking test-precision nuance
+  (the missing-`identity` test's `manifest: {}` fixture failed pre-fix with `MANIFEST_INVALID`
+  rather than the literal `KeyError` the acceptance criterion names, because an empty manifest
+  trips `verify_manifest`'s own structural check before the code ever reaches
+  `payload["identity"]`) — closed same-turn by switching that test to mint a genuinely valid
+  manifest first, then delete `identity` afterward; hand-confirmed via `git stash` that it now
+  fails with the literal `KeyError: 'identity'` pre-fix.
+- **ASSUMPTIONS.md:** none logged this phase — every check's placement and error code was
+  fully specified by the plan, not a new judgment call.
+- **What's next:** Phase 7 (generic boundary-contract regression test,
+  `tests/test_boundary_contract.py` — spans issue #23's whole class; depends on Phases 2-6,
+  all now landed).

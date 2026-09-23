@@ -708,6 +708,131 @@ def test_identity_descriptor_extensions_accepted(spec_dir: Path) -> None:
     assert verify_handshake_payload(minted) == {"ok": True}
 
 
+# ── handshake.py: validate before dereferencing (issue #23 item 3, plus a
+#    review-round finding) ─────────────────────────────────────────────────
+#
+# `handshake.py` never calls `verify_envelope()` -- it parses the envelope
+# shape itself, inline -- so none of `envelope.py`'s Phase 4 hardening
+# covers it. The checks below all run BEFORE any manifest/identity/envelope
+# signature verification, so (unlike the identity-type-check case further
+# down) they need no minted crypto -- a raw, unminted `verify_handshake_payload`
+# call reaches them directly.
+
+
+def test_handshake_missing_envelope_is_a_structural_rejection() -> None:
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload({"self_aid": ISSUER})
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+@pytest.mark.parametrize("envelope", [5, "not-an-object", None, []])
+def test_handshake_mistyped_envelope_is_a_structural_rejection(envelope: Any) -> None:
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload({"self_aid": ISSUER, "envelope": envelope})
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+def test_handshake_missing_message_type_is_a_structural_rejection() -> None:
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload({"self_aid": ISSUER, "envelope": {}})
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+@pytest.mark.parametrize("message_type", [5, None, [], {}])
+def test_handshake_mistyped_message_type_is_a_structural_rejection(message_type: Any) -> None:
+    """`message_type` as a `list`/`dict` (unhashable) previously raised a raw
+    `TypeError` from `mtype in _BOOTSTRAP`, not just `KeyError` for the
+    missing case -- both must be a structural `AitpError` now.
+    """
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload({"self_aid": ISSUER, "envelope": {"message_type": message_type}})
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+def test_handshake_hello_missing_payload_is_a_structural_rejection() -> None:
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload({"self_aid": ISSUER, "envelope": {"message_type": "mutual_hello"}})
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+def test_handshake_commit_missing_payload_is_a_structural_rejection() -> None:
+    """Same hazard, the dispatcher's own `env["payload"]` dereference for the
+    `mutual_commit`/`mutual_commit_ack` branch (distinct code path from the
+    bootstrap branch above -- guarded in `verify_handshake_payload` itself,
+    not in `_verify_bootstrap`).
+    """
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload({"self_aid": ISSUER, "envelope": {"message_type": "mutual_commit"}})
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+@pytest.mark.parametrize("sender", ["not-an-object", ["a"], 5, None], ids=["string", "list", "int", "null"])
+def test_handshake_hello_mistyped_sender_is_a_structural_rejection(sender: Any, spec_dir: Path) -> None:
+    """`env["sender"]`'s first dereference in `_verify_bootstrap` (the
+    `manifest.aid != sender.agent_id` comparison) runs AFTER `verify_manifest`
+    -- so, like the identity-type-check test below, this needs a genuinely
+    valid, minted manifest+envelope to reach; a bare dict input would fail
+    manifest verification first and never get here.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _hello_input(ISSUER, SUBJECT)
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    minted["envelope"]["sender"] = sender
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+def test_handshake_hello_payload_missing_manifest_is_a_structural_rejection() -> None:
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload({
+            "self_aid": ISSUER,
+            "envelope": {
+                "message_type": "mutual_hello",
+                "sender": {"agent_id": SUBJECT},
+                "payload": {"identity": {}},
+            },
+        })
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+def test_handshake_hello_payload_missing_identity_is_a_structural_rejection(spec_dir: Path) -> None:
+    """Unlike the missing-`manifest` case above, an empty `{"manifest": {}}`
+    payload can't pin this: an empty manifest fails `verify_manifest`'s own
+    structural check (MANIFEST_INVALID) before the code ever reaches
+    `payload["identity"]`, so it would mask the very hazard this test needs
+    to prove -- a raw `KeyError` from that dereference. Needs a genuinely
+    valid, minted manifest (which passes `verify_manifest` cleanly) so the
+    code actually reaches the `identity` presence check afterward.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _hello_input(ISSUER, SUBJECT)
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    del minted["envelope"]["payload"]["identity"]
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+@pytest.mark.parametrize("identity", ["not-an-object", ["a"], 5, None])
+def test_handshake_hello_mistyped_identity_reports_identity_failed(identity: Any, spec_dir: Path) -> None:
+    """Unlike the checks above, this one runs AFTER `verify_manifest` (mh-002/
+    mh-003's own "manifest surfaces MANIFEST_* before identity" ordering), so
+    it needs a genuinely valid, minted manifest+envelope to reach -- a bare
+    dict input would fail manifest verification first and never get here.
+    Deliberately `IDENTITY_FAILED`, not `INVALID_ENVELOPE`: this is the same
+    code `identity.py`'s own (otherwise unreachable, via this call path)
+    non-dict guard uses for the identical defect.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _hello_input(ISSUER, SUBJECT)
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    minted["envelope"]["payload"]["identity"] = identity
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "IDENTITY_FAILED"
+
+
 @pytest.mark.parametrize(
     ("entries", "label"),
     [

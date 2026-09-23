@@ -54,28 +54,45 @@ def verify_handshake_payload(inp: dict[str, Any], now: int = REFERENCE_CLOCK) ->
             grants = _verify_commit(inp[side], inp[side].get("received_payload", {}), inp[side]["self_aid"], now)
         return {"grants": grants}
 
-    env = inp["envelope"]
-    mtype = env["message_type"]
+    env = inp.get("envelope")
+    if not isinstance(env, dict):
+        raise AitpError("INVALID_ENVELOPE", f"envelope is {type(env).__name__}, not an object")
+    mtype = env.get("message_type")
+    if not isinstance(mtype, str):
+        raise AitpError("INVALID_ENVELOPE", f"envelope.message_type is {type(mtype).__name__}, not a string")
     if mtype in _BOOTSTRAP:
         return _verify_bootstrap(inp, env, now)
     if mtype in _COMMIT:
-        grants = _verify_commit(inp, env["payload"], inp.get("self_aid"), now)
+        payload = env.get("payload")
+        if not isinstance(payload, dict):
+            raise AitpError("INVALID_ENVELOPE", f"envelope.payload is {type(payload).__name__}, not an object")
+        grants = _verify_commit(inp, payload, inp.get("self_aid"), now)
         return {"grants": grants}
     raise AitpError("INVALID_ENVELOPE", f"unsupported handshake message_type {mtype!r}")
 
 
 def _verify_bootstrap(inp: dict[str, Any], env: dict[str, Any], now: int) -> dict[str, Any]:
-    payload = env["payload"]
+    payload = env.get("payload")
+    if not isinstance(payload, dict):
+        raise AitpError("INVALID_ENVELOPE", f"envelope.payload is {type(payload).__name__}, not an object")
     allowed = _HELLO_ACK_PAYLOAD_FIELDS if env["message_type"] == "mutual_hello_ack" else _HELLO_PAYLOAD_FIELDS
     reject_unknown_fields(payload, allowed, shape_code="INVALID_ENVELOPE", what=f"{env['message_type']} payload")
+    if "manifest" not in payload or "identity" not in payload:
+        raise AitpError("INVALID_ENVELOPE", f"{env['message_type']} payload missing manifest/identity")
     man = payload["manifest"]
 
     # Manifest first (mh-002/mh-003 must surface MANIFEST_* before identity).
     verify_manifest({"manifest": man, "now": now}, now)
+
+    sender = env.get("sender")
+    if not isinstance(sender, dict):
+        raise AitpError("INVALID_ENVELOPE", f"envelope.sender is {type(sender).__name__}, not an object")
     if man["aid"] != env["sender"]["agent_id"]:
         raise AitpError("INVALID_ENVELOPE", "manifest.aid != envelope sender")
 
     identity = payload["identity"]
+    if not isinstance(identity, dict):
+        raise AitpError("IDENTITY_FAILED", f"identity is {type(identity).__name__}, not an object")
     # `identity_hint` is REQUIRED and verified to be an object by verify_manifest
     # above, so no defaulting is needed here.
     if man["identity_hint"].get("type") != identity.get("type"):
