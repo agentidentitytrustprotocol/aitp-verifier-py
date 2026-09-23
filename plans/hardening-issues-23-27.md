@@ -412,7 +412,13 @@ type-checking (re-read it during implementation and update only if it's actually
 
 ### Phase 4 — `envelope.py` hardening (issue #23, item 1 "envelope.py", plus adjacent completeness gaps)
 
-**Status:** TODO
+**Status:** DONE. Implemented exactly as planned: required-member/type validation added
+mirroring `manifest.py`'s interleaved ordering, `envelope_signing_input` routed through
+`canonical_bytes` (fixing the shared gap for both its callers), `parse_aid` wrapped. Verifier
+flagged one literal-text acceptance-criteria gap (the 400-digit-int payload hazard was only
+reproduced via direct `verify_envelope`, not also via `verify_handshake_payload`) — closed
+same-turn by adding the missing via-handshake test; not a code defect, a test-coverage
+completeness note.
 
 **Delivers:** `envelope.py` gains the required-member/type validation it currently lacks
 entirely (today it has only `reject_unknown_fields`, which checks the member *set*, never

@@ -375,3 +375,34 @@ Baseline confirmed green before starting: `pytest tests/`: 166 passed. `run_conf
   plan's own Open-questions note that this is a "record and proceed" item.
 - **What's next:** Phase 4 (`envelope.py` hardening — issue #23 item 1/envelope, plus
   adjacent completeness gaps).
+
+### Phase 4 — `envelope.py` hardening (issue #23 item 1/envelope, plus completeness gaps) — DONE (2026-09-23)
+
+- **Verdict:** PASS, round 1, fresh Opus verifier (not critical per the Autonomy ladder —
+  internal validation hardening mirroring an already-established pattern, no public-contract
+  change). One-line why: same class of fix as Phase 3, already precedented. Verifier flagged
+  1 non-blocking test-coverage completeness note (see below), closed same-turn; not a code
+  gap requiring a re-verify round.
+- **Files touched:** `aitp_verifier/envelope.py` (required-member/type tables added;
+  `require_members`→`check_types`→`reject_unknown_fields` ordering for both `envelope` and
+  nested `sender`, mirroring `manifest.py`; `envelope_signing_input` routed through
+  `canonical_bytes` — fixes the JcsError-escape gap for both its callers, `verify_envelope`
+  and `handshake.py::_verify_bootstrap`; `parse_aid` wrapped), `tests/test_envelope.py` (new,
+  21 tests). `tests/test_unknown_fields.py` and `aitp_verifier/handshake.py` deliberately
+  untouched (confirmed empty diffs) — the latter's own direct dereferencing gaps are Phase 6.
+- **Tests:** `pytest tests/ -q` → 221 passed (baseline 200: +21 in `test_envelope.py`).
+  `run_conformance.py` → 68/0/1, unchanged. `mypy` → clean, 33 source files. Verifier
+  independently traced the `OverflowError` edge case (confirmed `check_types` rejects
+  `float('inf')` before `int(env["timestamp"])` ever runs, and separately confirmed a
+  400-digit Python int passes `check_types` fine and reaches the ordinary
+  `TIMESTAMP_EXPIRED` path, not a crash) and confirmed every hostile-value test mints a
+  well-formed fixture before mutating it (the same `minter.py`-signs-the-same-fields trap as
+  Phases 1/3).
+- **Gap rounds:** 0 code gaps — PASS on first verify. 1 non-blocking coverage note (the
+  400-digit-int payload hazard wasn't yet reproduced via the handshake path, only directly)
+  — closed same-turn by adding `test_envelope_huge_int_payload_value_does_not_crash_via_handshake`.
+- **ASSUMPTIONS.md:** none logged this phase — every table/ordering choice was fully
+  specified by the plan (mirrors `manifest.py`'s already-established convention), not a new
+  judgment call.
+- **What's next:** Phase 5 (`sessionbundle.py` hardening — issue #23 item 1/sessionbundle,
+  plus adjacent completeness gaps).
