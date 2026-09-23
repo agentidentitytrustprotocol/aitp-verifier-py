@@ -599,3 +599,14 @@ No gaps. Ready for `/ship`.
 ## Ship checkpoints
 
 - pushed hardening-issues-23-27 fddbffb9b9a202257cebb97ebd543bebb36cc653
+- PR #29 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/29
+- CI green: 8/8 checks passed (conformance+tests+types × 4 Python versions, 2 cross-platform,
+  wheel build/smoke-test, declared-floors advisory check). `call / auto-merge` reported
+  `skipping` (repo's reusable auto-merge workflow declined to act — reason not inspected,
+  merged manually instead, consistent with `/ship`'s green-CI merge authorization).
+- merged #29 (squash) into `main` at `37279e0`, branch `hardening-issues-23-27` deleted.
+  Issues #25 and #23 auto-closed by the merge (confirmed via `gh issue view`). No deploy to
+  watch — this repo is a pure-Python library with no `vercel.json`/`railway.json` or
+  equivalent deploy config.
+- **PR 1 (Phases 1-7) fully shipped.** Next: Phase 8 (PR 2 scope, issue #24 — depends on
+  Phase 2, already landed on `main`).
