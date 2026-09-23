@@ -480,3 +480,86 @@ Baseline confirmed green before starting: `pytest tests/`: 166 passed. `run_conf
 - **What's next:** Phase 7 (generic boundary-contract regression test,
   `tests/test_boundary_contract.py` — spans issue #23's whole class; depends on Phases 2-6,
   all now landed).
+
+### Phase 7 — Generic boundary-contract regression test (spans issue #23's whole class) — DONE (2026-09-23)
+
+- **Verdict:** PASS (round 2, after 1 gap round — see below). Scope grew substantially beyond
+  the plan's literal "this phase IS the test" framing — see the divergence note in
+  `plans/hardening-issues-23-27.md`'s Phase 7 section for the full root-cause writeup.
+- **Files touched:** `tests/test_boundary_contract.py` (new — the harness itself: mutates
+  every scalar-leaf JSON path inside each of 9 entry points' artifact-bearing argument with
+  11 hostile mutations, re-signs via `mint_input`, asserts only `AitpError` or a normal
+  return). Production fixes, all following the established shared-helper pattern
+  (`check_tct_claims_shape` precedent): `aitp_verifier/tct.py` (`check_tct_claims_shape`
+  extended with required-member/type/grants-element checks), `aitp_verifier/voucher.py`
+  (new exported `check_voucher_claims_shape`, same pattern), `aitp_verifier/delegation.py`
+  (new private `_check_delegation_claims_shape`; both embedded-voucher call sites — single-hop
+  `vclaims` and multi-hop `root_voucher` — now route through `voucher.py`'s shared checker;
+  multi-hop `hc["sub"]`→`parse_aid` wrapped), `aitp_verifier/identity.py`
+  (`_verify_pinned_key` rewritten to wrap malformed base64/key-material errors),
+  `aitp_verifier/envelope.py` (new exported `validate_envelope_shape`, factored out of
+  `verify_envelope`'s own inline block), `aitp_verifier/handshake.py` (dispatcher now calls
+  the exported `validate_envelope_shape` instead of its own Phase-6 partial inline check,
+  closing a gap where `message_id`/`timestamp`/`signature` were unguarded there;
+  `_verify_commit` gained a `"tct" not in payload` guard and a `parse_aid`-on-`sub` try/except),
+  `aitp_verifier/sessionbundle.py` (pre-signature expiry-invariant peek now calls
+  `check_tct_claims_shape` early, wrapped in the module's existing `UNKNOWN_FIELD`→
+  `BUNDLE_PARTICIPANT_TCT_INVALID` remap pattern — confirmed this doesn't weaken the
+  bundle-003 "shape precedes expiry" ordering invariant, since the shape check is pure JSON
+  validation with no cryptographic dependency). Test-fixture completeness fixes:
+  `tests/test_unknown_fields.py` (`_voucher_claims`/`_delegation_claims` helpers gained
+  missing schema-required `src_jti`/`cnf` defaults — pre-existing latent gaps, surfaced only
+  once required-member enforcement was correctly added upstream).
+- **Tests:** `pytest tests/ -q` → 268 passed (baseline 259: +9 in `test_boundary_contract.py`,
+  covering the 8 `OPERATIONS` entries plus `verify_identity` directly).
+  `run_conformance.py` → 68/0/1, unchanged. `mypy aitp_verifier tests` → clean, 34 source
+  files. `pyflakes` clean on all 9 touched files (no unused imports after `VOUCHER_CLAIM_FIELDS`
+  was removed from `delegation.py`'s import list).
+- **Hand-verification (acceptance criterion 2):** done — see the plan's Phase 7 divergence
+  note for the full writeup. First attempt (reverting `manifest.py`'s Phase 3 fix) surfaced a
+  genuine harness-scope limitation instead of a failure: for the `canonicalize`/`JcsError`-
+  escape bug class specifically, `minter.py`'s own signing function canonicalizes the same
+  fields the harness mutates, so the mutation is intercepted (and silently skipped) during
+  minting itself, before ever reaching the verifier — true regardless of whether the fix is
+  present. Second attempt (reverting `envelope.py`'s Phase 4 `require_members` call, a plain
+  presence check outside that blind spot) succeeded as designed: 22 genuine `KeyError`
+  violations across `verify_envelope` and `verify_handshake_payload`. Restored, re-confirmed
+  268 passed.
+- **Gap rounds:** 1. Round-1 fresh Opus verifier verdict: **GAPS** — one item. It found
+  `identity.py::_verify_pinned_key` still leaked a bare `KeyError` for a missing
+  `envelope.payload.pop_nonce`, reachable directly via `verify_handshake_payload`
+  (`_verify_bootstrap` runs identity verification *before* the envelope signature check, so
+  no valid signature is needed to trigger it) — root-caused to `handshake.py:76` never
+  checking `pop_nonce`/`requested_grants` presence, the same "minting dereferences what the
+  harness mutates" blind spot already documented once for `manifest.py`/`JcsError`, here as
+  `minter.py::_mint_pinned_proof` sharing the identical unguarded `envelope["payload"]["pop_nonce"]`
+  dereference during minting, so `test_boundary_contract.py`'s own harness silently skips the
+  case. Closed same-round: `handshake.py::_verify_bootstrap` now runs `require_members(payload,
+  _HELLO_REQUIRED_PAYLOAD_FIELDS, ...)` (`identity`, `manifest`, `requested_grants`, `pop_nonce`
+  — the schema-required set for `MutualHelloPayload`/`MutualHelloAckPayload`, deliberately
+  excluding the ack-only `pop_nonce_echo` since it's read via `.get()` and carries no crash
+  risk) before dispatching to `verify_identity`; `identity.py::_verify_pinned_key`'s except
+  tuple also gained `KeyError` as defense in depth, since `verify_identity` is itself public
+  with no guarantee from every caller. Two new regression tests added to
+  `tests/test_unknown_fields.py` (`test_handshake_hello_missing_pop_nonce_with_valid_manifest_is_a_structural_rejection`,
+  `test_verify_identity_pinned_key_missing_pop_nonce_is_identity_failed_not_a_crash`) —
+  hand-verified via `git stash` fault injection: both fail with the exact bare
+  `KeyError: 'pop_nonce'` against the pre-fix code, confirming neither is vacuous. Full suite
+  now 270 passed (268 + 2), conformance 68/0/1 unchanged, mypy clean on 34 files, pyflakes
+  clean. **Round-2 re-verify verdict: PASS.** The fresh re-verifier confirmed no leftover
+  conflict-resolution artifacts in `identity.py` (the `git stash pop` used to hand-verify the
+  fix hit a merge conflict, resolved manually), confirmed the `require_members` call's
+  ordering genuinely gates `verify_identity`, confirmed `KeyError` is in the except tuple,
+  independently re-ran the hand-verification with the same bare-`KeyError` result (no conflict
+  that time), confirmed `requested_grants`'s inclusion in the new required set breaks no
+  existing positive test, re-ran the full suite/conformance/mypy (270 / 68·0·1 / clean, all
+  unchanged), and swept `minter.py`'s other `_mint_*` functions against their corresponding
+  `handshake.py`/`identity.py`/`tct.py` call sites for a second instance of the same
+  "minting dereferences what the harness mutates" pattern — found none in scope for this phase.
+- **ASSUMPTIONS.md:** the harness-scope limitation (canonicalize-escape mutations intercepted
+  during minting) is a genuine, non-obvious finding worth recording — added as a new entry
+  under Phase 7 for `/reconcile` to review at end-of-plan, not a behavior-flip needing
+  confirmation, but worth flagging so a future phase adding a new canonicalize-wrap doesn't
+  assume this harness alone proves it.
+- **What's next:** commit Phase 7 (this diff), then run PR 1's finalization pass
+  (`/implement` §4 — Phases 1-7 collectively close #25 and #23) before handing off to `/ship`.

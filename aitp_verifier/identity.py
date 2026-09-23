@@ -235,26 +235,47 @@ def _verify_pinned_key(
     self_aid: str,
     trust_store: list[str] | None,
 ) -> None:
-    pub = identity.get("public_key", "")
-    # Trust-store gate runs first: an unknown key is rejected before crypto.
-    if trust_store is not None:
-        pinned = {a.split(":")[-1] for a in trust_store}  # tolerate full-AID or bare-key entries
-        if pub not in pinned and pub not in trust_store:
-            raise AitpError("IDENTITY_FAILED", "pinned key not in trust store")
-
-    proof_input = pinned_key_proof_input(
-        envelope["sender"]["agent_id"],
-        self_aid,
-        envelope["message_id"],
-        int(envelope["timestamp"]),
-        envelope["payload"]["pop_nonce"],
-    )
     from .crypto import PublicKey
 
-    key = PublicKey.from_raw("ed25519", b64url_decode(pub))
+    pub = identity.get("public_key", "")
+    # `identity.public_key`/`identity.proof` are RFC-AITP-0002 §1's own
+    # payload -- unconstrained-type at the schema level like every other
+    # signed-object member, so nothing upstream has confirmed they are even
+    # strings yet. Building the five-field proof input, decoding either
+    # base64url value, and constructing the raw public key can each raise a
+    # different stdlib exception (AttributeError from `.encode()` on a
+    # non-string `message_id`, TypeError/ValueError/OverflowError from
+    # `int(timestamp)` or a non-string `b64url_decode` argument,
+    # binascii.Error from malformed base64) for a mistyped/malformed value at
+    # any of these fields -- none of them AitpError, so all would otherwise
+    # escape this module's caller. This module's own OIDC docstring already
+    # states the operative rule for every claim/structural failure here:
+    # IDENTITY_FAILED. `KeyError` is caught too, as defense in depth: this
+    # function's own caller (`handshake.py::_verify_bootstrap`) now guards
+    # `payload["pop_nonce"]`'s presence before calling here, but this
+    # function is reachable on its own via the public `verify_identity` too,
+    # with no such guarantee from that caller.
     try:
+        # Trust-store gate runs first: an unknown key is rejected before
+        # crypto. `pub not in pinned` needs `pub` hashable -- inside the try
+        # for the same reason as everything below it.
+        if trust_store is not None:
+            pinned = {a.split(":")[-1] for a in trust_store}  # tolerate full-AID or bare-key entries
+            if pub not in pinned and pub not in trust_store:
+                raise AitpError("IDENTITY_FAILED", "pinned key not in trust store")
+
+        proof_input = pinned_key_proof_input(
+            envelope["sender"]["agent_id"],
+            self_aid,
+            envelope["message_id"],
+            int(envelope["timestamp"]),
+            envelope["payload"]["pop_nonce"],
+        )
+        key = PublicKey.from_raw("ed25519", b64url_decode(pub))
         sig = b64url_decode(identity.get("proof", ""))
-    except ValueError as exc:
-        raise AitpError("IDENTITY_FAILED", f"pinned-key proof not base64url: {exc}") from exc
+    except AitpError:
+        raise
+    except (TypeError, ValueError, AttributeError, OverflowError, KeyError) as exc:
+        raise AitpError("IDENTITY_FAILED", f"pinned-key identity is malformed: {exc}") from exc
     if len(sig) != 64 or not key.verify_digest(sha256(proof_input), sig):
         raise AitpError("IDENTITY_FAILED", "pinned-key proof does not verify (five-field input)")

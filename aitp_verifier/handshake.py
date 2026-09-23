@@ -20,9 +20,9 @@ from typing import Any
 from .aid import parse_aid
 from .b64 import b64url_decode
 from .crypto import sha256
-from .envelope import envelope_signing_input
+from .envelope import envelope_signing_input, validate_envelope_shape
 from .errors import AitpError
-from .fields import reject_unknown_fields
+from .fields import reject_unknown_fields, require_members
 from .identity import verify_identity
 from .jwk import thumbprint
 from .jws import parse_compact, verify_jws
@@ -45,6 +45,13 @@ _COMMIT = {"mutual_commit", "mutual_commit_ack"}
 _HELLO_PAYLOAD_FIELDS = frozenset({"identity", "manifest", "requested_grants", "pop_nonce", "extensions"})
 _HELLO_ACK_PAYLOAD_FIELDS = _HELLO_PAYLOAD_FIELDS | {"pop_nonce_echo"}
 _COMMIT_PAYLOAD_FIELDS = frozenset({"tct", "grant_voucher", "pop_signature", "pop_nonce_echo", "extensions"})
+# Schema-required on both MutualHelloPayload and MutualHelloAckPayload.
+# `pop_nonce_echo` (ack-only, additionally required there) stays out of this
+# list deliberately -- it is read via `.get()` at the ACK-nonce-echo check
+# below, not dereferenced unguarded, so it carries no crash risk and adding
+# a hard presence gate for it would flip currently-accepted input to
+# rejected with no crash to justify it.
+_HELLO_REQUIRED_PAYLOAD_FIELDS = ("identity", "manifest", "requested_grants", "pop_nonce")
 
 
 def verify_handshake_payload(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any]:
@@ -54,39 +61,36 @@ def verify_handshake_payload(inp: dict[str, Any], now: int = REFERENCE_CLOCK) ->
             grants = _verify_commit(inp[side], inp[side].get("received_payload", {}), inp[side]["self_aid"], now)
         return {"grants": grants}
 
-    env = inp.get("envelope")
-    if not isinstance(env, dict):
-        raise AitpError("INVALID_ENVELOPE", f"envelope is {type(env).__name__}, not an object")
-    mtype = env.get("message_type")
-    if not isinstance(mtype, str):
-        raise AitpError("INVALID_ENVELOPE", f"envelope.message_type is {type(mtype).__name__}, not a string")
+    env = validate_envelope_shape(inp.get("envelope"))
+    mtype = env["message_type"]
     if mtype in _BOOTSTRAP:
         return _verify_bootstrap(inp, env, now)
     if mtype in _COMMIT:
-        payload = env.get("payload")
-        if not isinstance(payload, dict):
-            raise AitpError("INVALID_ENVELOPE", f"envelope.payload is {type(payload).__name__}, not an object")
-        grants = _verify_commit(inp, payload, inp.get("self_aid"), now)
+        grants = _verify_commit(inp, env["payload"], inp.get("self_aid"), now)
         return {"grants": grants}
     raise AitpError("INVALID_ENVELOPE", f"unsupported handshake message_type {mtype!r}")
 
 
 def _verify_bootstrap(inp: dict[str, Any], env: dict[str, Any], now: int) -> dict[str, Any]:
-    payload = env.get("payload")
-    if not isinstance(payload, dict):
-        raise AitpError("INVALID_ENVELOPE", f"envelope.payload is {type(payload).__name__}, not an object")
+    # `env` is already fully shape-validated by `validate_envelope_shape` in
+    # the dispatcher above (message_id/timestamp/signature/sender/payload all
+    # guaranteed present and correctly typed) -- only `payload`'s OWN internal
+    # shape (its member set, and the manifest/identity it must itself carry)
+    # is this function's job to check.
+    payload = env["payload"]
     allowed = _HELLO_ACK_PAYLOAD_FIELDS if env["message_type"] == "mutual_hello_ack" else _HELLO_PAYLOAD_FIELDS
     reject_unknown_fields(payload, allowed, shape_code="INVALID_ENVELOPE", what=f"{env['message_type']} payload")
-    if "manifest" not in payload or "identity" not in payload:
-        raise AitpError("INVALID_ENVELOPE", f"{env['message_type']} payload missing manifest/identity")
+    # `pop_nonce` is schema-required and, unlike `requested_grants`, is
+    # dereferenced unguarded downstream -- by `verify_identity`'s pinned-key
+    # path (`identity.py::_verify_pinned_key`'s `envelope["payload"]["pop_nonce"]`)
+    # -- reachable BEFORE the envelope signature check below, so this guard
+    # must run before `verify_identity` is ever called.
+    require_members(payload, _HELLO_REQUIRED_PAYLOAD_FIELDS, shape_code="INVALID_ENVELOPE", what=f"{env['message_type']} payload")
     man = payload["manifest"]
 
     # Manifest first (mh-002/mh-003 must surface MANIFEST_* before identity).
     verify_manifest({"manifest": man, "now": now}, now)
 
-    sender = env.get("sender")
-    if not isinstance(sender, dict):
-        raise AitpError("INVALID_ENVELOPE", f"envelope.sender is {type(sender).__name__}, not an object")
     if man["aid"] != env["sender"]["agent_id"]:
         raise AitpError("INVALID_ENVELOPE", "manifest.aid != envelope sender")
 
@@ -126,6 +130,13 @@ def _verify_commit(
     inp: dict[str, Any], payload: dict[str, Any], self_aid: str | None, now: int
 ) -> list[str]:
     reject_unknown_fields(payload, _COMMIT_PAYLOAD_FIELDS, shape_code="INVALID_ENVELOPE", what="mutual_commit(_ack) payload")
+    # `tct` is schema-required for MutualCommit(Ack)Payload; `payload["tct"]`
+    # is dereferenced unguarded twice below (once in the peer_a/peer_b
+    # sender-resolution branch, once for the embedded-TCT check itself) --
+    # `pop_signature`/`pop_nonce_echo` (also required) are read via `.get()`
+    # everywhere in this function, so they carry no equivalent crash risk.
+    if "tct" not in payload:
+        raise AitpError("INVALID_ENVELOPE", "mutual_commit(_ack) payload missing tct")
     sender = inp.get("envelope", {}).get("sender", {}).get("agent_id")
     if sender is None:  # peer_a/peer_b shape carries no envelope; issuer is the TCT iss
         sender = parse_compact(payload["tct"], structural_code="TCT_SIGNATURE_INVALID").claims.get("iss")
@@ -159,7 +170,16 @@ def _verify_commit(
         raise AitpError("AUDIENCE_MISMATCH", "TCT aud != self AID")
     if now >= int(claims["exp"]):
         raise AitpError("TCT_EXPIRED", "TCT expired")
-    if claims.get("cnf", {}).get("jkt") != thumbprint(parse_aid(str(claims["sub"]))):
+    try:
+        sub_aid = parse_aid(str(claims["sub"]))
+    except ValueError as exc:
+        # `parse_aid` signals a malformed AID with a bare ValueError, which is
+        # not an AitpError and escapes this module's caller. `sub` is a
+        # claims-shape-typed string by now (`check_tct_claims_shape`), so
+        # this is a grammar defect -> TCT_SIGNATURE_INVALID, matching
+        # tct.py's own identical guard on this same claim.
+        raise AitpError("TCT_SIGNATURE_INVALID", f"TCT claims.sub is not a valid AID: {exc}") from exc
+    if claims.get("cnf", {}).get("jkt") != thumbprint(sub_aid):
         raise AitpError("TCT_CNF_MISMATCH", "cnf.jkt does not bind the subject key")
     offered = inp.get("issuer_offered_capabilities")
     if offered is not None and not set(claims["grants"]).issubset(set(offered)):

@@ -157,7 +157,30 @@ def verify_session_bundle(inp: dict[str, Any], now: int | None = None) -> dict[s
     if not participants:
         raise AitpError("BUNDLE_EMPTY_PARTICIPANTS", "session bundle has no participants")
 
-    tct_exps = [int(parse_compact(p["tct"], structural_code="BUNDLE_PARTICIPANT_TCT_INVALID").claims["exp"]) for p in participants]
+    # `parse_compact` only structurally decodes the JWS -- it does not verify
+    # the signature or the claims shape, both of which run later, per
+    # participant, only after the coordinator signature check below (the
+    # bundle-003 ordering this module's docstring pins). `check_tct_claims_shape`
+    # is pure JSON-shape validation with no cryptographic dependency, so
+    # running it here too (before exp is dereferenced) is safe and does not
+    # weaken that ordering -- it only makes this pre-signature expiry-window
+    # peek crash-safe against an attacker-controlled, not-yet-verified `exp`.
+    tct_exps = []
+    for p in participants:
+        claims = parse_compact(p["tct"], structural_code="BUNDLE_PARTICIPANT_TCT_INVALID").claims
+        try:
+            check_tct_claims_shape(claims, shape_code="BUNDLE_PARTICIPANT_TCT_INVALID")
+        except AitpError as exc:
+            # Same RFC-AITP-0010 §5 step 7 remap the later, official
+            # per-participant check applies below (see its own comment) --
+            # `check_tct_claims_shape` always raises the core UNKNOWN_FIELD
+            # for an unrecognized claim, never *shape_code*, so this peek
+            # needs the identical remap or an unknown claim would surface the
+            # bare TCT-level code here instead of the bundle-scoped one.
+            if exc.code != "UNKNOWN_FIELD":
+                raise
+            raise AitpError("BUNDLE_PARTICIPANT_TCT_INVALID", exc.message) from exc
+        tct_exps.append(int(claims["exp"]))
     if int(body["expires_at"]) != min(tct_exps):
         raise AitpError("BUNDLE_EXPIRY_WINDOW_INVARIANT", "expires_at != min participant TCT exp")
 

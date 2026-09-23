@@ -26,7 +26,7 @@ from typing import Any
 
 from .aid import parse_aid
 from .errors import AitpError
-from .fields import reject_unknown_fields
+from .fields import check_types, reject_unknown_fields, require_members
 from .jwk import thumbprint
 from .jws import parse_compact, verify_jws
 from .timeutil import REFERENCE_CLOCK
@@ -41,12 +41,24 @@ __all__ = ["verify_tct", "TCT_CLAIM_FIELDS", "TCT_CNF_FIELDS", "check_tct_claims
 # `structural_code` convention jws.parse_compact already applies.
 TCT_CLAIM_FIELDS = frozenset({"ver", "jti", "iss", "sub", "aud", "iat", "exp", "grants", "cnf", "ext"})
 TCT_CNF_FIELDS = frozenset({"jkt"})
+# aitp-tct.schema.json `required`. Every one of these is dereferenced
+# unguarded downstream -- by this module's own verify_tct (`int(claims["exp"])`,
+# `claims["sub"]`), by handshake.py's embedded-TCT check in _verify_commit
+# (identical pattern, plus `set(claims["grants"])`), and by sessionbundle.py's
+# pre-signature expiry-invariant peek -- so this is the one place all three
+# close together instead of each guessing at its own copy.
+_TCT_REQUIRED_CLAIMS = ("ver", "jti", "iss", "sub", "aud", "iat", "exp", "grants", "cnf")
+_TCT_CLAIM_TYPES: dict[str, tuple[type, ...]] = {
+    "ver": (str,), "jti": (str,), "iss": (str,), "sub": (str,), "aud": (str,),
+    "iat": (int,), "exp": (int,), "grants": (list,), "cnf": (dict,),
+}
 
 
 def check_tct_claims_shape(claims: dict[str, Any], *, shape_code: str) -> None:
     """RFC-AITP-0005 §7.2 step 1's claims-membership check: the decoded TCT
     claims set MUST contain only the claims registered in §2 (``ext``'s
-    contents excepted), and ``cnf`` -- itself ``additionalProperties: false``
+    contents excepted), every claim §2 requires MUST be present and of its
+    declared JSON type, and ``cnf`` -- itself ``additionalProperties: false``
     -- MUST contain only ``jkt``.
 
     Factored out of ``verify_tct`` so ``handshake.py`` and ``sessionbundle.py``
@@ -60,9 +72,12 @@ def check_tct_claims_shape(claims: dict[str, Any], *, shape_code: str) -> None:
     for *that* case (``sessionbundle.py`` does) remaps it at its own call
     site, exactly as it already did before this was factored out.
     """
+    require_members(claims, _TCT_REQUIRED_CLAIMS, shape_code=shape_code, what="TCT claims")
+    check_types(claims, _TCT_CLAIM_TYPES, shape_code=shape_code, what="TCT claims")
+    if not all(isinstance(g, str) for g in claims["grants"]):
+        raise AitpError(shape_code, "TCT claims.grants must be an array of strings")
     reject_unknown_fields(claims, TCT_CLAIM_FIELDS, shape_code=shape_code, what="TCT claims")
-    if isinstance(claims.get("cnf"), dict):
-        reject_unknown_fields(claims["cnf"], TCT_CNF_FIELDS, shape_code=shape_code, what="TCT claims.cnf")
+    reject_unknown_fields(claims["cnf"], TCT_CNF_FIELDS, shape_code=shape_code, what="TCT claims.cnf")
 
 
 def verify_tct(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any]:
@@ -89,7 +104,17 @@ def verify_tct(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any
         raise AitpError("TCT_EXPIRED", "TCT exp is in the past")
 
     # cnf.jkt MUST equal the thumbprint of the key in the subject AID.
-    if claims.get("cnf", {}).get("jkt") != thumbprint(parse_aid(str(claims["sub"]))):
+    try:
+        sub_aid = parse_aid(str(claims["sub"]))
+    except ValueError as exc:
+        # `parse_aid` signals a malformed AID with a bare ValueError, which is
+        # not an AitpError and escapes this module's caller. `sub` is a
+        # claims-shape-typed string by now (`check_tct_claims_shape`), so this
+        # is a grammar defect -> TCT_SIGNATURE_INVALID, matching the shape
+        # code `check_tct_claims_shape` itself already uses for this claims
+        # object.
+        raise AitpError("TCT_SIGNATURE_INVALID", f"TCT claims.sub is not a valid AID: {exc}") from exc
+    if claims.get("cnf", {}).get("jkt") != thumbprint(sub_aid):
         raise AitpError("TCT_CNF_MISMATCH", "cnf.jkt does not bind the subject key")
 
     # §10.4 conditional bound: only when the issuer Manifest is supplied.

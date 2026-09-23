@@ -39,6 +39,7 @@ from aitp_verifier.envelope import verify_envelope
 from aitp_verifier.errors import AitpError
 from aitp_verifier.fields import reject_unknown_fields
 from aitp_verifier.handshake import verify_handshake_payload
+from aitp_verifier.identity import verify_identity
 from aitp_verifier.jwk import thumbprint_for_aid
 from aitp_verifier.jws import encode_jws
 from aitp_verifier.keys import load_kat_keys
@@ -235,6 +236,7 @@ def _voucher_claims(**overrides: Any) -> dict[str, Any]:
         "grants": ["macp.mode.task.v1"],
         "iat": NOW,
         "exp": NOW + 3600,
+        "src_jti": str(uuid.uuid4()),
     }
     base.update(overrides)
     return base
@@ -272,6 +274,7 @@ def _delegation_claims(voucher_token: str, **overrides: Any) -> dict[str, Any]:
         "aud": ISSUER,
         "scope": ["macp.mode.task.v1"],
         "exp": NOW + 3600,
+        "cnf": {"jkt": "not-checked-for-single-hop"},
         "voucher": voucher_token,
         "jti": str(uuid.uuid4()),
     }
@@ -812,6 +815,56 @@ def test_handshake_hello_payload_missing_identity_is_a_structural_rejection(spec
     with pytest.raises(AitpError) as exc:
         verify_handshake_payload(minted)
     assert exc.value.code == "INVALID_ENVELOPE"
+
+
+def test_handshake_hello_missing_pop_nonce_with_valid_manifest_is_a_structural_rejection(spec_dir: Path) -> None:
+    """Same reasoning as the missing-`identity` case above, for `pop_nonce`:
+    needs a genuinely valid, minted manifest+identity (which pass
+    `verify_manifest` cleanly) so the code actually reaches
+    `verify_identity`'s pinned-key path -- `identity.py::_verify_pinned_key`'s
+    own `envelope["payload"]["pop_nonce"]` dereference is what a missing
+    `pop_nonce` would otherwise crash on with a raw `KeyError`, if this
+    presence check (added for issue #23's Phase-7 sweep finding) didn't catch
+    it first. Unlike the identity/manifest guards, this one specifically
+    guards a field `test_boundary_contract.py`'s own harness cannot reach --
+    `minter.py::_mint_pinned_proof` dereferences the same key during minting,
+    so a mutation deleting it there is intercepted (and skipped) before ever
+    reaching the verifier, the same minting-time-interception blind spot
+    `ASSUMPTIONS.md` already documents for the `manifest.py`/`JcsError` case.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _hello_input(ISSUER, SUBJECT)
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    del minted["envelope"]["payload"]["pop_nonce"]
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+def test_verify_identity_pinned_key_missing_pop_nonce_is_identity_failed_not_a_crash(spec_dir: Path) -> None:
+    """Defense in depth for the same hazard as the test above, exercised at
+    `identity.verify_identity`'s own public call surface directly --
+    bypassing `handshake.py`'s new presence guard entirely, the way
+    `test_boundary_contract_identity_never_raises_a_bare_exception` calls
+    `verify_identity` directly with no other caller-side guarantee.
+    `_verify_pinned_key`'s except tuple now also catches `KeyError`.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _hello_input(ISSUER, SUBJECT)
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    env = minted["envelope"]
+    del env["payload"]["pop_nonce"]
+    with pytest.raises(AitpError) as exc:
+        verify_identity(
+            env["payload"]["identity"],
+            env,
+            minted.get("self_aid", ""),
+            trust_anchors=minted.get("self_trust_anchors"),
+            trust_store=minted.get("trust_store"),
+            issuer_keys=minted.get("resolved_issuer_keys", {}),
+            now=REFERENCE_CLOCK,
+        )
+    assert exc.value.code == "IDENTITY_FAILED"
 
 
 @pytest.mark.parametrize("identity", ["not-an-object", ["a"], 5, None])

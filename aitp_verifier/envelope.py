@@ -22,7 +22,7 @@ from .jws import parse_compact
 from .sigfield import decode_tagged_signature
 from .timeutil import REFERENCE_CLOCK
 
-__all__ = ["verify_envelope", "envelope_signing_input"]
+__all__ = ["verify_envelope", "envelope_signing_input", "validate_envelope_shape"]
 
 # aitp-envelope.schema.json: additionalProperties: false. `payload` is
 # message-type-specific (its own shape lives in aitp-mutual-handshake.schema.json
@@ -53,6 +53,37 @@ def envelope_signing_input(env: dict[str, Any]) -> bytes:
     return sig_input.encode("utf-8")
 
 
+def validate_envelope_shape(env: Any) -> dict[str, Any]:
+    """Structural validation before anything is dereferenced (man-006/
+    rev-007's same rationale): every member below was read unguarded before
+    this, reachable from unauthenticated remote input via handshake.py's own
+    inline envelope parsing as much as via this module's own ``verify_envelope``.
+    Presence -> type -> member-set, per object, mirroring manifest.py's
+    ``_shape`` ordering (not revocation.py's deferred one) since this
+    validates one flat object (plus its one nested ``sender``) rather than a
+    tree.
+
+    Exported so ``handshake.py`` -- which never calls ``verify_envelope()``,
+    it parses the envelope shape itself, inline -- runs the identical check
+    instead of keeping its own partial copy (Phase 6 added one covering only
+    ``message_type``/``payload``/``sender``; ``message_id``/``timestamp``/
+    ``signature`` stayed unguarded there, reachable via
+    ``identity.py``'s pinned-key proof and this module's own
+    ``envelope_signing_input``/``decode_tagged_signature`` call sites).
+
+    Returns *env*, narrowed to ``dict[str, Any]``, as a call-site convenience.
+    """
+    if not isinstance(env, dict):
+        raise AitpError("INVALID_ENVELOPE", f"envelope is {type(env).__name__}, not an object")
+    require_members(env, _REQUIRED_ENVELOPE_FIELDS, shape_code="INVALID_ENVELOPE", what="envelope")
+    check_types(env, _ENVELOPE_TYPES, shape_code="INVALID_ENVELOPE", what="envelope")
+    reject_unknown_fields(env, _ENVELOPE_FIELDS, shape_code="INVALID_ENVELOPE", what="envelope")
+    require_members(env["sender"], _REQUIRED_SENDER_FIELDS, shape_code="INVALID_ENVELOPE", what="envelope.sender")
+    check_types(env["sender"], _SENDER_TYPES, shape_code="INVALID_ENVELOPE", what="envelope.sender")
+    reject_unknown_fields(env["sender"], _SENDER_FIELDS, shape_code="INVALID_ENVELOPE", what="envelope.sender")
+    return env
+
+
 def verify_envelope(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any]:
     # Simulated key-resolution scenario (env-003): no key obtainable.
     if "manifest_fetch" in inp or "needed_key_for" in inp:
@@ -65,22 +96,7 @@ def verify_envelope(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str
             raise AitpError("POLICY_VIOLATION", "requested capability not granted by the active TCT")
         return {"ok": True}
 
-    env = inp["envelope"]
-    # Structural validation before anything is dereferenced (man-006/rev-007's
-    # same rationale): every member below was read unguarded before this,
-    # reachable from unauthenticated remote input via handshake.py's own
-    # envelope. Presence -> type -> member-set, per object, mirroring
-    # manifest.py's `_shape` ordering (not revocation.py's deferred one) since
-    # this validates one flat object (plus its one nested `sender`) rather
-    # than a tree.
-    if not isinstance(env, dict):
-        raise AitpError("INVALID_ENVELOPE", f"envelope is {type(env).__name__}, not an object")
-    require_members(env, _REQUIRED_ENVELOPE_FIELDS, shape_code="INVALID_ENVELOPE", what="envelope")
-    check_types(env, _ENVELOPE_TYPES, shape_code="INVALID_ENVELOPE", what="envelope")
-    reject_unknown_fields(env, _ENVELOPE_FIELDS, shape_code="INVALID_ENVELOPE", what="envelope")
-    require_members(env["sender"], _REQUIRED_SENDER_FIELDS, shape_code="INVALID_ENVELOPE", what="envelope.sender")
-    check_types(env["sender"], _SENDER_TYPES, shape_code="INVALID_ENVELOPE", what="envelope.sender")
-    reject_unknown_fields(env["sender"], _SENDER_FIELDS, shape_code="INVALID_ENVELOPE", what="envelope.sender")
+    env = validate_envelope_shape(inp["envelope"])
 
     tolerance = int(inp.get("tolerance_seconds", 300))
     if abs(now - int(env["timestamp"])) > tolerance:
