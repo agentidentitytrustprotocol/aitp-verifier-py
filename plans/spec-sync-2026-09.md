@@ -202,7 +202,7 @@ described the pre-fix behavior as correct.
 
 ### Phase 2 — Align TCT claims-membership check with RFC-AITP-0005 §7.2's explicit sub-step order
 
-**Status:** TODO
+**Status:** DONE. Implemented as planned (the `after_typ_check` callback on `verify_jws`, the shared `check_tct_claims_shape` helper, all three call sites). One divergence from the plan's literal text: the session-bundle combined-defect test landed in `tests/test_sessionbundle.py` (as `test_participant_tct_combined_unknown_claim_and_bad_alg_reports_bundle_code`) instead of `tests/test_unknown_fields.py` as the plan's Tests section named — that file already had the exact fixture-minting/`tct_claims`/`__JWS_TCT_WRONG_ALG__` machinery this test needs (mirroring its own existing `test_participant_tct_claims_unknown_field_rejected`), which `test_unknown_fields.py` does not. A fresh-Opus verifier confirmed this was a reasonable call, not a gap.
 
 **Delivers:** `verify_tct`, the handshake's embedded-TCT check, and the session bundle's
 embedded participant-TCT check all run the claims-membership check between `typ` and

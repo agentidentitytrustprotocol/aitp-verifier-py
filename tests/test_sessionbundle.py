@@ -165,6 +165,37 @@ def test_participant_tct_claims_unknown_field_rejected(spec_dir: Path) -> None:
     assert exc_info.value.code == "BUNDLE_PARTICIPANT_TCT_INVALID"
 
 
+def test_participant_tct_combined_unknown_claim_and_bad_alg_reports_bundle_code(spec_dir: Path) -> None:
+    """RFC-AITP-0005 §7.2's now-explicit sub-step order (spec commit 993da8c)
+    moved the claims-membership check to run inside `verify_jws`, before the
+    alg-pin, reached here through this module's own try/except remap (see the
+    comment above the participant loop in `sessionbundle.py`). This module
+    already collapses `TOKEN_ALG_MISMATCH` and `UNKNOWN_FIELD` to the same
+    `BUNDLE_PARTICIPANT_TCT_INVALID` code (the single-defect cases are pinned
+    separately above and in the conformance pack), so a TCT combining BOTH
+    defects reports the same code either way -- this test is not able to
+    distinguish the old order from the new one behaviorally (that observable
+    difference only exists for `tct.py`/`handshake.py`, pinned in
+    `test_unknown_fields.py`). It exists to prove the collapse survives the
+    internal reordering intentionally, not merely by accident.
+
+    `__JWS_TCT_WRONG_ALG__` (`minter.py`) always mints a header claiming
+    `ES256`, which mismatches kat-keypair-001's actual Ed25519 AID -- the
+    same technique `tct-009`-style alg-mismatch fixtures use.
+    """
+    fixture = json.loads((spec_dir / "schemas/conformance/bundle-001-success.json").read_text())
+    tampered = copy.deepcopy(fixture["input"])
+    participant = tampered["session_bundle"]["session_bundle"]["participants"][0]
+    participant["tct"] = "__JWS_TCT_WRONG_ALG__"
+    participant["tct_claims"]["routing_hint"] = "x"
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(tampered, REFERENCE_CLOCK, keys)
+
+    with pytest.raises(AitpError) as exc_info:
+        verify_session_bundle(minted)
+    assert exc_info.value.code == "BUNDLE_PARTICIPANT_TCT_INVALID"
+
+
 @pytest.mark.parametrize(
     ("outer", "expected"),
     [

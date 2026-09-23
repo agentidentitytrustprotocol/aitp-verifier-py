@@ -119,5 +119,20 @@ together with one full green suite run than as two tiny separate PRs. Branch:
   passed / 0 failed / 1 skipped (unchanged). `mypy`: clean. No new `ASSUMPTIONS.md` entry —
   the fix followed the plan's decided approach exactly, nothing ambiguous. No docs to
   update (plan's own Phase 1 Docs field: none). Next: Phase 2.
-- Phase 2: TODO
+- **Phase 2: DONE** (2026-09-23). Verdict: PASS, 1 round, Opus verifier (routine — an
+  internal, reversible, unpublished-package change; not critical per the autonomy
+  ladder). Files touched: `aitp_verifier/jws.py` (`verify_jws` gains optional
+  `after_typ_check` callback, invoked between `typ` and `alg`-pin), `aitp_verifier/tct.py`
+  (new shared `check_tct_claims_shape` helper, exported; `verify_tct` wired through the
+  hook; module docstring updated), `aitp_verifier/handshake.py` (`_verify_commit`'s
+  embedded-TCT check wired through the hook, replacing its inline duplicate),
+  `aitp_verifier/sessionbundle.py` (per-participant TCT check wired through the hook; its
+  `UNKNOWN_FIELD`→`BUNDLE_PARTICIPANT_TCT_INVALID` try/except now wraps the whole
+  `verify_jws` call instead of a trailing `reject_unknown_fields`), `tests/test_unknown_fields.py`
+  (3 new tests), `tests/test_sessionbundle.py` (1 new test — see plan's Phase 2 status for
+  why this one landed here instead of `test_unknown_fields.py`). `voucher.py`/`delegation.py`
+  confirmed untouched. `pytest`: 166 passed. `run_conformance.py`: 68 passed / 0 failed / 1
+  skipped (unchanged). `mypy`: clean. No new `ASSUMPTIONS.md` entry — the test-home
+  deviation was a decided, verified-reasonable call, not an open/unconfirmed one. Docs:
+  `tct.py`'s module docstring updated per the plan's Phase 2 Docs field. Next: Phase 3.
 - Phase 3: TODO
