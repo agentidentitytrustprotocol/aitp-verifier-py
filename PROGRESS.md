@@ -110,6 +110,11 @@ reviewer gets more value seeing the confirmed-broken-test fix and the spec-fidel
 together with one full green suite run than as two tiny separate PRs. Branch:
 `spec-sync-2026-09`.
 
+## Ship checkpoints
+
+- pushed spec-sync-2026-09 c6537cb
+- PR #28 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/28
+
 ## Status
 
 - **Phase 1: DONE** (2026-09-23). Verdict: PASS, 1 round, Opus verifier (routine — not
