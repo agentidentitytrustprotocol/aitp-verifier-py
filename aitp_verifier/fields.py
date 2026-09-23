@@ -37,6 +37,16 @@ stopgap, and upstream issue #37 — filed because enforcing §7 here left the
 whole conformance pack green, proving nothing tested the rule — is what closed
 the gap.
 
+This module also carries three narrower boundary-conversion helpers used
+alongside ``reject_unknown_fields``: ``require_members`` (required-member
+presence), ``check_types`` (declared-JSON-type checking for present members),
+and ``canonical_bytes``/``decode_b64url`` (converting the non-``AitpError``
+exceptions ``canonicalize``/``b64url_decode`` raise into the caller's own
+structural code). None of the four decides *when*, or in what order relative
+to each other, a caller runs them -- each artifact module owns that ordering
+itself, since it is not the same across modules (see ``manifest.py`` vs.
+``revocation.py`` for two deliberately different orderings).
+
 The single exception is remapped at its call site, not here:
 ``sessionbundle.py``'s embedded participant TCT, where RFC-AITP-0010 §5 step 7
 collapses "other TCT-level failures" into ``BUNDLE_PARTICIPANT_TCT_INVALID``.
@@ -60,9 +70,11 @@ from __future__ import annotations
 
 from typing import Any, Container
 
+from .b64 import b64url_decode
 from .errors import AitpError
+from .jcs import JcsError, canonicalize
 
-__all__ = ["reject_unknown_fields"]
+__all__ = ["reject_unknown_fields", "require_members", "check_types", "canonical_bytes", "decode_b64url"]
 
 
 def reject_unknown_fields(obj: dict[Any, Any], allowed: Container[str], *, shape_code: str, what: str) -> None:
@@ -92,3 +104,68 @@ def reject_unknown_fields(obj: dict[Any, Any], allowed: Container[str], *, shape
     extra = sorted((k for k in obj if k not in allowed), key=repr)
     if extra:
         raise AitpError("UNKNOWN_FIELD", f"{what} carries unrecognized field(s): {extra}")
+
+
+def require_members(obj: dict[str, Any], required: tuple[str, ...], *, shape_code: str, what: str) -> None:
+    """Raise if any of *required* is missing from *obj*.
+
+    Presence only -- says nothing about the type of what's present (see
+    ``check_types``) or about members outside *required* (see
+    ``reject_unknown_fields``). The caller decides when, and in what order
+    relative to those two, this runs.
+    """
+    if missing := [k for k in required if k not in obj]:
+        raise AitpError(shape_code, f"{what} is missing required member(s) {missing}")
+
+
+def check_types(obj: dict[str, Any], types: dict[str, tuple[type, ...]], *, shape_code: str, what: str) -> None:
+    """Reject any PRESENT member of *obj* whose value is not of its declared JSON type.
+
+    ``bool`` is excluded from ``int`` deliberately: Python makes ``True`` an
+    ``int``, JSON does not. An integral float IS a valid JSON ``integer`` and
+    JCS-canonicalizes to the same bytes as the int form, so it is admitted
+    wherever ``int`` is allowed -- a peer that signed ``1711900000.0`` signed
+    what we would reconstruct, and rejecting it would be a false rejection.
+
+    Says nothing about presence (see ``require_members``) or about members
+    outside *types* (see ``reject_unknown_fields``) -- deliberately: the
+    caller decides when, and in what order relative to those two, this runs.
+    """
+    for key, allowed in types.items():
+        if key not in obj:
+            continue
+        value = obj[key]
+        if isinstance(value, bool) and bool not in allowed:
+            raise AitpError(shape_code, f"{what}.{key} is bool, not {allowed[0].__name__}")
+        if int in allowed and isinstance(value, float) and value.is_integer():
+            continue
+        if not isinstance(value, allowed):
+            raise AitpError(shape_code, f"{what}.{key} is {type(value).__name__}, not {allowed[0].__name__}")
+
+
+def canonical_bytes(value: Any, *, shape_code: str, what: str) -> bytes:
+    """JCS-canonicalize *value*, converting ``JcsError`` to *shape_code*.
+
+    ``JcsError`` subclasses ``ValueError``, not ``AitpError``, so it escapes a
+    caller's ``except AitpError`` handler unless converted. The offending
+    value can sit anywhere inside an ``extensions`` member, whose interior
+    RFC-AITP-0001 §7 forbids inspecting, so no upstream ``check_types`` call
+    can intercept it -- this is the one point every such value must pass
+    through.
+    """
+    try:
+        return canonicalize(value)
+    except JcsError as exc:
+        raise AitpError(shape_code, f"{what} is not canonicalizable: {exc}") from exc
+
+
+def decode_b64url(text: str, *, code: str, what: str) -> bytes:
+    """Decode unpadded base64url, converting the decoder's ``ValueError`` to *code*.
+
+    ``binascii.Error`` (raised on invalid alphabet/padding) subclasses
+    ``ValueError``, so both grammar defects are caught by the same handler.
+    """
+    try:
+        return b64url_decode(text)
+    except ValueError as exc:
+        raise AitpError(code, f"{what} is not valid base64url: {exc}") from exc

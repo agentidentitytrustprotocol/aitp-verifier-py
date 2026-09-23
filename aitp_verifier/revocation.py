@@ -33,8 +33,7 @@ from typing import Any
 from .aid import parse_aid
 from .crypto import sha256
 from .errors import AitpError
-from .fields import reject_unknown_fields
-from .jcs import JcsError, canonicalize
+from .fields import canonical_bytes, check_types, reject_unknown_fields, require_members
 from .sigfield import decode_tagged_signature
 
 __all__ = ["verify_revocation_snapshot"]
@@ -68,35 +67,6 @@ _INVALID = "REVOCATION_SNAPSHOT_INVALID"
 _VERSION = "aitp/0.2"
 
 
-def _typed(obj: dict[str, Any], types: dict[str, tuple[type, ...]], what: str) -> None:
-    """Reject any present member whose value is not of its declared JSON type.
-
-    ``bool`` is excluded from ``int`` deliberately: Python makes ``True`` an
-    ``int``, JSON does not, and a timestamp of ``true`` is a schema defect. The
-    same check is what stops ``json.loads("1e400")`` -- ordinary valid JSON
-    that yields ``float("inf")`` -- from reaching ``int()`` and raising
-    ``OverflowError`` out of the freshness comparison, which is neither a
-    ``TypeError`` nor a ``ValueError``, so it defeats the obvious guard around
-    the freshness arithmetic; rejecting the value as mistyped up here removes
-    the arithmetic hazard entirely rather than enumerating exception types.
-    """
-    for key, allowed in types.items():
-        if key not in obj:
-            continue
-        value = obj[key]
-        if isinstance(value, bool) and bool not in allowed:
-            raise AitpError(_INVALID, f"{what}.{key} is bool, not {allowed[0].__name__}")
-        if int in allowed and isinstance(value, float) and value.is_integer():
-            # JSON Schema `integer` admits `1711900000.0`, and JCS serializes
-            # it to the same bytes as `1711900000` -- so the peer signed what
-            # we would reconstruct, and rejecting it would be a false
-            # rejection. `is_integer()` is False for inf and NaN, so this
-            # widening does not readmit them.
-            continue
-        if not isinstance(value, allowed):
-            raise AitpError(_INVALID, f"{what}.{key} is {type(value).__name__}, not {allowed[0].__name__}")
-
-
 def _validate_shape(snapshot: Any) -> dict[str, Any]:
     """RFC-AITP-0008 §1.5 step 1: schema conformance, before any signature work.
 
@@ -113,17 +83,15 @@ def _validate_shape(snapshot: Any) -> dict[str, Any]:
     """
     if not isinstance(snapshot, dict):
         raise AitpError(_INVALID, f"revocation snapshot is {type(snapshot).__name__}, not an object")
-    if missing := [k for k in ("revocation_list", "signature") if k not in snapshot]:
-        raise AitpError(_INVALID, f"revocation snapshot is missing required member(s) {missing}")
+    require_members(snapshot, ("revocation_list", "signature"), shape_code=_INVALID, what="revocation snapshot")
     if not isinstance(snapshot["signature"], str):
         raise AitpError(_INVALID, f"revocation snapshot signature is {type(snapshot['signature']).__name__}, not a string")
 
     body = snapshot["revocation_list"]
     if not isinstance(body, dict):
         raise AitpError(_INVALID, f"revocation_list is {type(body).__name__}, not an object")
-    if missing := [k for k in _REQUIRED_BODY_FIELDS if k not in body]:
-        raise AitpError(_INVALID, f"revocation_list is missing required member(s) {missing}")
-    _typed(body, _BODY_TYPES, "revocation_list")
+    require_members(body, _REQUIRED_BODY_FIELDS, shape_code=_INVALID, what="revocation_list")
+    check_types(body, _BODY_TYPES, shape_code=_INVALID, what="revocation_list")
     if body["version"] != _VERSION:
         # §1.5: "every value inside its grammar". The schema pins
         # `const: "aitp/0.2"`, and this is load-bearing rather than pedantic --
@@ -135,9 +103,8 @@ def _validate_shape(snapshot: Any) -> dict[str, Any]:
     for i, entry in enumerate(body["entries"]):
         if not isinstance(entry, dict):
             raise AitpError(_INVALID, f"revocation_list entries[{i}] is {type(entry).__name__}, not an object")
-        if missing := [k for k in _REQUIRED_ENTRY_FIELDS if k not in entry]:
-            raise AitpError(_INVALID, f"revocation_list entries[{i}] is missing required member(s) {missing}")
-        _typed(entry, _ENTRY_TYPES, f"revocation_list entries[{i}]")
+        require_members(entry, _REQUIRED_ENTRY_FIELDS, shape_code=_INVALID, what=f"revocation_list entries[{i}]")
+        check_types(entry, _ENTRY_TYPES, shape_code=_INVALID, what=f"revocation_list entries[{i}]")
     return body
 
 
@@ -166,18 +133,15 @@ def verify_revocation_snapshot(inp: dict[str, Any], now: int | None = None) -> d
     except ValueError as exc:
         raise AitpError(_INVALID, f"revocation_list issuer is not a valid AID: {exc}") from exc
     raw = decode_tagged_signature(snapshot["signature"], issuer, sig_err="REVOCATION_SNAPSHOT_SIGNATURE_INVALID")
-    try:
-        digest = sha256(canonicalize(body))
-    except JcsError as exc:
-        # `JcsError` subclasses ValueError, so it is NOT an AitpError and
-        # escapes the caller's handler. `_typed` cannot prevent this on its
-        # own: the offending value can sit anywhere inside `extensions`, whose
-        # interior §7 forbids inspecting, and a plain `"published_at": 1` with
-        # 400 zeros is a valid JSON integer of a magnitude JCS refuses to
-        # serialize. Both arrive as ordinary valid JSON from an unauthenticated
-        # endpoint, so this is caught at the one point every such value must
-        # pass through.
-        raise AitpError(_INVALID, f"revocation_list is not canonicalizable: {exc}") from exc
+    # `canonical_bytes` converts `JcsError` (a ValueError, not an AitpError,
+    # so it would otherwise escape the caller's handler) to `_INVALID`.
+    # `check_types` cannot prevent this on its own: the offending value can
+    # sit anywhere inside `extensions`, whose interior §7 forbids inspecting,
+    # and a plain `"published_at": 1` with 400 zeros is a valid JSON integer
+    # of a magnitude JCS refuses to serialize. Both arrive as ordinary valid
+    # JSON from an unauthenticated endpoint, so this is caught at the one
+    # point every such value must pass through.
+    digest = sha256(canonical_bytes(body, shape_code=_INVALID, what="revocation_list"))
     if not issuer.public_key.verify_digest(digest, raw):
         raise AitpError("REVOCATION_SNAPSHOT_SIGNATURE_INVALID", "snapshot signature does not verify under the issuing peer's key")
 

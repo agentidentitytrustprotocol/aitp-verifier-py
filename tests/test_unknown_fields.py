@@ -786,6 +786,54 @@ def test_revocation_unknown_field_yields_to_a_structural_defect() -> None:
             assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID", f"{extra_defect}/{mode}"
 
 
+def test_revocation_wrapper_unknown_field_yields_to_body_type_defect() -> None:
+    """An unrecognized WRAPPER-level member (a top-level key beside
+    `revocation_list`/`signature`) combined with a body-level type defect
+    still reports `REVOCATION_SNAPSHOT_INVALID`, not `UNKNOWN_FIELD`.
+
+    `test_revocation_unknown_field_yields_to_a_structural_defect` already
+    pins this ordering for a BODY-level unknown member; this pins it
+    independently for a WRAPPER-level one, since `reject_unknown_fields` is
+    called separately for the wrapper and the body (`revocation.py`'s
+    deferred member-set pass), and a refactor that collapsed the two into one
+    sweep could pass the body-level case while still getting this one wrong.
+    """
+    snapshot = {
+        "revocation_list": _revocation_body(published_at="nope"),
+        "signature": "x",
+        "list_owner": "x",  # unrecognized wrapper-level member
+    }
+    for mode in ("fail_closed", "soft_fail"):
+        with pytest.raises(AitpError) as exc:
+            verify_revocation_snapshot({
+                "policy": {"fail_mode": mode, "max_staleness_secs": 600},
+                "now": NOW + 100, "expected_issuer": ISSUER, "snapshot": snapshot,
+            })
+        assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID", mode
+
+
+def test_revocation_entry_unknown_field_yields_to_entry_type_defect() -> None:
+    """An unrecognized member inside a body-level `entries[]` item, combined
+    with a type defect on that SAME entry, still reports
+    `REVOCATION_SNAPSHOT_INVALID`, not `UNKNOWN_FIELD`.
+
+    Pins the entry-level ordering dependency (`_typed`/`check_types` on the
+    entry running before `reject_unknown_fields` is ever called on it)
+    independently of the body-level and wrapper-level cases above -- a
+    refactor that fixed those two but left the entry-level check deferred
+    ahead of its own type check would still pass both other tests.
+    """
+    body = _revocation_body(entries=[{"jti": 5, "revoked_at": NOW, "source": "attacker-supplied"}])
+    snapshot = {"revocation_list": body, "signature": "x"}
+    for mode in ("fail_closed", "soft_fail"):
+        with pytest.raises(AitpError) as exc:
+            verify_revocation_snapshot({
+                "policy": {"fail_mode": mode, "max_staleness_secs": 600},
+                "now": NOW + 100, "expected_issuer": ISSUER, "snapshot": snapshot,
+            })
+        assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID", mode
+
+
 @pytest.mark.parametrize("raw_json", ['1e400', '-1e400', '1e999'])
 def test_revocation_infinite_timestamp_does_not_crash(raw_json: str) -> None:
     """`json.loads("1e400")` returns `float("inf")` from ordinary valid JSON,

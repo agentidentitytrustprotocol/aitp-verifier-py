@@ -143,7 +143,13 @@ writing assertions, don't assume shape.
 
 ### Phase 2 — Shared boundary-conversion helpers in `fields.py`
 
-**Status:** TODO
+**Status:** DONE. Implemented exactly as planned. `check_types`/`require_members` extracted
+byte-for-byte from the old `manifest.py`/`revocation.py` inline logic (confirmed by diffing
+against the pre-refactor code); `manifest.py`'s interleaved-per-object ordering and
+`revocation.py`'s deferred-member-set-pass ordering both preserved unchanged. Both required
+ordering regression tests added and independently confirmed non-vacuous by fault injection
+(twice — once by the executor, once by the verifier) that reproduces the exact "collapsed
+interleaved sweep" regression this phase exists to prevent.
 
 **Delivers:** Two narrow, genuinely-shared helpers in `aitp_verifier/fields.py` —
 `check_types` (the duplicated presence-of-a-declared-JSON-type loop) and `require_members`

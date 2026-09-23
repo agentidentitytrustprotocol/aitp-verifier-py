@@ -312,3 +312,33 @@ Baseline confirmed green before starting: `pytest tests/`: 166 passed. `run_conf
   pattern (`published_at + 100`, same shape as the sibling revocation/bundle tests), not a
   new judgment call.
 - **What's next:** Phase 2 (shared boundary-conversion helpers in `fields.py`).
+
+### Phase 2 — shared boundary-conversion helpers in `fields.py` — DONE (2026-09-23)
+
+- **Verdict:** PASS, round 1, fresh Opus verifier (not critical per the Autonomy ladder —
+  an internal refactor with no public-contract or signing-format change). One-line why: a
+  behavior-preserving refactor backed by two independent fault-injection checks (executor's
+  and verifier's own) isn't a one-way door or a trust-boundary crossing.
+- **Files touched:** `aitp_verifier/fields.py` (added `require_members`, `check_types`,
+  `canonical_bytes`, `decode_b64url`, module docstring note), `aitp_verifier/manifest.py`
+  (`_shape` delegates presence/type checks to the new helpers, ordering unchanged),
+  `aitp_verifier/revocation.py` (`_typed` deleted, `_validate_shape` delegates to the new
+  helpers, `except JcsError` block replaced by `canonical_bytes`, all ordering unchanged),
+  `tests/test_unknown_fields.py` (2 new ordering-regression tests), `tests/test_fields.py`
+  (new, 17 unit tests for the four helpers directly).
+- **Tests:** `pytest tests/ -q` → 186 passed (baseline 167: +17 `test_fields.py` + 2 new
+  ordering tests in `test_unknown_fields.py`). `run_conformance.py` → 68/0/1, unchanged.
+  `mypy` → clean, 31 source files. Both required ordering-regression acceptance criteria
+  (wrapper-level unknown+body type defect; entry-level unknown+entry type defect)
+  independently confirmed non-vacuous by fault injection, done twice: once by the executor
+  (reordered `verify_revocation_snapshot` to collapse the deferred member-set pass ahead of
+  shape validation, watched all 3 ordering tests fail with `UNKNOWN_FIELD`, reverted), once
+  more by the verifier from a cold read (same reorder, same failure, plus a narrower
+  single-point entry-level-only regression that failed only the entry-level test —
+  confirming the two new tests pin genuinely independent dependencies, not the same one
+  twice).
+- **Gap rounds:** 0 — PASS on first verify.
+- **ASSUMPTIONS.md:** none logged this phase — the helper signatures and ordering were
+  fully specified by the plan (itself already corrected for this exact ordering question
+  during the plan's own Round 1 review), not a new judgment call made during implementation.
+- **What's next:** Phase 3 (`manifest.py` hardening — issue #23 items 1/manifest, 2, 4).

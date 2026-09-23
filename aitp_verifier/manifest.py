@@ -18,7 +18,7 @@ from .aid import parse_aid
 from .b64 import b64url_decode
 from .crypto import sha256
 from .errors import AitpError
-from .fields import reject_unknown_fields
+from .fields import check_types, reject_unknown_fields, require_members
 from .jcs import canonicalize
 from .sigfield import decode_tagged_signature
 from .timeutil import REFERENCE_CLOCK
@@ -80,21 +80,8 @@ def _shape(obj: Any, required: tuple[str, ...], allowed: frozenset[str],
     """
     if not isinstance(obj, dict):
         raise AitpError("MANIFEST_INVALID", f"{what} is {type(obj).__name__}, not an object")
-    if missing := [k for k in required if k not in obj]:
-        raise AitpError("MANIFEST_INVALID", f"{what} is missing required member(s) {missing}")
-    for key, allowed_types in types.items():
-        if key not in obj:
-            continue
-        value = obj[key]
-        # `bool` is excluded from `int` deliberately: Python makes True an int,
-        # JSON does not. An integral float IS a valid JSON `integer` and
-        # canonicalizes identically, so it is admitted.
-        if isinstance(value, bool) and bool not in allowed_types:
-            raise AitpError("MANIFEST_INVALID", f"{what}.{key} is bool, not {allowed_types[0].__name__}")
-        if int in allowed_types and isinstance(value, float) and value.is_integer():
-            continue
-        if not isinstance(value, allowed_types):
-            raise AitpError("MANIFEST_INVALID", f"{what}.{key} is {type(value).__name__}, not {allowed_types[0].__name__}")
+    require_members(obj, required, shape_code="MANIFEST_INVALID", what=what)
+    check_types(obj, types, shape_code="MANIFEST_INVALID", what=what)
     # Last, so that an object which is BOTH mistyped and carrying an unknown
     # member reports the structural code. The registry scopes UNKNOWN_FIELD to
     # "when the only defect is an unknown member", and revocation.py orders it
