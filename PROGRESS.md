@@ -146,3 +146,169 @@ together with one full green suite run than as two tiny separate PRs. Branch:
   README claim that it's also skipped; that README staleness is out of this plan's scope).
   `pytest tests/ -v`: 166 passed, 0 failed. `mypy`: clean. Next: finalization pass, then
   hand off to `/ship`.
+
+---
+
+# PROGRESS (plans/hardening-issues-23-27.md)
+
+Tracking file for `plans/hardening-issues-23-27.md` (issues #23-#27). Appended below the
+`spec-sync-2026-09` plan's own tracking section above — that plan is fully shipped (PR #28,
+merged, `fba3a95`); this section starts fresh for the new plan.
+
+## Repo map
+
+- `aitp_verifier/fields.py` — currently owns only `reject_unknown_fields` (RFC-AITP-0001 §7
+  member-set rejection). Phase 2 primary edit site: adds `validate_shape`, `canonical_bytes`,
+  `decode_b64url`. No import cycle risk — currently imports only `.errors`; new imports
+  (`.jcs`, `.b64`) import nothing from the package themselves.
+- `aitp_verifier/manifest.py` — `verify_manifest` (line 119), input contract
+  `inp["manifest"]` (NOT wrapped, unlike session bundle/revocation), returns
+  `{"aid": man["aid"]}`. `_shape` (lines 72-103) is the presence+type+unknown-field
+  helper Phase 2 lifts into `fields.py`. Canonicalize-for-signature at line 155 (Phase 3);
+  unguarded `b64url_decode(pop["challenge"])` at line 150 (Phase 3); IdentityHint
+  conditional requirements unenforced (Phase 3). `_REQUIRED_MANIFEST_FIELDS` (line 107),
+  `_IDENTITY_HINT_FIELDS` (line 116) — existing member-set tables to extend, not replace.
+- `aitp_verifier/envelope.py` — `verify_envelope` (line 41) + shared `envelope_signing_input`
+  (line 35, also called from `handshake.py:97`). Has ONLY `reject_unknown_fields` today (no
+  presence/type table at all — contrast manifest.py). Phase 4 primary edit site: add
+  `_ENVELOPE_TYPES`/`_REQUIRED_ENVELOPE_FIELDS`/`_SENDER_TYPES` tables, wrap `canonicalize`
+  at line 36, wrap `parse_aid` at line 60.
+  `_ENVELOPE_FIELDS`/`_SENDER_FIELDS` (lines 29-32) — existing member-set tables to extend.
+- `aitp_verifier/sessionbundle.py` — `verify_session_bundle` (line 67). `_BODY_FIELDS`/
+  `_PARTICIPANT_FIELDS` (lines 61-64) are member-set-only today; no required/type table for
+  the body or participant entries (confirmed: `participants`/`expires_at`/`coordinator`
+  dereferenced directly at lines 127/136/145 with no presence guard; `issued_at` is schema-
+  required but never dereferenced by verification logic itself, only carried into the signed
+  body). Canonicalize-for-signature at line 150 (Phase 5); unguarded `parse_aid(coordinator)`
+  at line 146 (Phase 5). `p["tct"]`/`p["aid"]` dereferenced directly at lines 141/154/189/192
+  — participant `aid`/`tct` both need a required-field check (Phase 5).
+- `aitp_verifier/handshake.py` — `_verify_bootstrap` (line 67). `payload["manifest"]` (line
+  71) and `payload["identity"]` (line 78) both dereferenced with no presence guard;
+  `identity.get("type")` (line 81) crashes on non-dict `identity` — Phase 6 primary edit
+  site. `_HELLO_PAYLOAD_FIELDS`/`_HELLO_ACK_PAYLOAD_FIELDS` (lines 45-46) are member-set-only
+  (no required-subset semantics) — this is WHY the presence gap exists.
+- `aitp_verifier/identity.py` — `verify_identity` (line 82), its own
+  `reject_unknown_fields(identity, ..., shape_code="IDENTITY_FAILED")` at line 93 is the
+  guard `handshake.py`'s crash makes unreachable in production today; Phase 6 makes it
+  reachable via handshake.py's own new check (identity.py itself is NOT modified).
+- `aitp_verifier/revocation.py` — `verify_revocation_snapshot` (line 144). `_validate_shape`
+  (lines 100-141, stage a), inline member-set checks (lines 156-159, stage b), inline
+  signature check (lines 162-182, stage c, including the existing `except JcsError` pattern
+  at lines 169-180 — the template Phase 2's `canonical_bytes` generalizes), then absence/
+  freshness/deny-list (lines 184-198, stage d, untouched). Phase 8 extracts stages a+b+c into
+  new exported `verify_snapshot_trust`; Phase 2 refactors `_typed` (lines 71-98) into
+  `fields.validate_shape`. Both phases touch this file — sequenced independently (Phase 2
+  first structurally, Phase 8 much later; confirm no merge-order surprises when
+  implementing, since both edit the same file).
+- `aitp_verifier/tct.py` — `_check_revocation` (lines 104-111): reads
+  `inp["issuer_revocation_list"]` via bare `.get()` chains, NO signature/member-set check.
+  Phase 8 primary edit site. `verify_tct` (line 68) itself, `check_tct_claims_shape` (line
+  46, added by the just-merged spec-sync PR) — NOT touched by this plan.
+- `aitp_verifier/delegation.py` — `_revocation_index` (lines 110-117): reads
+  `inp["revocation_snapshots"]`, same gap; index keyed on unverified `record["issuer_aid"]`
+  rather than the signed body's own `issuer`. Consumed at `_verify_multihop` lines 199-205.
+  Phase 8 primary edit site. `verify_delegation_token` (line 52), `_verify_multihop` (line
+  120) otherwise unchanged.
+- `aitp_verifier/minter.py` — `_sign_revocation` (line 164): only signs when placeholder is
+  `__VALID_A_SIG__`/`__VALID_MANIFEST_SIG__`; `del-mh-004`'s/`tct-004`'s fixtures use
+  `__VALID_B_SIG__`, currently never signed. `mint_input` (line 356): the
+  `for snap_holder in ("snapshot", "issuer_revocation_list")` loop (lines 379-384) never
+  walks `revocation_snapshots` (a list, not a dict holder) — Phase 8 needs a new loop.
+  `_sign_manifest` (line 137): confirms manifest signing is inner-body-only (lines 150-153),
+  grounding Phase 1/#25's premise.
+- `tests/test_signed_examples.py` — `test_manifest_signed_example_verifies_over_inner_body`
+  (line 80) is the Phase 1 edit site: re-implements crypto inline instead of calling
+  `verify_manifest`, unlike its siblings `test_revocation_signed_example_runs_the_real_
+  verifier` (line 201) and `test_session_bundle_signed_example_runs_the_real_verifier` (line
+  177), which are the pattern to match.
+- `tests/test_sessionbundle.py` — `test_malformed_envelope_raises_aitp_error_not_a_traceback`
+  (line ~199-228) is the existing parametrized malformed-input pattern Phases 4/5 extend for
+  envelope.py/sessionbundle.py respectively.
+- `tests/test_unknown_fields.py` — has per-artifact test blocks (manifest, TCT, delegation,
+  revocation — the revocation block spans roughly lines 470-565 and 669-816) to extend for
+  Phases 3, 6, 8; confirmed during grounding that NONE of its revocation tests currently
+  reach `tct.py`/`delegation.py`'s consumption paths (all go through
+  `verify_revocation_snapshot` directly) — Phase 8's new tests are wholly additive, not
+  modifications of existing ones.
+- `tests/conftest.py` — `spec_dir` fixture (lines 29-34), `pytest.skip` → Phase 9's edit
+  site. Resolution order already correct (`$AITP_SPEC`, then sibling-directory search,
+  lines 15-19) — unchanged by Phase 9.
+- `.github/workflows/ci.yml` — `conformance` job (lines 40-84), `pytest -q` step (line 81)
+  is where `test_signed_examples.py` is currently bundled invisibly — Phase 10's edit site.
+  Zero `aitp-rs` references confirmed (`grep -c aitp-rs` → 0).
+- `run_conformance.py` — `run_fixture` (line 118) already catches bare `Exception` (lines
+  140-141) and reports it as a fixture FAIL rather than crashing the whole runner — this is
+  why none of #23/#24's gaps show up as `run_conformance.py` crashes today, only as
+  `test_signed_examples.py`/direct-unit-test-level escapes or (for #24) silent false
+  verdicts the runner has no way to distinguish from a correct one.
+- `aitp_verifier/jws.py`, `aitp_verifier/b64.py`, `aitp_verifier/sigfield.py`,
+  `aitp_verifier/jcs.py` — read in full for this plan's grounding, NOT edited by any phase.
+  `jcs.py:27` `JcsError(ValueError)` is the root cause class for every "wrap canonicalize"
+  fix; `b64.py:24-29` `b64url_decode`'s two distinct failure shapes (`ValueError` for bad
+  alphabet, `binascii.Error` — a `ValueError` subclass — for bad length) are what
+  `decode_b64url`/Phase 3's challenge-grammar check must both handle; `sigfield.py:28-31`
+  is the existing correct pattern for signature-field decoding, used as the message-wording
+  template.
+
+## Verification environment
+
+Same as the `spec-sync-2026-09` plan's environment section above — `/tmp/aitpvenv313`,
+same `run_conformance.py --spec-dir ../agentidentitytrustprotocol` / `pytest tests/ -v` /
+`mypy` commands. Re-verify the venv still exists before Phase 1; recreate per the command
+block above if not.
+
+## PR strategy
+
+**Decided at `/implement` Phase 0 (2026-09-23): 3 PRs.**
+- **PR 1 — Phases 1-7** (branch `hardening-issues-23-27`, this branch): closes #25 and #23.
+  Cohesive unit — Phase 1 is the regression net Phase 3 needs, Phase 2 is the shared
+  foundation Phases 3-6 build on, Phase 7 is the capstone that proves 3-6 actually closed
+  the class of bug. Splitting these further would mean reviewing Phase 2's helpers with no
+  visible consumer yet, or Phase 7's regression test with nothing it's protecting — neither
+  is honestly reviewable alone.
+- **PR 2 — Phase 8**: closes #24. Fully independent of PR 1 (different files: `tct.py`,
+  `delegation.py`, `minter.py`; only shares `revocation.py` with Phase 2, and depends on it
+  landing first per the plan's explicit "Depends on: Phase 2").
+- **PR 3 — Phases 9-10**: closes #26 and #27. Both lightweight test/CI-infrastructure
+  changes (`conftest.py`, `ci.yml`) with no production-code overlap with PR 1 or PR 2 —
+  bundling them avoids two near-trivial PRs for two one-file changes.
+
+Baseline confirmed green before starting: `pytest tests/`: 166 passed. `run_conformance.py`:
+68 passed / 0 failed / 1 skipped. `mypy`: clean, 31 source files.
+
+## Status
+
+- **Plan written, reviewed (2 rounds), SOUND — ready for `/implement`** (2026-09-23).
+  Grounded via two parallel background Opus subagents (issue #23, issue #24 — both did live
+  reproduction against real signed artifacts, not just static reading) plus direct reads of
+  every file every phase touches (`manifest.py`, `envelope.py`, `sessionbundle.py`,
+  `handshake.py`, `identity.py`, `revocation.py`, `tct.py`, `delegation.py`, `fields.py`,
+  `jcs.py`, `b64.py`, `sigfield.py`, `minter.py`, `conftest.py`, `ci.yml`,
+  `run_conformance.py`, `test_signed_examples.py`). Round 1: REVISE (6 blocking issues,
+  detailed in the plan's own "Plan review" section — effectively a redesign of Phases 2, 6,
+  and 8). Round 2 (after fixes applied): SOUND, plus 3 non-blocking notes, also applied.
+
+## Phase checkpoints
+
+### Phase 1 — manifest-convention test blind spot (issue #25) — DONE (2026-09-23)
+
+- **Verdict:** PASS, round 1, fresh Opus verifier (not critical per the Autonomy ladder —
+  test-only, no production code, no public contract). One-line why: a targeted regression
+  test with a hand-verified negative case doesn't cross a trust boundary or land a one-way
+  door.
+- **Files touched:** `tests/test_signed_examples.py` (new test
+  `test_manifest_signed_example_runs_the_real_verifier`, added imports for `pytest`,
+  `b64url_encode`, `AitpError`, `verify_manifest`; existing
+  `test_manifest_signed_example_verifies_over_inner_body` untouched).
+- **Tests:** `pytest tests/test_signed_examples.py -v` → 8 passed. `pytest tests/ -q` → 167
+  passed (baseline 166). `run_conformance.py --spec-dir ../agentidentitytrustprotocol` →
+  68/0/1, unchanged from baseline (no production code touched). `mypy` → clean.
+  Acceptance criterion 3 (flipping `manifest.py`'s signing convention makes the new test
+  fail) hand-verified independently by both the executor and the verifier — same result:
+  the positive-case assertion fails with `MANIFEST_SIGNATURE_INVALID`, file reverted after
+  (`git diff --stat aitp_verifier/manifest.py` empty both times).
+- **Gap rounds:** 0 — PASS on first verify.
+- **ASSUMPTIONS.md:** none logged this phase — the `now` value follows the plan's specified
+  pattern (`published_at + 100`, same shape as the sibling revocation/bundle tests), not a
+  new judgment call.
+- **What's next:** Phase 2 (shared boundary-conversion helpers in `fields.py`).
