@@ -808,6 +808,22 @@ def test_delegation_revocation_snapshot_malformed_shape_is_rejected_not_a_crash(
     assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID"
 
 
+@pytest.mark.parametrize("junk", [5, True, 1.5], ids=["int", "bool", "float"])
+def test_delegation_revocation_snapshots_container_scalar_is_rejected_not_a_crash(junk: Any, spec_dir: Path) -> None:
+    """`revocation_snapshots` itself is untrusted remote input, same as any
+    record inside it. A scalar there is truthy and would otherwise survive
+    `inp.get("revocation_snapshots", []) or []` and reach the `for` loop as a
+    bare `TypeError: '...' object is not iterable`, escaping this module's
+    own `AitpError`-or-verdict contract.
+    """
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "del-mh-004"), REFERENCE_CLOCK, keys)
+    minted["revocation_snapshots"] = junk
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(minted)
+    assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID"
+
+
 def test_delegation_revocation_index_keys_on_the_signed_issuer_not_the_wrapper_label(spec_dir: Path) -> None:
     """`record["issuer_aid"]` is caller-supplied and unverified; the entry
     must be indexed (and looked up) under the snapshot's own SIGNED `issuer`,

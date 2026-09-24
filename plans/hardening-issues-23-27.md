@@ -903,17 +903,37 @@ return.
 
 ### Phase 8 — Close the revocation-snapshot trust gap in `tct.py`/`delegation.py` (issue #24)
 
-**Status:** DONE (2026-09-23). Implemented exactly as planned, including both design
-corrections from the review round (`verify_snapshot_trust` takes no `expected_issuer`
-parameter; `.get("snapshot")` not `["snapshot"]` at every call site). One line-number-only
-divergence: the plan's cited line numbers for `revocation.py`/`tct.py`/`delegation.py`
-(from before Phases 1-7 landed) had shifted by the time this phase started — implemented
-against the actual current code, not the stale numbers, per this plan's own "code is truth"
-guidance. `verify_revocation_snapshot`'s own behavior is confirmed byte-for-byte unchanged
-(every `rev-*` conformance fixture and all 4 of its existing `test_unknown_fields.py` tests
-pass unmodified). The follow-up GitHub issue the plan's acceptance criteria requires was
-filed: agentidentitytrustprotocol/aitp-verifier-py#30, documenting the separate, deliberately
-out-of-scope `issuer_revocation_list`-absent fail-open gap.
+**Status:** DONE (2026-09-23). Implemented per plan, including both design corrections from
+the review round (`verify_snapshot_trust` takes no `expected_issuer` parameter;
+`.get("snapshot")` not `["snapshot"]` at every call site). One line-number-only divergence:
+the plan's cited line numbers for `revocation.py`/`tct.py`/`delegation.py` (from before
+Phases 1-7 landed) had shifted by the time this phase started — implemented against the
+actual current code, not the stale numbers, per this plan's own "code is truth" guidance.
+`verify_revocation_snapshot`'s own behavior is confirmed byte-for-byte unchanged (every
+`rev-*` conformance fixture and all 10 of its existing `test_unknown_fields.py` tests pass
+unmodified — the plan's own estimate of "seven" was low). The follow-up GitHub issue the
+plan's acceptance criteria requires was filed: agentidentitytrustprotocol/aitp-verifier-py#30,
+documenting the separate, deliberately out-of-scope `issuer_revocation_list`-absent fail-open
+gap; its body was later extended (round-1 verifier finding) to also cover a present-but-
+wrong-issuer snapshot silently skipping the wrapper's own `fail_mode`, a related fail-open
+sub-case the original filing didn't scope in.
+
+**Divergence from "exactly as planned," found by round-1 verification:** the Tests field
+below asked for the wrong-`version`/missing-required-member negatives to be asserted through
+*both* `verify_tct` and `verify_delegation_token`; the delegation path only got the
+forged-signature/missing-snapshot/non-dict-record/junk-shape negatives (those two specific
+cases are still covered, just only via `verify_tct` and via `verify_revocation_snapshot`'s
+own pre-existing tests — behaviorally sound, since both callers funnel through the same
+`verify_snapshot_trust`, but not literally every negative duplicated on both call sites as
+written). Also, the round-1 verifier found one genuine gap the plan's acceptance criteria
+did cover but the first implementation missed: `delegation.py::_revocation_index` guarded
+every *record* and *snapshot* shape but not the `revocation_snapshots` *container* itself —
+a scalar (`int`/`bool`/`float`) there survived `... or []` and reached the `for` loop as a
+raw `TypeError`, violating the "no raw exception escapes" contract on a line this phase
+itself rewrote. Fixed with an `isinstance` guard plus 3 new parametrized tests
+(`test_delegation_revocation_snapshots_container_scalar_is_rejected_not_a_crash`), hand-
+verified non-vacuous the same way as every other test in this phase. One round of gaps,
+closed; verified PASS on round 2.
 
 **Delivers:** `tct.py::_check_revocation` and `delegation.py::_revocation_index`/
 `_verify_multihop`'s revocation lookup both route through the same structural + member-set +

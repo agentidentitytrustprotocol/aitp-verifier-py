@@ -150,9 +150,21 @@ def _revocation_index(inp: dict[str, Any]) -> dict[str, set[str]]:
     ``record.get("issuer_aid")`` label: the signed value wins, so a
     correctly-signed snapshot can never be filed under an issuer the caller's
     own wrapper merely claims for it.
+
+    ``revocation_snapshots`` itself is untrusted remote input, same as every
+    record inside it -- a scalar there (e.g. an int/bool/float) is truthy and
+    would otherwise survive `or []` and reach the ``for`` loop as a bare
+    ``TypeError: '...' object is not iterable``, escaping this module's own
+    ``AitpError``-or-verdict contract.
     """
+    snaps = inp.get("revocation_snapshots") or []
+    if not isinstance(snaps, list):
+        raise AitpError(
+            "REVOCATION_SNAPSHOT_INVALID",
+            f"revocation_snapshots must be an array, got {type(snaps).__name__}",
+        )
     index: dict[str, set[str]] = {}
-    for record in inp.get("revocation_snapshots", []) or []:
+    for record in snaps:
         body = verify_snapshot_trust(record.get("snapshot") if isinstance(record, dict) else None)
         index.setdefault(body["issuer"], set()).update(e.get("jti") for e in body["entries"])
     return index

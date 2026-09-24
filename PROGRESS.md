@@ -629,12 +629,13 @@ No gaps. Ready for `/ship`.
   caller-supplied `record.get("issuer_aid")` — closing the additional re-keying gap the #24
   analysis surfaced; module docstring updated), `aitp_verifier/minter.py` (`_sign_revocation`
   allow-list widened to include `__VALID_B_SIG__`; `mint_input` gains a loop signing each
-  `revocation_snapshots[*].snapshot`), `tests/test_unknown_fields.py` (+18 new tests: 9
-  through `verify_tct`, 9 through `verify_delegation_token` — forged signature, missing
-  signature, missing/absent `snapshot`, non-dict record, unknown body member, a parametrized
+  `revocation_snapshots[*].snapshot`), `tests/test_unknown_fields.py` (+21 new tests: 10
+  through `verify_tct`, 11 through `verify_delegation_token` — forged signature, missing
+  signature, missing/absent `snapshot`, non-dict record, a scalar `revocation_snapshots`
+  container (round-1 gap fix, see below), unknown body member, a parametrized
   non-dict/non-list junk-shape sweep, a different-issuer-does-not-apply positive case, a
   genuinely-signed positive control, and the signed-value-wins re-keying test).
-- **Tests:** `pytest tests/ -q` → 288 passed (baseline 270: +18). `run_conformance.py` →
+- **Tests:** `pytest tests/ -q` → 291 passed (baseline 270: +21). `run_conformance.py` →
   68/0/1, unchanged — `tct-004-revoked`/`del-mh-004-revoked-hop` confirmed still reach
   `TCT_REVOKED`/`DELEGATION_SOURCE_TCT_REVOKED`, now via a genuinely verified snapshot (the
   minter previously left their `__VALID_B_SIG__` placeholder unsigned since it predated
@@ -643,25 +644,40 @@ No gaps. Ready for `/ship`.
   `pyflakes` clean on all touched files (one pre-existing, out-of-scope finding confirmed
   via `git show main:aitp_verifier/minter.py`: `.jcs.dumps` imported but unused, predates
   this phase, not touched).
-- **Hand-verification:** all 18 new tests fault-injected via `git stash` against the pre-fix
-  production code — 17 of 18 failed as expected (1 test, the genuinely-signed positive
+- **Hand-verification:** all 21 new tests fault-injected against pre-fix production code
+  (git-stash for the original 18, a targeted `git checkout HEAD --`/restore for the 3
+  round-1 additions) — 20 of 21 failed as expected (1 test, the genuinely-signed positive
   control, correctly still passes pre-fix, since that fixture was never broken). Failures
-  split two ways: 4 genuine bare `AttributeError` crashes (`'int'/'bool' object has no
-  attribute 'get'`, confirming the malformed-shape sweep is not vacuous) and — most
+  split three ways: 4 genuine bare `AttributeError` crashes (`'int'/'bool' object has no
+  attribute 'get'`, confirming the malformed-shape sweep is not vacuous), 3 genuine bare
+  `TypeError: '...' object is not iterable` (the round-1 container-scalar guard), and — most
   importantly — the signed-value-wins re-keying test **did not raise at all** pre-fix,
   meaning the old `record.get("issuer_aid")`-keyed index genuinely let a mislabeled snapshot
-  bypass detection silently, precisely the vulnerability issue #24 reports. Restored via
-  `git stash pop` (clean, no conflict), re-confirmed 288 passed.
+  bypass detection silently, precisely the vulnerability issue #24 reports. Both restores
+  confirmed clean, re-confirmed 291 passed.
 - **Follow-up issue filed** (plan's Phase 8 acceptance criteria requirement, not a code
   change): agentidentitytrustprotocol/aitp-verifier-py#30, documenting the separate,
   deliberately-deferred fail-open gap when `issuer_revocation_list` is absent entirely from
-  `verify_tct`'s input.
+  `verify_tct`'s input. Extended after round-1 verification to also cover a present-but-
+  wrong-issuer snapshot silently skipping the wrapper's own declared `issuer`/`fail_mode`
+  members (`tct.py`'s skip-not-reject branch), a related fail-open sub-case the original
+  filing didn't scope in. A second, separate follow-up issue (#31) was filed for a
+  pre-existing, repo-wide `RecursionError`-escapes-`canonicalize` class, newly reachable
+  through two more entry points by this phase's own routing — cross-cutting, not specific
+  to Phase 8, so fixed as its own follow-up rather than folded into this diff.
 - **ASSUMPTIONS.md:** one new entry (Phase 8) — `verify_snapshot_trust`'s shape validation
   now hard-rejects a malformed `snapshot` sub-field that previously silently produced an
   empty entry set, per the plan's own explicit instruction to log this distinct-from-the-
   headline-fix behavior change for end-of-plan `/reconcile` review.
 - **Docs:** `tct.py`'s and `delegation.py`'s module docstrings both updated per the plan's
   Phase 8 Docs field.
-- **Gap rounds:** 0 so far — full local suite/conformance/mypy green; fresh Opus verifier
-  for this phase not yet spawned (next step), followed by PR 2's own finalization pass
-  (single-phase PR, so finalization is lighter than PR 1's) before `/ship`.
+- **Gap rounds:** 1. Round-1 fresh-Opus verifier (general-purpose agent, Opus model — the
+  default tier; this phase isn't a one-way-door/trust-boundary change per the Autonomy
+  ladder, so Fable wasn't warranted) returned `GAPS`: one substantive item (the
+  `revocation_snapshots` container-scalar `TypeError`, fixed above) plus three advisory/doc
+  items (test-count/split inaccuracies in this file and the plan, both now corrected; two
+  narrow-scope fail-open sub-cases better tracked as follow-up issues than fixed in this
+  diff, per the verifier's own recommendation — issue #30 extended, issue #31 filed). All
+  items closed same round. Commit `a276c28` (original) superseded by a second commit
+  closing the gap round, both on `revocation-snapshot-trust-24`, to be squash-merged as one
+  PR. Proceeding to `/ship` for PR 2.
