@@ -692,5 +692,22 @@ No gaps. Ready for `/ship`.
 
 ## Ship checkpoints (PR 2)
 
-- pushed revocation-snapshot-trust-24 d0643a2
+- pushed revocation-snapshot-trust-24 d0643a2, then a further doc-checkpoint push to
+  de76880 (PR-opened checkpoint recorded before CI finished, both via `git push`, never a
+  direct push to `main` — the corrected process held for the whole of PR 2).
 - PR #32 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/32
+- CI green: 8/8 checks passed (conformance+tests+types × 4 Python versions, 2
+  cross-platform, wheel build/smoke-test, declared-floors advisory check). `call /
+  auto-merge` reported `skipping` again, same as PR 1's reusable workflow behavior — merged
+  manually, consistent with `/ship`'s green-CI merge authorization. (The first
+  `gh pr checks --watch` invocation raced ahead of GitHub registering the just-pushed
+  commit's checks and returned "no checks reported" — re-ran once the runs existed;
+  unrelated to CI health.)
+- merged #32 (squash) into `main` at `b2d9aec`, branch `revocation-snapshot-trust-24`
+  deleted (both locally, via `gh pr merge --delete-branch`, and its stale remote-tracking
+  ref pruned via `git fetch --prune`). Issue #24 auto-closed by the merge (confirmed via
+  `gh issue view 24`). No deploy to watch — same pure-Python-library reasoning as PR 1.
+- **PR 2 (Phase 8) fully shipped.** Follow-up issues #30 (extended) and #31 (filed) remain
+  open by design, tracked separately from this plan's own 10 phases. Next: Phases 9-10
+  (PR 3 scope, issues #26/#27 — no dependency on Phase 8, both lightweight test/CI-
+  infrastructure changes with no production-code overlap with either merged PR).
