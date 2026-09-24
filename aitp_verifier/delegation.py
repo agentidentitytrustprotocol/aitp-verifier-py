@@ -350,20 +350,30 @@ def _check_source_tct_revocation(
       carrying only other peers' snapshots leaves A's own deny list just as
       unknown as an empty one -- B cannot answer whether A revoked a TCT A
       issued. "Data was supplied" is not an escape from absence;
-    * **only when a top-level ``policy`` is supplied**: every such snapshot is
-      expired or staler than ``max_staleness_secs``. Gating freshness on
-      ``policy`` is what keeps this auditable -- with no ``policy`` key,
-      freshness and expiry are never evaluated at all, so on that dimension
-      this path behaves exactly as it did before the key existed.
+    * every such snapshot is expired or staler than ``max_staleness_secs``,
+      evaluated against the caller's ``policy``. Unlike ``tct.py``, this rung
+      is not conditionally gated on ``policy`` being present: this entry
+      point has no wrapper-level fallback (see the module docstring and
+      ``_effective_fail_mode`` below), so ``policy`` is unconditionally
+      required to reach this point at all -- freshness is evaluated on
+      *every* successful call, with no no-``policy`` path left to gate it
+      against.
 
     The deny-list scan then reads only the applicable, still-fresh snapshots'
     own ``entries``, never a stale one's -- §3.2 treats a stale snapshot as
     data this verifier has no business reading rather than as a deny list to
-    consult anyway. ``ASSUMPTIONS.md`` records the one counter-intuitive
-    consequence, shared with ``tct.py`` and with ``revocation.py``'s own
-    pre-existing stage-4 ordering: an explicitly *permissive* ``policy`` over a
-    stale snapshot that genuinely lists ``src_jti`` verifies, where the
-    identical input with no ``policy`` at all rejects.
+    consult anyway. ``ASSUMPTIONS.md`` records that this entry point used to
+    share one counter-intuitive consequence with ``tct.py`` and with
+    ``revocation.py``'s own pre-existing stage-4 ordering -- an explicitly
+    *permissive* ``policy`` over a stale snapshot that genuinely lists
+    ``src_jti`` verifies, where the identical input with no ``policy`` at all
+    rejected -- but that asymmetry is now structurally impossible to
+    construct **here**: with ``policy`` mandatory and no wrapper fallback, the
+    "no ``policy`` at all" arm no longer reaches this scan; it raises
+    ``KeyError`` before either arm's outcome could be compared. The asymmetry
+    survives only on ``tct.py``, whose wrapper fallback (rung 2) still lets a
+    no-top-level-``policy`` call reach a successful verification without
+    freshness ever being evaluated.
 
     Per-hop issuer deny lists are governed by none of this -- see the module
     docstring's stated non-goal.
@@ -380,7 +390,11 @@ def _check_source_tct_revocation(
     fail_mode = _effective_fail_mode(inp)
     applicable = [body for body in bodies if body["issuer"] == self_aid]
     detail = "no trusted snapshot signed by this verifier was supplied"
-    if applicable and "policy" in inp:
+    if applicable:
+        # `_effective_fail_mode` above already raised KeyError if `policy` is
+        # absent -- unlike tct.py (which has a wrapper-fallback rung),
+        # reaching this line at all means `"policy" in inp`, so that used to
+        # be an explicit conjunct here is now guaranteed, not conditional.
         policy = inp["policy"]
         applicable = [
             body

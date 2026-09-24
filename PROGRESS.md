@@ -1677,10 +1677,35 @@ records only the outcome and the follow-up work it required.
     `plans/hardening-issues-30-31.md`'s Phase 3/Phase 4 status lines and Open questions
     section all updated to point at the reversal rather than describe the superseded
     design as current.
-- **Not yet done as of this checkpoint:** branch, commit, independent verification, and
-  `/ship` (push → PR → CI → merge) for this reversal — this repo's `main` still carries the
-  originally-shipped permissive default until that lands. See the next `/ship` checkpoint
-  below once it exists.
+- **Branch `fix/require-revocation-policy` created, committed (`7357f02`).** Independently
+  verified by a fresh Opus agent against the full `main...HEAD` diff: **PASS**, with 3
+  non-blocking gaps, all closed before shipping (not deferred, since they were small and
+  safe):
+  1. `delegation.py::_check_source_tct_revocation`'s own docstring still described the
+     superseded permissive design in two places, contradicting the same commit's
+     `ASSUMPTIONS.md`/test-name updates — rewritten to match, mirroring `tct.py`'s already-
+     corrected (c) bullet, and to state explicitly that the stale-snapshot-over-no-`policy`
+     asymmetry now survives only on `verify_tct` (which has a wrapper fallback), not here.
+  2. The eager-resolution fix (moving `_effective_fail_mode(inp)` to the top of the
+     function) had no regression test — reverting it to the old lazy position left the full
+     suite green. Closed with a new test,
+     `test_delegation_no_policy_with_a_fresh_applicable_snapshot_still_raises_key_error`
+     (both single-hop/multi-hop parametrizations): a genuinely applicable, fresh,
+     self-signed snapshot with no `policy` key, which under lazy resolution would never
+     reach the branch that raises at all and would verify silently — exactly the gap the
+     eager fix closes. Mutation-tested: reverting both the eager-resolution position and
+     the dead-conjunct fix below together makes this new test fail as predicted ("DID NOT
+     RAISE KeyError") on both parametrizations; restored byte-identically (sha256-verified)
+     and full suite reconfirmed green.
+  3. A dead conjunct, `if applicable and "policy" in inp:` — unreachable-false since
+     `_effective_fail_mode`'s eager call already raises if `policy` is absent. Simplified to
+     `if applicable:` with a comment explaining the guarantee and contrasting it with
+     `tct.py`'s outwardly-identical-looking but *live* `if "policy" in inp:` (which stays
+     live there because of the wrapper-fallback rung this entry point doesn't have).
+  Full suite green after closing all three: **475 passed** (473 + the 2 new
+  parametrizations), `mypy` clean (23 source files). No second verifier round dispatched —
+  the original verdict was already `PASS`; these were non-blocking gaps closed on the same
+  discipline this plan's earlier rounds used for non-blocking observations.
 - **Optional cross-repo follow-ups Fable surfaced, left to the user's discretion, not
   required to close this pass:** a spec-repo issue proposing conformance runners supply
   the deployment's own policy for fixtures that carry none; an `aitp-rs` issue noting its

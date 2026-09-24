@@ -1740,6 +1740,32 @@ def test_delegation_absent_snapshot_no_policy_raises_key_error(
 
 
 @_BOTH_DELEGATION_PATHS
+def test_delegation_no_policy_with_a_fresh_applicable_snapshot_still_raises_key_error(
+    fixture_id: str, spec_dir: Path
+) -> None:
+    """Regression guard for `_check_source_tct_revocation`'s eager, not lazy,
+    resolution -- distinct from the sibling test above, which supplies no
+    revocation data at all and so cannot tell eager and lazy resolution
+    apart (both reach the same absence branch either way).
+
+    Here `applicable` is genuinely non-empty: a fresh, self-signed snapshot
+    for `self_aid` that lists nothing, so absent lazy resolution the
+    function would never reach the branch that calls `_effective_fail_mode`
+    at all and would return successfully with `policy` never having been
+    consulted -- exactly the "caller with always-fresh snapshots discovers
+    the missing key only in production, on the first stale day" gap the
+    module docstring records `/reconcile` closing. With `policy` resolved
+    eagerly, this still raises `KeyError("policy")` immediately.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _delegation_policy_input(spec_dir, fixture_id)
+    del inp["policy"]
+    inp["revocation_snapshots"] = [_delegation_snapshot_record(issuer=ISSUER, entries=[])]
+    with pytest.raises(KeyError):
+        verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys))
+
+
+@_BOTH_DELEGATION_PATHS
 def test_delegation_absent_snapshot_unknown_mode_rejects(fixture_id: str, spec_dir: Path) -> None:
     """A misspelled or future mode is never silently permissive."""
     keys = load_kat_keys(spec_dir)
