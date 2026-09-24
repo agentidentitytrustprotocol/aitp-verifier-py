@@ -1595,3 +1595,26 @@ precedence invariant post-consolidation via mutation testing (inverting rule 1/r
 fails exactly 4 tests; forcing either module's `_effective_fail_mode` to always `fail_open`
 fails 20-40 tests) and a ~100-call raw-exception hunt across all three entry points (zero
 escapes) — verdict **PASS**, clear to ship.
+
+## Ship checkpoint (PR 3) — plan complete
+
+- Pushed `feat/revocation-policy-fail-mode` (6 commits: Phase 3 `13a7af1`, Phase 4 `29eb603`,
+  Phase 5 `d75d985`, the finalization fix `863e9a9`, its changelog/docstring cleanup
+  `cfe3bfe`, and this file's own re-verification addendum `f5fa0bb`). Opened
+  [PR #43](https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/43), "fix:
+  verify_tct/verify_delegation_token honor an optional revocation policy (closes #30)".
+- CI green 8/8 on first push (all 4 Python versions × conformance+tests+types, both
+  cross-platform runners, wheel build/smoke-test, declared-floors advisory check;
+  `call / auto-merge` reported "skipping" as it reliably does) — no fix-forward round
+  needed.
+- Merged `276f763` via `gh pr merge 43 --squash --delete-branch`. Branch
+  `feat/revocation-policy-fail-mode` deleted, both locally and on `origin`. `main`
+  fast-forwarded to `276f763`. Issue #30 closed by the merge (commit trailer `closes #30`
+  carried through the squash) — confirmed via `gh issue view 30`.
+- Suite at 473 passed, mypy clean (37 files), conformance unchanged at 68/0/1.
+- **This was the last PR in `plans/hardening-issues-30-31.md`.** All 5 phases `Status: DONE`,
+  both named issues (#30, #31) plus the newly-discovered single-hop delegation bypass all
+  closed. **What's next:** `/reconcile` on this plan's 3 `UNCONFIRMED` `ASSUMPTIONS.md`
+  entries (the absent-`policy`-default-permissive decision, spanning Phase 3 and Phase 4 as
+  one decision since Phase 4's entry explicitly says so, plus the `different_issuer`
+  test-expectation flip) — the last step of the plan, per its own Handoff section.
