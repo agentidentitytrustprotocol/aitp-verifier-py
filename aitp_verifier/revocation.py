@@ -16,8 +16,15 @@ obtained and could not trust reports what was wrong with it, and the policy's
 A snapshot that is unreachable, stale beyond ``max_staleness_secs``, or issued
 by someone other than the expected peer is **absent** — the peer never obtained
 one it could evaluate. Only that case consults ``fail_mode``: ``fail_closed``
-treats unknown revocation status as revoked (``TCT_REVOKED``), ``soft_fail``
-reports the queried jti not-revoked and stale (the safe read-only subset).
+treats unknown revocation status as revoked (``TCT_REVOKED``), while both
+``soft_fail`` and ``fail_open`` — RFC-AITP-0008 §3.1's two availability-first
+modes, which this entry point cannot tell apart because it returns no grants to
+restrict — report the queried jti not-revoked and ``stale: True`` (the safe
+read-only subset). ``stale`` there means "this verifier has no fresh,
+applicable revocation *status* for the queried subject", not "this snapshot
+document is old": the branch is ``not (issuer_ok and fresh)``, so it fires for
+a perfectly fresh snapshot issued by the wrong peer too. Any mode string
+outside §3.1's three is treated as ``fail_closed`` — never silently permissive.
 
 Every one of those codes is raised, not folded into a boolean. An earlier
 version of this module collapsed all three untrustworthy cases into a
@@ -36,7 +43,13 @@ from .errors import AitpError
 from .fields import canonical_bytes, check_types, reject_unknown_fields, require_members
 from .sigfield import decode_tagged_signature
 
-__all__ = ["verify_revocation_snapshot", "verify_snapshot_trust"]
+__all__ = [
+    "verify_revocation_snapshot",
+    "verify_snapshot_trust",
+    "FAIL_MODES",
+    "resolve_fail_mode",
+    "snapshot_is_stale",
+]
 
 # aitp-revocation-list.schema.json. The wrapper, the `revocation_list` body,
 # and each `entries[]` item are all additionalProperties: false. RFC-AITP-0008
@@ -65,6 +78,67 @@ _REQUIRED_ENTRY_FIELDS = ("jti", "revoked_at")
 
 _INVALID = "REVOCATION_SNAPSHOT_INVALID"
 _VERSION = "aitp/0.2"
+
+# RFC-AITP-0008 §3.1's three revocation-policy modes. This is the one place
+# they're defined -- `tct.py` and `delegation.py` each consume a revocation
+# snapshot the same way this module's own `verify_revocation_snapshot` does,
+# so `FAIL_MODES`/`resolve_fail_mode`/`snapshot_is_stale` used to be
+# hand-copied into each of those two modules as well; that left this module,
+# the one that owns the RFC section, as the one copy nobody had actually
+# routed the hostile-input hardening back into (see the finalization note
+# below). Anything outside this set -- a misspelling, a value of the wrong
+# JSON type, a mode minted by some future revision -- resolves to
+# `fail_closed` (`resolve_fail_mode`): unrecognized configuration is never
+# silently permissive.
+FAIL_MODES = frozenset({"fail_closed", "fail_open", "soft_fail"})
+
+
+def resolve_fail_mode(value: Any) -> str:
+    """Normalize one declared ``fail_mode`` value to a §3.1 mode.
+
+    A present-but-non-``str`` value (``5``, ``None``, ``[]``) lands on
+    ``fail_closed`` for the same reason a misspelled one does. The obvious
+    alternative spelling -- an ``isinstance(..., str)`` guard that *falls
+    through* to the caller's default -- would send a **wrong-typed**
+    ``fail_mode`` to the permissive default while a merely **misspelled** one
+    (``"fail_klosed"``) failed closed: the more broken input treated more
+    leniently, which is backwards.
+    """
+    return value if isinstance(value, str) and value in FAIL_MODES else "fail_closed"
+
+
+def snapshot_is_stale(body: dict[str, Any], policy: dict[str, Any], now: int) -> bool:
+    """RFC-AITP-0008 §3.2's freshness rule: a snapshot past its own
+    ``expires_at``, or published longer than ``max_staleness_secs`` ago, gives
+    a verifier no usable revocation data.
+
+    Every *policy* member is read with ``.get()``, never a bracket: a policy is
+    untrusted-shape caller configuration, and every consumer's boundary
+    contract is "raise ``AitpError`` or return a verdict", never a raw
+    exception. A ``max_staleness_secs`` that is present but not an integer is
+    treated as stale rather than ignored -- unusable configuration resolves
+    toward "status unknown", which the caller's own effective ``fail_mode``
+    then answers, instead of quietly skipping the check. *body* is already
+    type-validated by ``verify_snapshot_trust``, so its two timestamps are
+    ``int`` by here.
+
+    ``OverflowError`` sits in that except tuple beside ``TypeError`` and
+    ``ValueError`` for the same boundary-contract reason, and it is genuinely
+    reachable: ``json.loads`` parses a bare ``Infinity``/``-Infinity`` by
+    default, so a JSON-sourced ``policy`` can hand this function a
+    ``max_staleness_secs`` of ``float("inf")``, on which ``int()`` raises
+    ``OverflowError`` rather than ``ValueError``.
+    """
+    if now >= int(body["expires_at"]):
+        return True
+    max_staleness = policy.get("max_staleness_secs")
+    if max_staleness is None:
+        return False
+    try:
+        bound = int(max_staleness)
+    except (TypeError, ValueError, OverflowError):
+        return True
+    return (now - int(body["published_at"])) > bound
 
 
 def _validate_shape(snapshot: Any) -> dict[str, Any]:
@@ -168,9 +242,26 @@ def verify_snapshot_trust(snapshot: Any) -> dict[str, Any]:
 
 
 def verify_revocation_snapshot(inp: dict[str, Any], now: int | None = None) -> dict[str, Any]:
+    # `policy` is one of this entry point's own top-level call arguments (like
+    # `snapshot`/`now`/`expected_issuer`), assembled by the calling
+    # application rather than carried on any AITP wire artifact -- see
+    # `tests/test_boundary_contract.py`'s own note on that boundary. It is
+    # still validated rather than bracket-indexed raw: a non-dict `policy`
+    # (or a `max_staleness_secs` of the wrong shape inside it) used to reach
+    # `int(policy["max_staleness_secs"])` and escape as a raw `KeyError`,
+    # `OverflowError`, `ValueError`, `TypeError`, or `AttributeError` --
+    # found during this plan's finalization pass, the same bug class Phase 3
+    # (`tct.py`) and Phase 4 (`delegation.py`) had already found and fixed on
+    # their own `policy["max_staleness_secs"]` reads, on this module's own
+    # exact formula, one call away. `resolve_fail_mode`/`snapshot_is_stale`
+    # below are shared with both of those, so all three entry points now
+    # treat a malformed `policy` identically: never a structural rejection
+    # (there is no wire schema for a local call argument to violate), always
+    # resolving toward the conservative `fail_closed` reading instead.
     policy = inp["policy"]
+    policy_dict = policy if isinstance(policy, dict) else {}
     now = int(inp["now"]) if now is None else now
-    fail_mode = policy.get("fail_mode", "fail_closed")
+    fail_mode = resolve_fail_mode(policy_dict.get("fail_mode", "fail_closed"))
 
     # 1-3. Structural validation, member-set, signature (rev-005/006/007/008).
     body = verify_snapshot_trust(inp["snapshot"])
@@ -180,9 +271,15 @@ def verify_revocation_snapshot(inp: dict[str, Any], now: int | None = None) -> d
     #    answers: stale, or issued by someone other than the expected peer,
     #    both mean the peer has no usable revocation data.
     issuer_ok = body["issuer"] == inp.get("expected_issuer")
-    fresh = (now - int(body["published_at"])) <= int(policy["max_staleness_secs"]) and now < int(body["expires_at"])
-    if not (issuer_ok and fresh):
-        if fail_mode == "soft_fail":
+    if not (issuer_ok and not snapshot_is_stale(body, policy_dict, now)):
+        # All three §3.1 modes are handled explicitly. `fail_open` used to fall
+        # through to the `raise` below and so behaved identically to
+        # `fail_closed` -- a valid mode silently mishandled, invisible because
+        # no conformance fixture exercises it. It shares `soft_fail`'s verdict
+        # rather than a bare `{"revoked": False}`: both mean "proceed on
+        # degraded revocation data", and dropping `stale` would make a degraded
+        # verdict indistinguishable from a fully-verified fresh one.
+        if fail_mode in ("soft_fail", "fail_open"):
             return {"revoked": False, "stale": True}
         raise AitpError("TCT_REVOKED", "no fresh valid revocation snapshot (fail_closed)")
 

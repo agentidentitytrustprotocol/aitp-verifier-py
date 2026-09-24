@@ -1,10 +1,12 @@
 # Assumptions
 
-Tracks judgment calls made while implementing `plans/hardening-issues-23-27.md`
-that are correct-and-intentional but represent a real behavior change (not a
-pure addition), or a "consequential but decidable" call per the Autonomy
-ladder where the plan left a defensible default rather than a hard spec.
-Closed out by `/reconcile` at the end of the whole plan.
+Tracks judgment calls made while implementing this repo's phased hardening
+plans (`plans/hardening-issues-23-27.md`, then `plans/hardening-issues-30-31.md`
+— each section names its own plan) that are correct-and-intentional but
+represent a real behavior change (not a pure addition), or a "consequential but
+decidable" call per the Autonomy ladder where the plan left a defensible
+default rather than a hard spec. Closed out by `/reconcile` at the end of the
+whole plan.
 
 ## Phase 3 — manifest.py hardening
 
@@ -158,3 +160,178 @@ code only (never reachable from untrusted verification input) — not fixed, no 
 impact.
 
 **Status:** CONFIRMED (2026-09-24, via `/reconcile`) — fixed and merged, not deferred.
+
+## Phase 3 (`plans/hardening-issues-30-31.md`) — `verify_tct`'s absence policy (issue #30)
+
+### An absent `policy` means today's permissive behavior, not `fail_closed`
+
+**What changed:** `verify_tct`'s input contract gains one optional top-level key, `policy`,
+spelled exactly as `verify_revocation_snapshot`'s existing required one
+(`{"fail_mode": ..., "max_staleness_secs": ...}`). The effective `fail_mode` it resolves
+answers one question — what to do when no trusted, applicable, fresh revocation snapshot was
+supplied — in this precedence: (1) a supplied top-level `policy` is **authoritative** and
+cannot be overridden by anything in the input artifact (a `policy` dict without `fail_mode`,
+and a non-dict `policy`, both resolve to `fail_closed`); (2) else the wrapper's
+`issuer_revocation_list["fail_mode"]`, the member `tct-004-revoked` already carries and
+`tct.py` read nowhere; (3) else — **no `policy` key and no wrapper `fail_mode` — `fail_open`,
+preserving today's behavior byte for byte**. That third rule is the assumption logged here.
+An unrecognized mode string, or a present-but-non-`str` `fail_mode` from either source,
+resolves to `fail_closed`.
+
+**Why:** In order of weight. (1) An unconditional fail-closed-on-absent default fails the
+spec's own conformance pack — `tct-012` (`required_for_v0_2`) expects success with no
+revocation data supplied at all, as do `del-001` (`required_for_v0_2`, core) and
+`del-mh-001` for Phase 4's sibling entry point; re-derived live by walking every fixture in
+`schemas/conformance/` rather than taken on trust. (2) RFC-AITP-0008 §3.1's `fail_closed`
+default is a *deployment policy* default, stated for `revocation_policy.mode` in a
+configured trust-anchor document; it does not speak to a verifier function invoked with no
+policy object in the first place. (3) `verify_tct` has no precedent — unlike
+`verify_revocation_snapshot`, whose `inp["policy"]` is required and always present — of
+`policy` being a mandatory input, so there is no existing caller expectation to honor.
+(4) Secure-by-default is still honored *within* an explicitly supplied policy, matching
+`revocation.py:173`'s own `policy.get("fail_mode", "fail_closed")` — supplying `policy: {}`
+is enough to get fail-closed. **This does not reverse the prior `/reconcile` pass's
+user-confirmed fail-closed decision (`DECISIONS.md:58-93`, Phase 8): that one governs the
+*obtained-but-untrustworthy* branch (a malformed/forged snapshot), which this phase preserves
+untouched under every `fail_mode` and which Phase 2 even extended to the single-hop
+delegation path, whereas this default governs the *absent* branch — a different case by
+RFC-AITP-0008 §3.1's own blockquote, and one `ASSUMPTIONS.md`'s Phase 8 entry above records
+as having been explicitly and deliberately left open by that same pass.**
+
+**How to apply:** This is a genuine one-way door — it sets what every future caller's silence
+means — and it is this plan's one item to confirm at `/reconcile`. Callers that want
+RFC-AITP-0008 §3.1's fail-closed posture MUST opt in explicitly by passing `policy` (any
+dict, including `{}`); callers that pass nothing keep the pre-existing behavior and are
+unaffected by this phase. The alternative worth weighing is "fail-closed default, and patch
+the three affected fixtures' inputs to carry an explicit permissive policy" — rejected here
+because it would mean this implementation no longer runs the conformance pack as shipped,
+which is the whole point of an independent second implementation. Phase 4 applies the
+identical contract and the identical default to `verify_delegation_token`, so confirming or
+reversing this decision settles both entry points at once.
+
+**A consequence worth stating outright — a permissive `policy` is not monotonically weaker
+than no `policy`:** because freshness is evaluated *before* the deny-list scan, and only
+under a supplied `policy`, `policy: {"fail_mode": "soft_fail", "max_staleness_secs": 600}`
+over a **stale** trusted snapshot that genuinely lists this TCT's own `jti` returns success
+— the staleness check short-circuits into the absence branch and the deny-list scan never
+runs — whereas the *identical* snapshot with **no** `policy` supplied returns `TCT_REVOKED`,
+since no staleness is evaluated without a policy and the scan therefore reaches the hit.
+Supplying an explicit permissive policy can, in that one case, produce a weaker outcome than
+supplying nothing. This is a property of the design, not a regression: it is exactly
+`revocation.py`'s own pre-existing stage-4 ordering (its `fresh` check at `revocation.py:190`
+precedes its `queried_jti` scan at `:203`, with the same short-circuit), and it follows from
+RFC-AITP-0008 §3.2 treating a stale snapshot as data the verifier has no business reading
+rather than as a deny list to consult anyway. Deployments that want the strictest reading of
+a stale-but-hit snapshot should use `fail_closed`, under which both spellings reject.
+
+**Status:** UNCONFIRMED — pending `/reconcile`.
+
+### The `different_issuer` test flip: a wrapper-declared `fail_closed` now rejects where the same input verified
+
+**What changed:** `tests/test_unknown_fields.py`'s
+`test_tct_revocation_snapshot_different_issuer_does_not_apply` built a wrapper carrying
+`fail_mode: "fail_closed"` (from `_tct_revocation_input`, mirroring `tct-004-revoked`'s own
+shape) around a snapshot signed by a *different* issuer, and asserted the TCT verified
+successfully. Under resolution rule 2 that input supplies no top-level `policy`, so the
+wrapper's declared `fail_closed` is now honored — and a valid snapshot that does not speak
+for this TCT's issuer leaves its revocation status unknown, which under `fail_closed` is
+treated as revoked. The same input now raises `TCT_REVOKED`.
+
+**Why:** The flip is the direct consequence of closing the half of issue #30 that says the
+wrapper's declared members "are never read at all". The wrapper's `fail_mode` is consulted
+only where no top-level `policy` was supplied, which is monotone-safe: the no-policy default
+is `fail_open`, the most permissive mode, so the wrapper can only ever tighten. The signed
+issuer's applicability check itself is unchanged — the wrapper's unsigned `issuer` label
+remains ignored for every trust decision, per the previous plan's "signed value wins"
+finding (B5).
+
+**How to apply:** The case was rewritten into two tests rather than deleted, so both
+directions stay pinned:
+`test_tct_revocation_snapshot_different_issuer_under_wrapper_fail_closed_is_revoked` pins the
+rejection, and `..._under_wrapper_soft_fail_verifies` pins that the identical wrapper with
+`fail_mode: "soft_fail"` still verifies — the wrong-issuer snapshot lists this TCT's own
+`jti`, so that success is a real pass of the applicability skip, not an absence of checking.
+Any caller that supplied a wrapper declaring `fail_closed` around a snapshot from another
+issuer and relied on success will now see `TCT_REVOKED`; no conformance fixture does
+(`tct-004`'s snapshot is from the TCT's own issuer and lists its `jti`, so it rejects for the
+deny-list reason, unchanged).
+
+**Status:** UNCONFIRMED — pending `/reconcile`, alongside the default-mode entry above (it is
+that decision's blast radius on existing behavior, not a separate design choice).
+
+## Phase 4 (`plans/hardening-issues-30-31.md`) — `verify_delegation_token`'s absence policy (issue #30)
+
+### The same permissive no-`policy` default, and the per-hop boundary it is deliberately not extended across
+
+**What changed:** `verify_delegation_token`'s input contract gains the same optional
+top-level `policy` key Phase 3 gave `verify_tct`, governing the analogous absence case: when
+no trusted, applicable revocation snapshot for `self_aid` was supplied, an effective
+`fail_closed` rejects with `DELEGATION_SOURCE_TCT_REVOKED` instead of proceeding. Two things
+are logged here.
+
+**(1) The default.** The precedence is Phase 3's *minus its rule 2*: (a) a supplied top-level
+`policy` is authoritative (a `policy` dict without `fail_mode`, and a non-dict `policy`, both
+resolve to `fail_closed`; an unrecognized or non-`str` mode likewise); (b) else — **no
+`policy` key at all — `fail_open`, preserving today's behavior byte for byte**. There is no
+per-wrapper rung because there is no per-wrapper spelling to read: a delegation input carries
+`revocation_snapshots: [{issuer_aid, snapshot}]` (`schemas/conformance/PLACEHOLDERS.md:92`),
+whose records have no policy member, and honoring an invented one would be *widening the
+accepted wire shape* rather than reading what the spec puts on the wire. **This is the same
+underlying decision as the Phase 3 entry above ("An absent `policy` means today's permissive
+behavior, not `fail_closed`"), not a second one** — the same contract, the same default, at
+the sibling entry point, logged here only so the delegation path's own blast radius is
+visible. Confirming or reversing that decision settles both entry points at once and MUST be
+applied to both together; the plan's Long-term posture is explicit that if `/reconcile` flips
+the default to fail-closed it flips in all three places (`verify_revocation_snapshot`,
+`verify_tct`, `verify_delegation_token`) at once. `del-001` (`required_for_v0_2`, core) and
+`del-mh-001` are both success fixtures supplying no revocation data whatsoever, so an
+unconditional fail-closed default would turn the spec's own pack red here exactly as
+`tct-012` does on the TCT path.
+
+**(2) The per-hop non-goal, stated rather than silently skipped.** `fail_closed` is applied
+**only to A's own deny list** — the RFC-AITP-0006 §4 step-7 / RFC-AITP-0011 §6 *source-TCT*
+check, which both the single-hop and the multi-hop path now run through one shared
+`_check_source_tct_revocation`. It is **not** extended to require a trusted snapshot for
+every intermediate hop issuer in the multi-hop per-hop sweep: absence there proceeds under
+every `fail_mode`, exactly as before this key existed. Requiring N snapshots under
+fail-closed is a materially wider policy with no RFC-stated default and no fixture —
+RFC-AITP-0011 is Draft, its §6 per-hop lookup says nothing about absence, and `del-mh-001`
+(a draft-opt-in success fixture) supplies none. Logged as a decision so `/reconcile` sees a
+boundary that was chosen, not one that was overlooked.
+
+**How to apply:** Callers wanting RFC-AITP-0008 §3.1's fail-closed posture on delegation MUST
+opt in explicitly by passing `policy` (any dict, including `{}`); callers that pass nothing
+keep the pre-existing behavior and are unaffected. No conformance fixture supplies a
+top-level `policy` to this operation, so all 10 `verify_delegation_token` fixtures pass
+unchanged and `run_conformance.py`'s counts do not move. Two adjacent behaviors are
+preserved untouched and MUST stay that way if the default is ever flipped: a malformed
+`revocation_snapshots` (non-list, truthy or falsy) still raises
+`REVOCATION_SNAPSHOT_INVALID`, and an untrustworthy snapshot still reports its own code,
+under **every** `fail_mode` — obtained-but-untrustworthy is never routed through the absence
+policy. The one counter-intuitive consequence the Phase 3 entry records — an explicitly
+permissive `policy` over a *stale* snapshot that genuinely lists the handle verifies, where
+the identical input with no `policy` rejects, because freshness is evaluated before the
+deny-list scan and only under a supplied policy — holds identically here, for the same
+reason, and `tests/test_unknown_fields.py` pins both directions on both paths. If
+`/reconcile` reverses the default, the per-hop boundary in (2) is a *separate* question and
+does not flip with it.
+
+**Status:** UNCONFIRMED — pending `/reconcile`, as the same decision as the Phase 3
+default-mode entry above rather than an independent one.
+
+**Follow-up noted during verification, not a decision to confirm — RESOLVED during this
+plan's finalization pass (2026-09-23), not left for later:** `_resolve_fail_mode`,
+`_snapshot_is_stale`, and `_FAIL_MODES` were spelled out identically (byte-for-byte,
+confirmed via AST comparison) in both `tct.py` (Phase 3) and `delegation.py` (this phase),
+rather than sharing one implementation — and `revocation.py`'s own stage-4 dispatch had a
+*third*, differently-spelled freshness formula (bracket access, no `OverflowError` guard,
+predating this plan), which the finalization pass's whole-feature verifier found was not
+merely stale but genuinely **unguarded**: `revocation.py`'s own `policy`/`max_staleness_secs`
+reads leaked 8 raw Python exceptions past its `AitpError` contract (GAP 1 in
+`PROGRESS.md`'s Finalization pass entry). Consolidated in that same pass: `FAIL_MODES`,
+`resolve_fail_mode`, and `snapshot_is_stale` now live once, in `revocation.py` (added to its
+`__all__`), imported by both `tct.py` and `delegation.py` in place of their own private
+copies — no new dependency edge, since both already imported `verify_snapshot_trust` from
+it. `verify_revocation_snapshot` itself was hardened onto the same shared, tested formula in
+the same motion. See `PROGRESS.md`'s Finalization pass section for the fix, the 12 new
+regression tests, and the full re-verification.
