@@ -1243,3 +1243,4 @@ green harness run for coverage.
   duplication and would restructure imports across three files for no behavior change.
 - **What's next:** Phase 2 (the single-hop present-snapshot revocation check — PR 2, ships
   on its own).
+pushed fix/jcs-depth-cap-31 a7c47dbd0de49451619f7699267d409720acef82
