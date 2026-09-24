@@ -9,7 +9,11 @@ clause, then steps 3-4") → AID-pinned ``alg`` → signature → claims (semant
 ``ver``, ``aud``, literal ``exp``, ``cnf.jkt`` binding) → the §10.4 conditional
 issuer-Manifest expiry bound → revocation. Revocation runs strictly last so a
 tampered token fails at the signature step and never reaches a (potentially
-networked) deny list — the RFC-AITP-0008 §3.3 ordering rev-004 pins.
+networked) deny list — the RFC-AITP-0008 §3.3 ordering rev-004 pins. The
+issuer's revocation snapshot, once supplied, is itself fully verified
+(structural + member-set + signature, via ``revocation.py``'s
+``verify_snapshot_trust``) before its ``entries`` are consulted — not merely
+consulted at face value.
 
 ``check_tct_claims_shape`` is exported so ``handshake.py`` and
 ``sessionbundle.py`` -- which each verify an *embedded* peer-issued TCT
@@ -29,6 +33,7 @@ from .errors import AitpError
 from .fields import check_types, reject_unknown_fields, require_members
 from .jwk import thumbprint
 from .jws import parse_compact, verify_jws
+from .revocation import verify_snapshot_trust
 from .timeutil import REFERENCE_CLOCK
 
 __all__ = ["verify_tct", "TCT_CLAIM_FIELDS", "TCT_CNF_FIELDS", "check_tct_claims_shape"]
@@ -127,10 +132,26 @@ def verify_tct(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any
 
 
 def _check_revocation(claims: dict[str, Any], inp: dict[str, Any]) -> None:
+    """RFC-AITP-0008 §3.3: the issuer's revocation snapshot, if supplied, MUST
+    itself be trusted (structurally valid, correctly shaped, genuinely
+    signed by its own claimed issuer) before its ``entries`` are consulted --
+    `verify_snapshot_trust` (`revocation.py`) is what closed issue #24's gap,
+    where a forged/unsigned snapshot was previously accepted at face value via
+    a bare ``.get()`` chain. An absent or non-dict ``issuer_revocation_list``
+    is a deliberately separate, still-open fail-open gap (see the follow-up
+    issue linked in `plans/hardening-issues-23-27.md`'s Phase 8 section) --
+    this function only hardens the snapshot *once its containing wrapper is
+    present*, matching this phase's own documented scope.
+    """
     revlist = inp.get("issuer_revocation_list")
     if not isinstance(revlist, dict):
         return
-    snapshot = revlist.get("snapshot", {})
-    entries = snapshot.get("revocation_list", {}).get("entries", [])
-    if any(e.get("jti") == claims.get("jti") for e in entries):
+    body = verify_snapshot_trust(revlist.get("snapshot"))
+    # A snapshot signed by someone other than this TCT's own issuer does not
+    # speak for it -- not a rejection (the snapshot itself may be perfectly
+    # valid, just for a different issuer), so the deny-list scan is simply
+    # skipped rather than treated as a defect.
+    if body["issuer"] != claims.get("iss"):
+        return
+    if any(e.get("jti") == claims.get("jti") for e in body["entries"]):
         raise AitpError("TCT_REVOKED", "TCT jti is on the issuer revocation snapshot")

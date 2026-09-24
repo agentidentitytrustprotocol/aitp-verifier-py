@@ -610,3 +610,58 @@ No gaps. Ready for `/ship`.
   equivalent deploy config.
 - **PR 1 (Phases 1-7) fully shipped.** Next: Phase 8 (PR 2 scope, issue #24 — depends on
   Phase 2, already landed on `main`).
+
+### Phase 8 — revocation-snapshot trust gap in `tct.py`/`delegation.py` (issue #24) — DONE (2026-09-23)
+
+- **Branch:** `revocation-snapshot-trust-24`, off `main` (post-PR-1-merge). Process note: PR
+  1's own final ship-checkpoint doc update was mistakenly pushed directly to `main`,
+  bypassing branch protection's required status checks (disclosed to the user at the time).
+  Corrected going forward — every change from Phase 8 onward goes through a proper feature
+  branch + PR + CI, no direct pushes to `main`.
+- **Files touched:** `aitp_verifier/revocation.py` (new exported `verify_snapshot_trust`,
+  extracted from `verify_revocation_snapshot`'s own stages 1-3 — structural, member-set,
+  signature; `verify_revocation_snapshot` itself now just calls it then layers stage 4,
+  behaviorally unchanged), `aitp_verifier/tct.py` (`_check_revocation` rewritten to call
+  `verify_snapshot_trust(revlist.get("snapshot"))`, skip the deny-list scan when the verified
+  `body["issuer"] != claims.get("iss")` rather than rejecting; module docstring updated),
+  `aitp_verifier/delegation.py` (`_revocation_index` rewritten to call
+  `verify_snapshot_trust` per record and index on the *verified* `body["issuer"]`, not the
+  caller-supplied `record.get("issuer_aid")` — closing the additional re-keying gap the #24
+  analysis surfaced; module docstring updated), `aitp_verifier/minter.py` (`_sign_revocation`
+  allow-list widened to include `__VALID_B_SIG__`; `mint_input` gains a loop signing each
+  `revocation_snapshots[*].snapshot`), `tests/test_unknown_fields.py` (+18 new tests: 9
+  through `verify_tct`, 9 through `verify_delegation_token` — forged signature, missing
+  signature, missing/absent `snapshot`, non-dict record, unknown body member, a parametrized
+  non-dict/non-list junk-shape sweep, a different-issuer-does-not-apply positive case, a
+  genuinely-signed positive control, and the signed-value-wins re-keying test).
+- **Tests:** `pytest tests/ -q` → 288 passed (baseline 270: +18). `run_conformance.py` →
+  68/0/1, unchanged — `tct-004-revoked`/`del-mh-004-revoked-hop` confirmed still reach
+  `TCT_REVOKED`/`DELEGATION_SOURCE_TCT_REVOKED`, now via a genuinely verified snapshot (the
+  minter previously left their `__VALID_B_SIG__` placeholder unsigned since it predated
+  `_sign_revocation`'s allow-list including it — meaning these two fixtures previously passed
+  "by coincidence," exactly the #24 finding). `mypy aitp_verifier tests` → clean, 34 files.
+  `pyflakes` clean on all touched files (one pre-existing, out-of-scope finding confirmed
+  via `git show main:aitp_verifier/minter.py`: `.jcs.dumps` imported but unused, predates
+  this phase, not touched).
+- **Hand-verification:** all 18 new tests fault-injected via `git stash` against the pre-fix
+  production code — 17 of 18 failed as expected (1 test, the genuinely-signed positive
+  control, correctly still passes pre-fix, since that fixture was never broken). Failures
+  split two ways: 4 genuine bare `AttributeError` crashes (`'int'/'bool' object has no
+  attribute 'get'`, confirming the malformed-shape sweep is not vacuous) and — most
+  importantly — the signed-value-wins re-keying test **did not raise at all** pre-fix,
+  meaning the old `record.get("issuer_aid")`-keyed index genuinely let a mislabeled snapshot
+  bypass detection silently, precisely the vulnerability issue #24 reports. Restored via
+  `git stash pop` (clean, no conflict), re-confirmed 288 passed.
+- **Follow-up issue filed** (plan's Phase 8 acceptance criteria requirement, not a code
+  change): agentidentitytrustprotocol/aitp-verifier-py#30, documenting the separate,
+  deliberately-deferred fail-open gap when `issuer_revocation_list` is absent entirely from
+  `verify_tct`'s input.
+- **ASSUMPTIONS.md:** one new entry (Phase 8) — `verify_snapshot_trust`'s shape validation
+  now hard-rejects a malformed `snapshot` sub-field that previously silently produced an
+  empty entry set, per the plan's own explicit instruction to log this distinct-from-the-
+  headline-fix behavior change for end-of-plan `/reconcile` review.
+- **Docs:** `tct.py`'s and `delegation.py`'s module docstrings both updated per the plan's
+  Phase 8 Docs field.
+- **Gap rounds:** 0 so far — full local suite/conformance/mypy green; fresh Opus verifier
+  for this phase not yet spawned (next step), followed by PR 2's own finalization pass
+  (single-phase PR, so finalization is lighter than PR 1's) before `/ship`.

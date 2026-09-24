@@ -903,7 +903,17 @@ return.
 
 ### Phase 8 — Close the revocation-snapshot trust gap in `tct.py`/`delegation.py` (issue #24)
 
-**Status:** TODO
+**Status:** DONE (2026-09-23). Implemented exactly as planned, including both design
+corrections from the review round (`verify_snapshot_trust` takes no `expected_issuer`
+parameter; `.get("snapshot")` not `["snapshot"]` at every call site). One line-number-only
+divergence: the plan's cited line numbers for `revocation.py`/`tct.py`/`delegation.py`
+(from before Phases 1-7 landed) had shifted by the time this phase started — implemented
+against the actual current code, not the stale numbers, per this plan's own "code is truth"
+guidance. `verify_revocation_snapshot`'s own behavior is confirmed byte-for-byte unchanged
+(every `rev-*` conformance fixture and all 4 of its existing `test_unknown_fields.py` tests
+pass unmodified). The follow-up GitHub issue the plan's acceptance criteria requires was
+filed: agentidentitytrustprotocol/aitp-verifier-py#30, documenting the separate, deliberately
+out-of-scope `issuer_revocation_list`-absent fail-open gap.
 
 **Delivers:** `tct.py::_check_revocation` and `delegation.py::_revocation_index`/
 `_verify_multihop`'s revocation lookup both route through the same structural + member-set +

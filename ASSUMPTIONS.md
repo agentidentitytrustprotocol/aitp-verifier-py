@@ -94,3 +94,38 @@ plus a direct-call regression test, per the "How to apply" guidance above. This 
 the failure mode is real and recurring, not a one-off — worth treating "does minting
 dereference the same field unguarded?" as a standing question for any future required-field
 guard, not just a one-time finding.
+
+## Phase 8 — revocation-snapshot trust gap (`tct.py`/`delegation.py`, issue #24)
+
+### `verify_snapshot_trust` hard-rejects a malformed `snapshot` sub-field that used to silently produce an empty entry set
+
+**What changed:** Before this phase, a `record`/`revlist` whose `snapshot` was absent,
+`None`, malformed (non-dict), or present-but-lacking `revocation_list`/`entries` all
+silently produced an empty (`tct.py`) or skipped (`delegation.py`) entry set via `.get()`
+chains with safe defaults — the caller's revocation check simply found nothing to flag,
+no error surfaced. After this phase, `revocation.py::verify_snapshot_trust`'s own shape
+validation (`_validate_shape`'s `isinstance` guard, `require_members`, `check_types`) hard-
+rejects every one of those `snapshot`-level cases with an `AitpError`
+(`REVOCATION_SNAPSHOT_INVALID` or `UNKNOWN_FIELD`) instead.
+
+**Why:** This is the same class of gap issue #24 exists to close (an untrustworthy input
+silently treated as "nothing to report" rather than surfaced as a defect), applied one
+level deeper than the headline finding (a *malformed* snapshot, not just an *unsigned* one).
+Confirmed via `plans/hardening-issues-23-27.md`'s Phase 8 section, which explicitly
+anticipated and pre-authorized this exact change as intentional, distinct from the separate,
+still-open, deliberately-deferred `issuer_revocation_list`-*absent-entirely* fail-open gap
+(tracked in agentidentitytrustprotocol/aitp-verifier-py#30) — this entry covers only "the
+`snapshot` sub-field, once its containing record/wrapper is present," not every possible
+absence.
+
+**How to apply:** This is a correct, intentional hardening fix, not a design choice open to
+reconsideration. Any caller that was relying on a malformed embedded `snapshot` being
+silently treated as "no revocation data" will now see `AitpError` (`verify_tct`) or a raised
+error from `verify_delegation_token`'s multi-hop path, where it previously saw success. No
+known caller in this repo depended on the old silent-empty-set behavior — confirmed via the
+new `tests/test_unknown_fields.py` malformed-shape sweep (both `verify_tct` and
+`verify_delegation_token`), hand-verified via `git stash` fault injection to genuinely
+distinguish old (crash or silent-accept) from new (clean `AitpError`) behavior.
+
+**Status:** UNCONFIRMED (per the plan's own explicit instruction to log this behavior change
+here for `/reconcile` to review at end-of-plan — not because the fix itself is in doubt).

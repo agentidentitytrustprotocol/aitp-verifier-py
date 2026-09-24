@@ -162,7 +162,7 @@ def _tamper_sig_str(sig_b64: str) -> str:
 
 
 def _sign_revocation(snapshot: dict[str, Any], keys: dict[str, PrivateKey]) -> None:
-    if snapshot.get("signature") not in ("__VALID_A_SIG__", "__VALID_MANIFEST_SIG__"):
+    if snapshot.get("signature") not in ("__VALID_A_SIG__", "__VALID_B_SIG__", "__VALID_MANIFEST_SIG__"):
         return
     body = snapshot["revocation_list"]
     key = keys[body["issuer"]]
@@ -382,5 +382,12 @@ def mint_input(inp: dict[str, Any], now: int, keys: dict[str, PrivateKey]) -> di
             _sign_revocation(node["snapshot"], keys)
         elif isinstance(node, dict) and "revocation_list" in node:
             _sign_revocation(node, keys)
+
+    # Multi-hop delegation's per-hop revocation snapshots (RFC-AITP-0011 §6):
+    # a list of `{"issuer_aid": ..., "snapshot": {...}}` records, each signed
+    # the same way as the single-holder cases above.
+    for record in d.get("revocation_snapshots", []) or []:
+        if isinstance(record, dict) and isinstance(record.get("snapshot"), dict):
+            _sign_revocation(record["snapshot"], keys)
 
     return d
