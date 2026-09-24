@@ -43,6 +43,19 @@ ISSUER = "aid:pubkey:O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik"
 SUBJECT = "aid:pubkey:A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
 
 
+def _deep_dict(n: int, leaf: Any = 1) -> Any:
+    """*n* nested `dict` levels around a scalar leaf -- the same helper shape
+    `tests/test_fields.py` pins the exact `jcs` depth boundary against. Here it
+    is only ever used far past that boundary (2000), so no counting convention
+    is load-bearing: what matters is that 2000 is deep enough to exhaust the
+    interpreter's own stack, which is how issue #31 surfaced.
+    """
+    value: Any = leaf
+    for _ in range(n):
+        value = {"a": value}
+    return value
+
+
 def _envelope_input(**env_extra: Any) -> dict[str, Any]:
     env = {
         "version": "aitp/0.2",
@@ -191,6 +204,37 @@ def test_envelope_huge_int_payload_value_does_not_crash_via_handshake(spec_dir: 
     keys = load_kat_keys(spec_dir)
     minted = mint_input(_hello_input(ISSUER, SUBJECT), REFERENCE_CLOCK, keys)
     minted["envelope"]["payload"]["extensions"] = {"x": json.loads("1" + "0" * 400)}
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+# ── nesting depth must not escape either (issue #31) ──────────────────────
+
+
+def test_envelope_deeply_nested_payload_value_does_not_crash(spec_dir: Path) -> None:
+    """A 2000-deep value is ordinary valid JSON that any peer can send, and
+    `payload` is intentionally unconstrained -- so before `jcs.py`'s depth cap
+    this escaped `verify_envelope` as a raw `RecursionError`, past the
+    `except AitpError` every caller's contract says is sufficient.
+    """
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_envelope_input(), REFERENCE_CLOCK, keys)
+    minted["envelope"]["payload"] = {"x": _deep_dict(2000)}
+    with pytest.raises(AitpError) as exc:
+        verify_envelope(minted)
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+def test_envelope_deeply_nested_payload_value_does_not_crash_via_handshake(spec_dir: Path) -> None:
+    """The same hazard through `envelope_signing_input`'s SECOND caller,
+    `handshake.py::_verify_bootstrap`, with the deep value inside `extensions`
+    -- the member RFC-AITP-0001 §7 forbids inspecting, and therefore the one
+    place nothing upstream of `canonicalize` could ever have caught it.
+    """
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_hello_input(ISSUER, SUBJECT), REFERENCE_CLOCK, keys)
+    minted["envelope"]["payload"]["extensions"] = {"x": _deep_dict(2000)}
     with pytest.raises(AitpError) as exc:
         verify_handshake_payload(minted)
     assert exc.value.code == "INVALID_ENVELOPE"

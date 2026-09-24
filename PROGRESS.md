@@ -900,3 +900,346 @@ one-line RFC-AITP-0003 §3 prose gap.
 
 **The whole plan is now fully closed: all 10 phases, all 4 PRs (#29, #32+#33, #34+#35,
 #36), all 5 target issues, and all 3 `ASSUMPTIONS.md` entries are done.**
+
+---
+
+# PROGRESS (plans/hardening-issues-30-31.md)
+
+Tracking file for `plans/hardening-issues-30-31.md` (issues #30, #31, plus a live
+single-hop revocation bypass found during that plan's grounding). Appended below the
+`hardening-issues-23-27` plan's own tracking section above — that plan is fully shipped
+(PRs #29, #32/#33, #34/#35, #36, all merged); this section starts fresh for the new plan.
+
+## Repo map
+
+- `aitp_verifier/jcs.py` — Phase 1 primary edit site. `JcsError(ValueError)` at `:27-28`;
+  `_serialize` at `:144-177` with its two recursive calls at `:160` (list element) and
+  `:174` (dict member value); the UTF-16 sort-key line at `:166` is where the raw
+  `RecursionError` surfaces today; `dumps` `:180-184`; `canonicalize` `:187-189`. No depth
+  or size guard exists anywhere in the module. Measured live on `/tmp/aitpvenv313`
+  (CPython 3.13.7, stock recursion limit 1000): 993-deep canonicalizes, 1200-deep raises;
+  `json.loads` accepts 5,000-deep on the same interpreter, so the parser never rejects
+  first. Imports nothing from the package — no cycle risk from the new constant.
+- `aitp_verifier/fields.py` — Phase 1 secondary edit site. `canonical_bytes` at `:146-159`,
+  its `except JcsError` at `:158-159`; `from .jcs import JcsError, canonicalize` at `:75`
+  (so the monkeypatch target for the new `RecursionError`-conversion test is
+  `aitp_verifier.fields.canonicalize`). Not touched by any other phase.
+- `aitp_verifier/tct.py` — Phase 3 primary edit site. `verify_tct` `:88-131` (it owns the
+  `now` parameter Phase 3 must thread down); the `_check_revocation(claims, inp)` call at
+  `:130`; `_check_revocation` `:134-157` — `inp.get("issuer_revocation_list")` `:146`, the
+  fail-open `return` at `:147-148`, `verify_snapshot_trust(revlist.get("snapshot"))` `:149`,
+  the wrong-issuer silent skip at `:154-155`, the deny-list scan at `:156-157`. The
+  wrapper's own `issuer`/`fail_mode` members are read nowhere in the module today.
+  `check_tct_claims_shape` (`:62-85`) is NOT touched by this plan.
+- `aitp_verifier/revocation.py` — Phase 3 secondary edit site (stage-4 mode dispatch only).
+  Module docstring `:1-27` documents the obtained-but-untrustworthy vs. absent split both
+  Phases 3 and 4 must preserve; `verify_snapshot_trust` `:111-167` (shared, unchanged by
+  this plan); `verify_revocation_snapshot` `:170-192` — `policy = inp["policy"]` `:171`,
+  `fail_mode = policy.get("fail_mode", "fail_closed")` `:173` (the exact default Phases 3/4
+  mirror), stage 4 at `:178-187` where `fail_open` currently falls through to the
+  `TCT_REVOKED` raise at `:187`, freshness formula at `:183`, deny-list scan `:189-191`.
+- `aitp_verifier/delegation.py` — Phase 2 AND Phase 4 primary edit site. Single-hop body
+  `:97-138` (insert the §4 step-7 check after the scope check at `:135-136`, before the
+  `return` at `:138`); `check_voucher_claims_shape(vclaims, ...)` at `:129` is what makes
+  `vclaims["src_jti"]` a shape-guaranteed `str` by then. `_revocation_index` `:141-177` —
+  today's single caller is `:267`; absence branch `:165-167` (`None ⇒ []`, with the
+  `/reconcile`-era `is None`-not-truthiness discipline at `:165-172` that must be
+  preserved); index keyed on the verified `body["issuer"]` at `:176`. Multi-hop revocation
+  block `:266-273`: the source-TCT check at `:268-269` is the pattern Phase 2 copies
+  verbatim, and the per-hop loop at `:270-273` is Phase 4's explicit non-goal.
+  `compute_chain_hash`'s raw `canonicalize` at `:82` is a fixed-depth-2 `list[str]` — not
+  attacker-nestable, not touched by Phase 1.
+- `aitp_verifier/voucher.py` — read-only for this plan. `_VOUCHER_REQUIRED_CLAIMS` includes
+  `src_jti` with a `str` type in `_VOUCHER_CLAIM_TYPES`, which is the invariant Phase 2's
+  bracket access relies on. No edits.
+- `aitp_verifier/envelope.py` `:51`, `aitp_verifier/manifest.py` `:204`,
+  `aitp_verifier/revocation.py` `:164`, `aitp_verifier/sessionbundle.py` `:207` — the four
+  attacker-reachable `canonical_bytes` call sites Phase 1 fixes at once, each already
+  passing its own `shape_code` (`INVALID_ENVELOPE` / `MANIFEST_INVALID` /
+  `REVOCATION_SNAPSHOT_INVALID` / `SESSION_BUNDLE_INVALID`). None of these files is edited.
+- `aitp_verifier/jws.py` — read-only. `:60-63`'s `except Exception` around `loads()` already
+  catches `RecursionError` on the JWS-segment parse path; `encode_jws` `:116-127` (raw
+  `canonicalize` at `:125`) is minter-only per its own docstring. No edits.
+- `aitp_verifier/minter.py` — read-only for this plan, but load-bearing for the tests:
+  `:379-384` signs the `snapshot`/`issuer_revocation_list` holders, `:389-391` signs every
+  `revocation_snapshots` record **for any operation** (so Phase 2/4's single-hop tests need
+  no minter change); `:131` canonicalizes `env["payload"]` during minting, which is the
+  source of `test_boundary_contract.py`'s known mint-time skip blind spot.
+- `aitp_verifier/verify.py` — `OPERATIONS` table unchanged by every phase; listed here only
+  to record that no public dispatch surface moves.
+- `tests/test_fields.py` — Phase 1 edit site. `canonical_bytes` block at `:96-115`
+  (`test_canonical_bytes_returns_jcs_bytes_for_valid_input` `:96`,
+  `..._converts_jcserror_to_aitperror` `:100`, `..._rejects_huge_int` `:108`) is the exact
+  shape the new depth/`RecursionError` tests extend.
+- `tests/test_envelope.py` — Phase 1 edit site. The mint-then-mutate end-to-end pattern at
+  `:148-199` (`..._infinite_payload_value_does_not_crash` `:148`, `..._huge_int...` `:162`,
+  and the two `_via_handshake` siblings `:172`/`:186`) injects the hostile value AFTER
+  minting, which is what bypasses the harness's mint-time blind spot.
+- `tests/test_boundary_contract.py` — Phase 1 edit site (one `_MUTATIONS` entry).
+  `_ARTIFACT_ROOTS` `:68-80`, `_MUTATIONS` `:92-105`, `_iter_leaf_paths` `:107`, `_mutate`
+  `:135` (the draft said `:145` — corrected in plan review), `_sweep` `:160-214` with its
+  `except Exception` mint-time skip at `:184`, the parametrized capstone at `:214-215`. Its docstring (`:22-35`) already documents that top-level
+  call-argument keys are out of mutation scope — so Phases 3/4's new top-level `policy` key
+  needs no harness change.
+- `tests/test_unknown_fields.py` — Phases 2, 3 and 4 edit site. `verify_tct`-with-no-
+  revocation-list assertions at `:142`, `:151`, `:163`, `:186`, `:226` (these pin the
+  Phase 3 default and must keep passing unmodified); `_revocation_input` `:545` and the
+  `fail_mode`-toggling pattern at `:607-625` (the model for Phase 3's new
+  `_tct_policy_input`); `_tct_revocation_input` `:636-657` (already carries `issuer` and
+  `fail_mode`, both currently ignored by `tct.py`); the TCT-revocation trust tests
+  `:658-731` (must pass unmodified under every mode);
+  `test_tct_revocation_snapshot_different_issuer_does_not_apply` `:733-744` — **the one
+  existing test Phase 3 flips**, since its wrapper carries `fail_mode: "fail_closed"`;
+  `_load_conformance_input(spec_dir, fixture_id)` `:747` (loads a fixture `input` by id and
+  carries its draft `feature` marker — reused by Phases 2 and 4 for `del-001`/`del-mh-001`).
+- `tests/test_conformance.py` — `assert passed >= 51` at `:33` (the draft said `:31` —
+  corrected in plan review); no phase may lower it.
+- `CHANGELOG.md` — Phase 5 edit site. `## Unreleased` → `### Security-relevant` already
+  established by the previous plan's two entries; four new entries append there.
+- `README.md` — checked during planning: documents a per-module coverage table, the
+  independence claim, conformance counts and the dev workflow, but **no** per-operation
+  input-contract keys — so the new optional `policy` key needs no README change. Only the
+  "53 fixtures pass" line needs re-checking in Phase 5.
+- `ASSUMPTIONS.md` — Phases 3 and 4 append `UNCONFIRMED` entries (the absent-`policy`
+  default, the Phase 3 test flip, the Phase 4 per-hop non-goal), in the existing
+  What changed / Why / How to apply / Status format, for `/reconcile` to settle.
+- Sibling spec checkout `../agentidentitytrustprotocol` (read-only, never written):
+  `rfcs/RFC-AITP-0006-delegation.md:97` (§4 ordered MUST list) and `:111` (step 7, source-TCT
+  revocation ⇒ `DELEGATION_SOURCE_TCT_REVOKED`); `rfcs/RFC-AITP-0008-revocation.md:25`
+  (one deny-list entry invalidates the voucher and every delegation built on it), `:143-175`
+  (§3.1 modes, the `fail_closed` schema default, the absent-vs-untrustworthy blockquote),
+  `:177-179` (§3.2 staleness); `registries/error-codes.md:98` (`TCT_REVOKED`) and `:188`
+  (`DELEGATION_SOURCE_TCT_REVOKED`) — both already registered, no new codes in this plan;
+  `schemas/conformance/tct-004-revoked.json:32-36` (the `issuer`/`fail_mode` wrapper shape
+  `tct.py` ignores); `schemas/conformance/del-001-success.json` (core single-hop success,
+  `voucher_claims.src_jti = 550e8400-e29b-41d4-a716-446655440101`);
+  `schemas/conformance/PLACEHOLDERS.md:86` (the `del-*` row, no `revocation_snapshots`
+  mentioned) vs `:92` (the `del-mh-*` row, which documents it) — the doc asymmetry Phase 5's
+  first spec issue notes; spec `README.md:357-362` (the `del-*` fixture table with the
+  `del-002` numbering hole).
+
+## Conformance constraints (re-derived live, 2026-09-23)
+
+Walked every fixture in `schemas/conformance/` while writing the plan:
+- `verify_tct`: 10 fixtures; exactly **one** (`tct-012`, `required_for_v0_2`) expects success
+  with no `issuer_revocation_list`. `tct-004` supplies the wrapper; the other eight fail
+  before `_check_revocation` is reached.
+- `verify_delegation_token`: 10 fixtures; **two** expect success with no
+  `revocation_snapshots` — `del-001` (`required_for_v0_2`, core) and `del-mh-001` (draft
+  opt-in). Only `del-mh-004` supplies snapshots.
+- No fixture anywhere exercises `revocation_policy.mode: fail_open` (all `rev-*` are
+  `fail_closed` except `rev-002`, which is `soft_fail`), and none exercises RFC-AITP-0006
+  §4 step 7 on the single-hop path.
+
+These three counts are what the Phase 3/4 default rests on — re-verify them before changing
+that default.
+
+**Independently re-walked during plan review (2026-09-23) and confirmed exactly**, by
+enumerating every `schemas/conformance/*.json`, grouping on `input.operation` and reading
+each `expected`: `verify_tct` → 10 fixtures, exactly one (`tct-012`) succeeds with no
+`issuer_revocation_list`, `tct-004` supplies the wrapper, and all eight remaining fixtures
+(`rev-004`, `tct-002`/`003`/`005`/`008`/`009`/`010`/`011`) reject before `tct.py:130` is ever
+reached. `verify_delegation_token` → 10 fixtures, exactly two succeed with no
+`revocation_snapshots` (`del-001`, `del-mh-001`), only `del-mh-004` supplies any.
+`verify_revocation_snapshot` → **7** fixtures, not 8: `rev-004` is a `verify_tct` fixture.
+
+## Measured baseline (plan review, 2026-09-23, current `main` `adcd06f`)
+
+- `pytest tests/ -q` → **300 passed**.
+- `run_conformance.py --spec-dir ../agentidentitytrustprotocol` → **68 passed / 0 failed /
+  1 skipped**.
+- `mypy` → clean, **36 source files**.
+- Max JSON container depth reached by any `canonical_bytes`/`canonicalize` call across the
+  whole conformance run → **3** (Phase 1's own acceptance criterion re-measures this; the
+  bound it must satisfy is ≤ 8).
+- `canonical_bytes({"extensions": <n-deep dict>})` on `/tmp/aitpvenv313` (CPython 3.13.7,
+  recursion limit 1000): **993 OK, 995 raw `RecursionError`**. `json.loads` on the same
+  interpreter: **5,000 OK, 10,000 `RecursionError`**.
+- Single-hop revocation bypass **reproduced live**: `del-001` + a `revocation_snapshots`
+  record genuinely signed by `self_aid` listing `voucher_claims.src_jti` →
+  `verify_delegation_token` returns `{'grants': ['read_data']}` today, while
+  `_revocation_index` on the same input returns
+  `{<self_aid>: {'550e8400-e29b-41d4-a716-446655440101'}}`. The same snapshot signed by a
+  different peer indexes under that peer (fix correctly does not fire); a one-character
+  signature edit raises `REVOCATION_SNAPSHOT_SIGNATURE_INVALID`.
+
+## Verification environment
+
+Same as the previous plan's section above — `/tmp/aitpvenv313` (confirmed present and
+working, CPython 3.13.7), `python run_conformance.py --spec-dir ../agentidentitytrustprotocol`,
+`pytest tests/ -v`, `mypy`. CI runs 3.11–3.14 (`.github/workflows/ci.yml:53`); Phase 1's
+recursion-depth behavior should be sanity-checked on more than one of them, since the depth
+cap is a fixed constant and the interpreter ceiling is not.
+
+## PR strategy
+
+5 phases, 3 PRs — the reasoning is recorded in the plan's own `## PR grouping and sequencing`
+section rather than here: **PR 1 = Phase 1** (issue #31), **PR 2 = Phase 2** (the live
+single-hop revocation bypass, highest severity, ships on its own), **PR 3 = Phases 3+4+5**
+(issue #30's `policy` design landing symmetrically across `tct.py`/`delegation.py`, plus the
+`fail_open` fix and the docs/changelog/spec-issue phase). One phase = one commit, even inside
+a shared PR.
+
+## Status
+
+- **Plan reviewed (round 1, 2026-09-23): REVISE → fixes applied → SOUND.** A fresh Opus
+  agent that did not draft the plan re-verified every cited file, re-walked the conformance
+  pack independently, re-ran the recursion measurements, and reproduced the single-hop
+  revocation bypass live. One substantive correction (Phase 3's mode-resolution precedence
+  was inverted — an unsigned wrapper `fail_mode` could downgrade an explicit deployment
+  `policy`) plus 13 accuracy/falsifiability fixes, all applied to the plan. See the plan's
+  own `## Plan review` section for the itemized list. Ready for `/implement`.
+- **Plan written (2026-09-23).** Grounded by two Opus
+  subagent analyses (issues #30 and #31) plus a fresh critical-tier agent that independently
+  reproduced the single-hop revocation bypass live, and re-verified while drafting by direct
+  reads of `tct.py`, `revocation.py`, `delegation.py`, `voucher.py`, `jcs.py`, `fields.py`,
+  `jws.py`, `minter.py`, `verify.py`, the four test modules above, `CHANGELOG.md`,
+  `README.md`, `ASSUMPTIONS.md`, and the sibling spec checkout's RFC/registry/fixture files.
+  Live measurements taken during drafting: the recursion boundary (993 OK / 1200 raise on
+  3.13.7) and `json.loads`'s own tolerance (5,000 OK / 20,000 raise). The plan's
+  `## Plan review` section lists the four claims a reviewer should re-derive first.
+
+## Phase 1 — depth-cap `jcs.py`'s serializer, convert `RecursionError` at the `fields.py` boundary (issue #31) — DONE (2026-09-23)
+
+- **Verdict:** PASS after 1 gap round. Round-1 fresh-Opus verifier: PASS on every code
+  acceptance item; round-2 fresh-Opus verifier: **GAPS** (three items, all closed in this
+  same phase — see *Gap rounds* below). Not critical per the Autonomy ladder: a mechanical
+  hardening fix to shared infrastructure, no public-contract change, no one-way door.
+- **Files touched:** `aitp_verifier/jcs.py` (`_MAX_DEPTH = 256` with the three-bounds
+  rationale comment; `_serialize` gains `depth: int = 0` plus an entry guard raising
+  `JcsError`; both recursion sites — list element and dict member value — pass `depth + 1`;
+  module docstring gains the depth-cap sentence), `aitp_verifier/fields.py`
+  (`canonical_bytes` gains a second `except RecursionError` clause raising `AitpError` with
+  a **constant** message, `"value is too deeply nested to canonicalize"`; the existing
+  `JcsError` message left byte-identical), `tests/test_fields.py` (+10: the dict-nesting
+  boundary pair, the `extensions`-shaped rejection, the direct-`jcs` `JcsError`-not-
+  `RecursionError` assertion, the monkeypatched `RecursionError`-conversion test, and the
+  four list/mixed-nesting tests from the gap round), `tests/test_envelope.py` (+2
+  mint-then-mutate end-to-end tests, direct and via-handshake), `tests/test_boundary_contract.py`
+  (the `("deep-nesting", _deep_dict(2000))` `_MUTATIONS` entry plus its `_deep_dict` helper).
+- **Tests:** `pytest tests/ -q` → **311 passed** (baseline 300: +9 `test_fields.py` (17→26),
+  +2 `test_envelope.py`; `test_boundary_contract.py`'s count is unchanged — its new entry is
+  one more mutation inside the existing parametrized cases). `run_conformance.py
+  --spec-dir ../agentidentitytrustprotocol` → **68 passed / 0 failed / 1 skipped**,
+  unchanged. `mypy` → clean, **36 source files** (strict; `files` covers `tests` too, so the
+  new `depth` parameter and every new helper are type-checked).
+
+### Measurement 1 — max canonicalization depth across the pack and `signed-examples/`
+
+Required by this phase's acceptance criteria (must be ≤ 8, i.e. ≥ 30× headroom below
+`_MAX_DEPTH = 256`). Measured by patching `jcs._serialize` (which every `canonicalize`/
+`canonical_bytes` call funnels through, and which recurses via the module global, so the
+patch covers the recursion too) to record the largest `depth` argument it ever sees, then
+running the full conformance pack followed by `tests/test_signed_examples.py` in the same
+process:
+
+- conformance pack alone → **3**
+- conformance pack **+ `signed-examples/`** → **4**
+
+Both numbers were cross-checked against a second, independent metric computed at the same
+time — the structural container depth of each top-level `canonicalize`/`canonical_bytes`
+argument — which agreed exactly (3 and 4). So the cap sits **64× above** the deepest shape
+this implementation is ever asked to canonicalize in practice; no re-derivation of the
+constant is needed. (Independently re-measured three times now: once during plan review —
+which reported the conformance-pack figure of 3 but did not extend the run to
+`signed-examples/` — and twice during verification. The `signed-examples/` figure of 4 is
+`known-answer/signed-examples/revocation/kat-keypair-001-snapshot.json`'s wrapper canonicalized
+whole — `{revocation_list: {…, entries: [{…}]}}` — one level deeper than anything the
+conformance pack itself canonicalizes.)
+
+### Measurement 2 — the `deep-nesting` `_MUTATIONS` entry is vacuous for all 8 operations
+
+Required by this phase's acceptance criteria: whether the new `test_boundary_contract.py`
+entry is reachable or vacuous per operation had to be **measured, not assumed either way**.
+Measured with a temporary counter around `_sweep`'s loop, restricted to the one mutation
+(the test file itself is unchanged — the counter lived in a throwaway script that imports
+the module's own helpers):
+
+| operation | mutations attempted | reached the verifier |
+|---|---|---|
+| `verify_envelope` | 30 | 0 |
+| `verify_manifest` | 79 | 0 |
+| `verify_tct` | 90 | 0 |
+| `verify_grant_voucher` | 16 | 0 |
+| `verify_delegation_token` | 183 | 0 |
+| `verify_revocation_snapshot` | 39 | 0 |
+| `verify_handshake_payload` | 412 | 0 |
+| `verify_session_bundle` | 172 | 0 |
+| **total** | **1021** | **0** |
+
+**Vacuous for every one of the eight operations: 0 of 1021 mutations reached any verifier.**
+All 1021 die inside `mint_input`'s own `copy.deepcopy(inp)` (`minter.py:358`) — itself an
+unbounded recursive walk, which blows the stack on a 2000-deep value long before the
+verifier, and therefore long before this phase's guard, is ever reached. `_sweep`'s
+`except Exception` mint-time skip then swallows it (`RecursionError` **is** an `Exception`),
+so the entry is silently skipped both pre- and post-fix. This is a **test-harness/fixture-
+minting limitation, not a production code path**: `minter.py` is imported by no verifier
+module (confirmed by grep — the only mentions elsewhere are docstring prose), so its
+unbounded `deepcopy` is not an attacker-reachable defect and is deliberately not fixed here.
+
+This is the same class of blind spot the previous plan's Phase 7 recorded ("a mutation
+landing on a field `mint_input` itself canonicalizes dies inside `mint_input` and is skipped
+by `_sweep`'s `except Exception` before reaching the verifier"), and it is recorded the same
+way: the entry is **kept anyway**, to keep the harness's hostile-value catalogue complete for
+any future entry point whose minting path does not touch the mutated field — but it is
+explicitly **not** this phase's proof. The proof is `tests/test_fields.py`'s direct unit
+tests plus `tests/test_envelope.py`'s two mint-then-mutate tests, which inject the deep value
+*after* minting and so bypass the blind spot entirely. `_deep_dict`'s docstring in
+`tests/test_boundary_contract.py` states this in-file so a future reader does not mistake a
+green harness run for coverage.
+
+### Gap rounds
+
+1 round. Round-2 fresh-Opus verifier verdict: **GAPS**, three items, all closed:
+
+1. **(blocking) The two measurements above were not recorded in `PROGRESS.md`** — an explicit
+   acceptance-criteria requirement, not an optional note. Closed by this subsection; both
+   values were independently re-measured before being written down, not copied forward.
+2. **(blocking) `_serialize`'s list-element recursion site had ZERO test coverage.** Every
+   `_deep_dict` helper in all three test files builds nested **dicts**; nothing built nested
+   **lists**, so the two independently-guarded recursion sites had one covered and one not.
+   Proven exploitable by mutation: reverting that one call site's `depth + 1` back to no
+   `depth` argument left the full 307-test suite green — a regression fully reopening #31 for
+   list-nested values would have shipped silently. Closed by a `_deep_list(n)` helper and four
+   tests in `tests/test_fields.py`: the accept-at-cap / reject-one-past-cap boundary pair for
+   lists (same adjacent-depth-pinning discipline and same explicitly-stated counting
+   convention as the dict pair), a direct-`jcs` `canonicalize(_deep_list(2000))` →
+   `JcsError`-not-`RecursionError` assertion (necessary because at 2000 deep an unguarded list
+   site raises a real `RecursionError`, which `canonical_bytes` would convert into the *same*
+   `AitpError` a working cap produces — only the `jcs` layer can tell them apart), and an
+   alternating-dict/list test proving the two sites share one counter (129 `{"a": [...]}`
+   pairs = 258 levels, past the cap, but only 129 of each kind — so a serializer counting just
+   one kind accepts it). **Hand-verified both directions:** with the list site's `depth + 1`
+   removed, exactly 3 tests fail and they are all new ones (308 passed / 3 failed, no
+   pre-existing test disturbed); with the *dict* site's removed instead, the 3 pre-existing
+   dict tests plus the new alternating test fail. Restored, re-confirmed 311 passed.
+3. **(informational, correctly out of scope) `jwk.py::issuer_keys_from` has no depth bound.**
+   `jwk.py:162`, self-recursing at `:191-192`, reachable from `verify_handshake_payload` via
+   `handshake.py:111` → `identity.py:175`. Reproduced live here (base fixture
+   `id-009-identity-extensions-accepted`, a 3000-deep list under a `resolved_issuer_keys`
+   entry → raw `RecursionError`; same with `id-001`), plus an adjacent finding from the same
+   helper: a merely malformed value (`12345`) escapes as a bare
+   `ValueError: unsupported issuer key value shape: int`. This predates Phase 1 entirely
+   (`jwk.py` is byte-identical to `main` across this diff, last changed in `c5ecb60`) and
+   involves **no `canonicalize`/`canonical_bytes` at all**, so it is structurally a different
+   defect, not a miss by this phase's fix. Filed as
+   **agentidentitytrustprotocol/aitp-verifier-py#38** with the reproduction, the file:line
+   chain, the out-of-scope reasoning and a suggested fix shape (mirror this phase's explicit
+   `depth` parameter, and convert both failure modes at `identity.py:175`). Phase 1's
+   **Delivers** in the plan was narrowed in the same pass — the claim is now scoped to JSON
+   "that reaches `canonical_bytes`/`canonicalize`", with #38 named inline.
+
+- **`ASSUMPTIONS.md`:** none logged this phase — the constant, the guard placement, the
+  message text and the test shapes were all fully specified by the plan (and by its own
+  review round), not new judgment calls. The one genuinely non-obvious finding, Measurement
+  2's vacuity result, is a *measurement* recorded here rather than an unconfirmed assumption,
+  matching how the previous plan's Phase 7 recorded its analogous harness-scope limitation.
+- **Deliberately not done:** de-duplicating `_deep_dict`, which now appears in all three test
+  files. Each copy carries a different, load-bearing docstring (the exact counting convention
+  in `test_fields.py`, the "2000 is past the interpreter ceiling, no convention is
+  load-bearing here" note in `test_envelope.py`, the harness-vacuity note in
+  `test_boundary_contract.py`), and this repo has no shared test-helper module today — adding
+  one, or a `conftest.py` fixture, to share four lines of loop would cost more than the
+  duplication and would restructure imports across three files for no behavior change.
+- **What's next:** Phase 2 (the single-hop present-snapshot revocation check — PR 2, ships
+  on its own).

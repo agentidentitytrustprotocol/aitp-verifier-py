@@ -152,11 +152,23 @@ def canonical_bytes(value: Any, *, shape_code: str, what: str) -> bytes:
     RFC-AITP-0001 §7 forbids inspecting, so no upstream ``check_types`` call
     can intercept it -- this is the one point every such value must pass
     through.
+
+    ``RecursionError`` is converted too, as defense in depth behind
+    ``jcs.py``'s own depth cap: the cap bounds this walk's frames, but a
+    caller whose stack was already near-exhausted when it called in can still
+    exhaust it inside a walk the cap would have admitted. ``RecursionError``
+    subclasses ``RuntimeError``, not ``ValueError``, so the two clauses are
+    disjoint and their order is immaterial. Its message is a constant literal
+    with no interpolation on purpose: formatting a message while the stack is
+    exhausted can itself re-trigger the error, and this recovery path must not
+    be fragile.
     """
     try:
         return canonicalize(value)
     except JcsError as exc:
         raise AitpError(shape_code, f"{what} is not canonicalizable: {exc}") from exc
+    except RecursionError as exc:
+        raise AitpError(shape_code, "value is too deeply nested to canonicalize") from exc
 
 
 def decode_b64url(text: str, *, code: str, what: str) -> bytes:

@@ -85,9 +85,32 @@ class _Delete:
 
 _DELETE = _Delete()
 
-# ~11 hostile values, per the plan: every JSON-representable degenerate
+
+def _deep_dict(n: int, leaf: Any = 1) -> Any:
+    """*n* nested `dict` levels around a scalar leaf (issue #31's hazard).
+
+    Known scope limitation, measured rather than assumed: a mutation landing
+    on a field `mint_input` itself canonicalizes (or deep-copies) dies inside
+    `mint_input` and is skipped by `_sweep`'s `except Exception` below before
+    the verifier is ever called -- and `RecursionError` is an `Exception`, so
+    that skip catches it both before and after the depth cap. This entry may
+    therefore be vacuous for every operation; it is carried anyway to keep the
+    hostile-value catalogue complete for any future entry point whose minting
+    path does not touch the mutated field. It is NOT what proves the cap --
+    `tests/test_fields.py`'s direct unit tests and `tests/test_envelope.py`'s
+    two mint-then-mutate tests are, because those inject the deep value
+    *after* minting and so bypass this blind spot entirely.
+    """
+    value: Any = leaf
+    for _ in range(n):
+        value = {"a": value}
+    return value
+
+
+# ~12 hostile values, per the plan: every JSON-representable degenerate
 # scalar/container, the two JCS hazards (non-finite float, an int outside
-# JCS's representable range), two invalid-base64url/AID-grammar shapes, and
+# JCS's representable range), a nesting depth past both the JCS cap and the
+# interpreter's own stack, two invalid-base64url/AID-grammar shapes, and
 # a delete-the-key sentinel.
 _MUTATIONS: list[tuple[str, Any]] = [
     ("null", None),
@@ -98,6 +121,7 @@ _MUTATIONS: list[tuple[str, Any]] = [
     ("true", True),
     ("infinity", json.loads("1e400")),
     ("huge-int", json.loads("1" + "0" * 400)),
+    ("deep-nesting", _deep_dict(2000)),
     ("colon-string", "a:b"),
     ("bad-base64url", "x"),
     ("deleted", _DELETE),
