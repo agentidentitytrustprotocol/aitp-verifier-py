@@ -27,13 +27,15 @@ verification (JCS artifacts) or as a mandatory post-verification claims check
 
 from __future__ import annotations
 
+import copy
+import json
 import uuid
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from aitp_verifier.b64 import b64url_encode
+from aitp_verifier.b64 import b64url_decode, b64url_encode
 from aitp_verifier.delegation import verify_delegation_token
 from aitp_verifier.envelope import verify_envelope
 from aitp_verifier.errors import AitpError
@@ -619,6 +621,228 @@ def test_revocation_unknown_field_survives_soft_fail(spec_dir: Path) -> None:
     with pytest.raises(AitpError) as exc:
         verify_revocation_snapshot(minted)
     assert exc.value.code == "UNKNOWN_FIELD"
+
+
+# ── Embedded revocation-snapshot trust (issue #24): tct.py / delegation.py
+#    each consume a revocation snapshot as an EMBEDDED artifact rather than
+#    their own top-level operation, and (before this phase) read its
+#    `entries` via a bare `.get()` chain with no structural/member-set/
+#    signature check at all -- so a forged or unsigned snapshot was trusted
+#    at face value. Both now route through the same
+#    `revocation.py::verify_snapshot_trust` that `verify_revocation_snapshot`
+#    itself uses. ─────────────────────────────────────────────────────────
+
+
+def _tct_revocation_input(entry_jti: str, **snapshot_body_overrides: Any) -> dict[str, Any]:
+    """A `verify_tct` input carrying an embedded, to-be-minted revocation
+    snapshot that lists *entry_jti* as revoked -- the shape `tct-004-revoked`
+    pins, built directly (rather than loaded from that fixture) so each test
+    below can mutate one member in isolation.
+    """
+    return {
+        "tct_token": "__JWS_TCT__",
+        "tct_token_claims": _tct_claims(jti=entry_jti),
+        "issuer_revocation_list": {
+            "issuer": ISSUER,
+            "fail_mode": "fail_closed",
+            "snapshot": {
+                "revocation_list": _revocation_body(
+                    entries=[{"jti": entry_jti, "revoked_at": NOW}], **snapshot_body_overrides
+                ),
+                "signature": "__VALID_B_SIG__",
+            },
+        },
+    }
+
+
+def test_tct_revocation_snapshot_genuinely_signed_and_matching_issuer_revokes(spec_dir: Path) -> None:
+    """Positive control: a genuinely signed snapshot, from the TCT's own
+    issuer, listing the TCT's jti, still revokes post-fix -- proving the new
+    signature check is a real pass, not coincidentally the same outcome for
+    the wrong reason (mirrors `tct-004-revoked`'s own conformance pin).
+    """
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_tct_revocation_input(str(uuid.uuid4())), REFERENCE_CLOCK, keys)
+    with pytest.raises(AitpError) as exc:
+        verify_tct(minted)
+    assert exc.value.code == "TCT_REVOKED"
+
+
+def test_tct_revocation_snapshot_forged_signature_is_rejected_not_silently_trusted(spec_dir: Path) -> None:
+    """Issue #24's core finding: before this phase, a forged/unsigned
+    snapshot claiming a jti was revoked was trusted at face value (and,
+    worse, a forged snapshot claiming a jti was NOT revoked would have
+    silently defeated a genuine revocation) -- there was no signature check
+    at all. Tampering one byte of the minted signature must now surface
+    `REVOCATION_SNAPSHOT_SIGNATURE_INVALID`, not the `TCT_REVOKED` a
+    face-value read of `entries` would still (correctly, by accident) report
+    for this jti.
+    """
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_tct_revocation_input(str(uuid.uuid4())), REFERENCE_CLOCK, keys)
+    sig = minted["issuer_revocation_list"]["snapshot"]["signature"]
+    tampered = bytearray(b64url_decode(sig))
+    tampered[-1] ^= 0x01
+    minted["issuer_revocation_list"]["snapshot"]["signature"] = b64url_encode(bytes(tampered))
+    with pytest.raises(AitpError) as exc:
+        verify_tct(minted)
+    assert exc.value.code == "REVOCATION_SNAPSHOT_SIGNATURE_INVALID"
+
+
+def test_tct_revocation_snapshot_missing_signature_is_a_structural_rejection(spec_dir: Path) -> None:
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_tct_revocation_input(str(uuid.uuid4())), REFERENCE_CLOCK, keys)
+    del minted["issuer_revocation_list"]["snapshot"]["signature"]
+    with pytest.raises(AitpError) as exc:
+        verify_tct(minted)
+    assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID"
+
+
+def test_tct_revocation_snapshot_unknown_body_member_is_rejected(spec_dir: Path) -> None:
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_tct_revocation_input(str(uuid.uuid4()), routing_hint="x"), REFERENCE_CLOCK, keys)
+    with pytest.raises(AitpError) as exc:
+        verify_tct(minted)
+    assert exc.value.code == "UNKNOWN_FIELD"
+
+
+def test_tct_revocation_snapshot_absent_snapshot_is_a_structural_rejection_not_a_crash(spec_dir: Path) -> None:
+    """`.get("snapshot")` (not `["snapshot"]`) plus `verify_snapshot_trust`'s
+    own `isinstance` guard is what makes a wholly-absent `snapshot` key raise
+    `AitpError` instead of a raw `KeyError` from the old `.get("snapshot", {})`
+    -> `.get("revocation_list", {})` chain's silent-empty-dict fallback.
+    """
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_tct_revocation_input(str(uuid.uuid4())), REFERENCE_CLOCK, keys)
+    del minted["issuer_revocation_list"]["snapshot"]
+    with pytest.raises(AitpError) as exc:
+        verify_tct(minted)
+    assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID"
+
+
+@pytest.mark.parametrize("junk", ["not-an-object", ["a"], 5, True], ids=["string", "list", "int", "bool"])
+def test_tct_revocation_snapshot_malformed_shape_is_rejected_not_a_crash(junk: Any, spec_dir: Path) -> None:
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_tct_revocation_input(str(uuid.uuid4())), REFERENCE_CLOCK, keys)
+    minted["issuer_revocation_list"]["snapshot"] = junk
+    with pytest.raises(AitpError) as exc:
+        verify_tct(minted)
+    assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID"
+
+
+def test_tct_revocation_snapshot_different_issuer_does_not_apply(spec_dir: Path) -> None:
+    """A snapshot genuinely signed, but by an issuer other than this TCT's
+    own `iss`, does not speak for it -- not a rejection (the snapshot may be
+    perfectly valid, just for a different issuer), so the deny-list scan is
+    simply skipped and the TCT verifies successfully.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _tct_revocation_input(str(uuid.uuid4()))
+    inp["issuer_revocation_list"]["issuer"] = SUBJECT
+    inp["issuer_revocation_list"]["snapshot"]["revocation_list"]["issuer"] = SUBJECT
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    assert verify_tct(minted) == {"grants": ["macp.mode.task.v1"]}
+
+
+def _load_conformance_input(spec_dir: Path, fixture_id: str) -> dict[str, Any]:
+    """Load one conformance fixture's `input` dict by id, for mutation --
+    reused here rather than hand-building a fresh multi-hop delegation chain,
+    since `del-mh-004-revoked-hop.json` already proves a genuinely valid
+    chain end to end and every test below only needs to vary its
+    `revocation_snapshots`. Carries the fixture's own `feature` (draft-RFC
+    opt-in) into `inp["_feature"]`, the same marker `run_conformance.py`
+    sets on the minted dict -- `del-mh-*` fixtures are gated on
+    ``experimental-multihop-delegation`` and `verify_delegation_token`
+    rejects the chain outright with `DELEGATION_MULTIHOP_NOT_SUPPORTED`
+    without it.
+    """
+    conf_dir = spec_dir / "schemas/conformance"
+    for path in conf_dir.glob("*.json"):
+        d = json.loads(path.read_text())
+        if d.get("id") == fixture_id:
+            inp: dict[str, Any] = copy.deepcopy(d["input"])
+            inp["_feature"] = d.get("feature")
+            return inp
+    raise AssertionError(f"conformance fixture {fixture_id!r} not found under {conf_dir}")
+
+
+def test_delegation_revocation_snapshot_forged_signature_is_rejected_not_silently_trusted(spec_dir: Path) -> None:
+    """Same finding as the TCT case above, through the multi-hop path
+    (`delegation.py::_revocation_index`, RFC-AITP-0011 §6)."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "del-mh-004"), REFERENCE_CLOCK, keys)
+    sig = minted["revocation_snapshots"][0]["snapshot"]["signature"]
+    tampered = bytearray(b64url_decode(sig))
+    tampered[-1] ^= 0x01
+    minted["revocation_snapshots"][0]["snapshot"]["signature"] = b64url_encode(bytes(tampered))
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(minted)
+    assert exc.value.code == "REVOCATION_SNAPSHOT_SIGNATURE_INVALID"
+
+
+def test_delegation_revocation_snapshot_missing_is_a_structural_rejection_not_a_crash(spec_dir: Path) -> None:
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "del-mh-004"), REFERENCE_CLOCK, keys)
+    del minted["revocation_snapshots"][0]["snapshot"]
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(minted)
+    assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID"
+
+
+def test_delegation_revocation_snapshots_non_dict_record_is_rejected_not_a_crash(spec_dir: Path) -> None:
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "del-mh-004"), REFERENCE_CLOCK, keys)
+    minted["revocation_snapshots"][0] = "not-an-object"
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(minted)
+    assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID"
+
+
+@pytest.mark.parametrize("junk", ["not-an-object", ["a"], 5, True], ids=["string", "list", "int", "bool"])
+def test_delegation_revocation_snapshot_malformed_shape_is_rejected_not_a_crash(junk: Any, spec_dir: Path) -> None:
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "del-mh-004"), REFERENCE_CLOCK, keys)
+    minted["revocation_snapshots"][0]["snapshot"] = junk
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(minted)
+    assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID"
+
+
+@pytest.mark.parametrize("junk", [5, True, 1.5], ids=["int", "bool", "float"])
+def test_delegation_revocation_snapshots_container_scalar_is_rejected_not_a_crash(junk: Any, spec_dir: Path) -> None:
+    """`revocation_snapshots` itself is untrusted remote input, same as any
+    record inside it. A scalar there is truthy and would otherwise survive
+    `inp.get("revocation_snapshots", []) or []` and reach the `for` loop as a
+    bare `TypeError: '...' object is not iterable`, escaping this module's
+    own `AitpError`-or-verdict contract.
+    """
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "del-mh-004"), REFERENCE_CLOCK, keys)
+    minted["revocation_snapshots"] = junk
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(minted)
+    assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID"
+
+
+def test_delegation_revocation_index_keys_on_the_signed_issuer_not_the_wrapper_label(spec_dir: Path) -> None:
+    """`record["issuer_aid"]` is caller-supplied and unverified; the entry
+    must be indexed (and looked up) under the snapshot's own SIGNED `issuer`,
+    so a wrapper cannot file a snapshot under a different AID than the one
+    whose key actually signed it. `del-mh-004`'s snapshot is genuinely signed
+    by SUBJECT (== chain[0].iss); mislabeling the wrapper's `issuer_aid` as
+    DELEGATE must not move the index entry -- if it did, chain[0]'s own
+    lookup (keyed on `hc.iss` == SUBJECT) would find nothing and the
+    fixture's expected `DELEGATION_SOURCE_TCT_REVOKED` would silently
+    disappear, which is exactly the gap issue #24 reports.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _load_conformance_input(spec_dir, "del-mh-004")
+    assert inp["revocation_snapshots"][0]["issuer_aid"] == SUBJECT  # pin the fixture's own pre-condition
+    inp["revocation_snapshots"][0]["issuer_aid"] = DELEGATE
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(minted)
+    assert exc.value.code == "DELEGATION_SOURCE_TCT_REVOKED"
 
 
 # ── Handshake payload + identity descriptor (handshake.py / identity.py) ──

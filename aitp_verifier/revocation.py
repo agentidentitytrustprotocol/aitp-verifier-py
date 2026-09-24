@@ -36,7 +36,7 @@ from .errors import AitpError
 from .fields import canonical_bytes, check_types, reject_unknown_fields, require_members
 from .sigfield import decode_tagged_signature
 
-__all__ = ["verify_revocation_snapshot"]
+__all__ = ["verify_revocation_snapshot", "verify_snapshot_trust"]
 
 # aitp-revocation-list.schema.json. The wrapper, the `revocation_list` body,
 # and each `entries[]` item are all additionalProperties: false. RFC-AITP-0008
@@ -108,14 +108,34 @@ def _validate_shape(snapshot: Any) -> dict[str, Any]:
     return body
 
 
-def verify_revocation_snapshot(inp: dict[str, Any], now: int | None = None) -> dict[str, Any]:
-    policy = inp["policy"]
-    now = int(inp["now"]) if now is None else now
-    fail_mode = policy.get("fail_mode", "fail_closed")
+def verify_snapshot_trust(snapshot: Any) -> dict[str, Any]:
+    """RFC-AITP-0008 §1.5 stages 1-3: structural validation, member-set
+    validation, then signature -- everything needed to trust a revocation
+    snapshot's contents, before any policy (staleness/issuer-expectation/
+    ``fail_mode``) is applied.
 
+    Shared by ``verify_revocation_snapshot`` below (this module's own entry
+    point, which layers stage 4 -- absence semantics -- on top) and by
+    ``tct.py``/``delegation.py``, which each consume a revocation snapshot as
+    an *embedded* artifact rather than as their own top-level input and need
+    the same trust guarantee before touching its ``entries``. Deliberately
+    takes no ``expected_issuer``/staleness/``fail_mode`` parameter: those are
+    policy questions specific to ``verify_revocation_snapshot``'s own
+    contract, not to snapshot trust itself -- each of the other two callers
+    applies its own issuer semantics locally afterward (see their own
+    ``_check_revocation``/``_revocation_index``), the same
+    extract-and-share pattern ``tct.py::check_tct_claims_shape`` already set
+    for the other artifact type every module here embeds.
+
+    Returns the verified ``revocation_list`` body. Takes ``Any``, not
+    ``dict``, and relies on ``_validate_shape``'s own first-line
+    ``isinstance`` guard to turn a ``None``/non-dict *snapshot* (e.g. from a
+    caller's own ``.get("snapshot")`` on a record that never had one) into
+    the correct structural ``AitpError`` rather than a bare ``KeyError`` --
+    never index into *snapshot* before that guard runs.
+    """
     # 1. Structural validation (rev-007).
-    body = _validate_shape(inp["snapshot"])
-    snapshot = inp["snapshot"]
+    body = _validate_shape(snapshot)
 
     # 2. Member-set validation (rev-005/006). Reached only once the snapshot is
     #    otherwise schema-valid, which is what makes UNKNOWN_FIELD mean "the
@@ -144,6 +164,16 @@ def verify_revocation_snapshot(inp: dict[str, Any], now: int | None = None) -> d
     digest = sha256(canonical_bytes(body, shape_code=_INVALID, what="revocation_list"))
     if not issuer.public_key.verify_digest(digest, raw):
         raise AitpError("REVOCATION_SNAPSHOT_SIGNATURE_INVALID", "snapshot signature does not verify under the issuing peer's key")
+    return body
+
+
+def verify_revocation_snapshot(inp: dict[str, Any], now: int | None = None) -> dict[str, Any]:
+    policy = inp["policy"]
+    now = int(inp["now"]) if now is None else now
+    fail_mode = policy.get("fail_mode", "fail_closed")
+
+    # 1-3. Structural validation, member-set, signature (rev-005/006/007/008).
+    body = verify_snapshot_trust(inp["snapshot"])
 
     # 4. Absence semantics (rev-001/002). ONLY reached by a snapshot that was
     #    obtained and is trustworthy, so this is the one branch `fail_mode`

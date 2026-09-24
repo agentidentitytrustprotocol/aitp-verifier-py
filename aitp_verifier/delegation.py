@@ -7,6 +7,12 @@ structural rejection on mere presence of ``chain`` (del-007). Otherwise the
 §4 checklist runs: outer JWS (typ/alg/signature) → addressing/expiry → embedded
 voucher (issued by, and signed under, the verifier's own key) → delegator held
 the grant → expiry monotonicity → scope subset → no self-delegation.
+
+Multi-hop's per-hop revocation snapshots (RFC-AITP-0011 §6) are each fully
+verified (structural + member-set + signature, via
+``revocation.py::verify_snapshot_trust``) before their ``entries`` are
+consulted — not merely consulted at face value — and the deny-list index is
+keyed on each snapshot's own *verified* issuer, not a caller-supplied label.
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ from .errors import AitpError
 from .fields import check_types, reject_unknown_fields, require_members
 from .jcs import canonicalize
 from .jws import parse_compact, verify_jws
+from .revocation import verify_snapshot_trust
 from .timeutil import REFERENCE_CLOCK
 from .voucher import check_voucher_claims_shape
 
@@ -132,12 +139,34 @@ def verify_delegation_token(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> 
 
 
 def _revocation_index(inp: dict[str, Any]) -> dict[str, set[str]]:
-    """Map issuer AID -> set of revoked jti, from the fixture's per-hop snapshots."""
+    """Map issuer AID -> set of revoked jti, from the caller's per-hop
+    snapshots (RFC-AITP-0011 §6).
+
+    Each snapshot is fully verified (structural + member-set + signature, via
+    `revocation.py::verify_snapshot_trust`) before its ``entries`` are
+    consulted -- closing issue #24's gap, where a forged/unsigned snapshot
+    was previously accepted at face value via a bare ``.get()`` chain.
+    Indexes on the *verified* ``body["issuer"]``, not the caller-supplied
+    ``record.get("issuer_aid")`` label: the signed value wins, so a
+    correctly-signed snapshot can never be filed under an issuer the caller's
+    own wrapper merely claims for it.
+
+    ``revocation_snapshots`` itself is untrusted remote input, same as every
+    record inside it -- a scalar there (e.g. an int/bool/float) is truthy and
+    would otherwise survive `or []` and reach the ``for`` loop as a bare
+    ``TypeError: '...' object is not iterable``, escaping this module's own
+    ``AitpError``-or-verdict contract.
+    """
+    snaps = inp.get("revocation_snapshots") or []
+    if not isinstance(snaps, list):
+        raise AitpError(
+            "REVOCATION_SNAPSHOT_INVALID",
+            f"revocation_snapshots must be an array, got {type(snaps).__name__}",
+        )
     index: dict[str, set[str]] = {}
-    for record in inp.get("revocation_snapshots", []) or []:
-        issuer = record.get("issuer_aid")
-        entries = record.get("snapshot", {}).get("revocation_list", {}).get("entries", [])
-        index.setdefault(issuer, set()).update(e.get("jti") for e in entries)
+    for record in snaps:
+        body = verify_snapshot_trust(record.get("snapshot") if isinstance(record, dict) else None)
+        index.setdefault(body["issuer"], set()).update(e.get("jti") for e in body["entries"])
     return index
 
 
