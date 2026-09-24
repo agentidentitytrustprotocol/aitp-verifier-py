@@ -1331,3 +1331,23 @@ PR.
   fixed, as planned.
 - **What's next:** Phase 2 (`delegation.py` single-hop present-snapshot revocation check —
   PR 2, the highest-severity live finding in this plan, ships on its own).
+
+## Phase 2 — ship checkpoint (PR 2)
+
+- Implemented, verified `PASS` (a fresh agent independently reproduced both the pre-fix
+  bypass and the post-fix rejection, mutation-tested the RFC-AITP-0006 §4 step-ordering
+  acceptance criterion, and behaviorally confirmed both stated non-goals don't fire), CI
+  green 8/8 on first push — no fix-forward round needed this time.
+- Merged `32d01b3` via `gh pr merge 41 --squash --delete-branch`. Branch
+  `fix/delegation-singlehop-revocation-check` deleted, both locally and on `origin`. `main`
+  fast-forwarded to `32d01b3`.
+- Suite at 336 passed, mypy clean (37 files), conformance unchanged at 68/0/1.
+- **What's next:** Phase 3 (`tct.py` `policy`/`fail_mode` + the `revocation.py` `fail_open`
+  bug fix — the one one-way door in this plan) and Phase 4 (`delegation.py` absence-policy
+  parity, depends on Phase 3) and Phase 5 (docs/changelog/conformance follow-ups) — all three
+  ship together as PR 3, per the plan's PR-grouping section. **Hard constraint from that
+  section, restated here so it isn't missed while branching:** PR 3 must be branched from —
+  or rebased onto — PR 2's merge commit (`32d01b3`), not cut from an earlier `main`, because
+  Phase 4 edits the exact call site Phase 2 just inserted, in the same file
+  (`delegation.py`). Confirmed: the branch for Phase 3/4/5 is being cut from `main` at
+  `32d01b3` (post-PR-2), satisfying this.
