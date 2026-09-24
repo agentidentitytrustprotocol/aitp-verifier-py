@@ -1317,3 +1317,17 @@ issue #38, was not further narrowed for this round — `identity.py`/`jws.py` ar
 `canonicalize` call sites, so the (already-narrowed) claim was never inaccurate with respect
 to them; this section is the record of the additional, adjacent hardening done in the same
 PR.
+
+## Ship checkpoints (PR 1)
+
+- CI went red twice on first push (3.11 + "declared floors", both from the `identity.py`
+  `repr()` gap above), fixed forward on the same branch/PR rather than opened as a follow-up
+  — see the "CI-driven follow-up" section above for both rounds. Re-pushed, 8/8 green
+  (`call / auto-merge` reports "skipping", as every PR in this repo does).
+- Merged `5179952` via `gh pr merge 39 --squash --delete-branch`. Branch `fix/jcs-depth-cap-31`
+  deleted, both locally and on `origin`. `main` fast-forwarded to `5179952`.
+- Issue #31 closed by the merge (commit trailer `Closes #31` in the Phase 1 commit carried
+  through the squash). Issue #38 (the separate `jwk.py` finding) remains open, filed but not
+  fixed, as planned.
+- **What's next:** Phase 2 (`delegation.py` single-hop present-snapshot revocation check —
+  PR 2, the highest-severity live finding in this plan, ships on its own).
