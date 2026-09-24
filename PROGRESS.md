@@ -689,3 +689,7 @@ No gaps. Ready for `/ship`.
   said issue #31 was "fixed" rather than "tracked/open"; the plan file asserted "verified
   PASS on round 2" before that verification had actually run) were corrected immediately
   after, non-blocking. Proceeding to `/ship` for PR 2.
+
+## Ship checkpoints (PR 2)
+
+- pushed revocation-snapshot-trust-24 d0643a2
