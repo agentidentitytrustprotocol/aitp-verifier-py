@@ -1580,3 +1580,18 @@ phase in isolation, but checking the seams between them.
 `plans/hardening-issues-30-31.md` already shows all 5 phases `Status: DONE`; `ASSUMPTIONS.md`
 carries Phase 3's 2 entries and Phase 4's 1 entry, all logged (not transcript-only). No
 `CLAUDE.md` exists in this repo, so no doc-drift check was owed there.
+
+**Re-verification (`863e9a9` → `PASS`) and cleanup (`cfe3bfe`).** A fresh Opus agent
+re-verified both gaps above closed against a live measurement (all 5 hostile `policy`
+categories traced through `mint_input`-signed snapshots; non-vacuity proved by running the
+12 new tests against an isolated pre-fix copy of the three files, built in the scratchpad
+without touching the working tree), confirmed no import cycle and no regression (473
+passed, mypy clean, conformance unchanged), and flagged two non-blocking observations:
+`CHANGELOG.md` had no entry for `863e9a9`'s own behavior change, and 3 docstrings in
+`tests/test_unknown_fields.py` still named the pre-consolidation private helpers. Both
+closed in `cfe3bfe` (docs/comments only, re-run green). The `/ship` pre-merge gate then ran
+fresh against the full 5-commit diff (`main...HEAD`), independently re-proving the
+precedence invariant post-consolidation via mutation testing (inverting rule 1/rule 2
+fails exactly 4 tests; forcing either module's `_effective_fail_mode` to always `fail_open`
+fails 20-40 tests) and a ~100-call raw-exception hunt across all three entry points (zero
+escapes) — verdict **PASS**, clear to ship.
