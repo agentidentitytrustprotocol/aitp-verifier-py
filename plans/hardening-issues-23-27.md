@@ -932,8 +932,8 @@ a scalar (`int`/`bool`/`float`) there survived `... or []` and reached the `for`
 raw `TypeError`, violating the "no raw exception escapes" contract on a line this phase
 itself rewrote. Fixed with an `isinstance` guard plus 3 new parametrized tests
 (`test_delegation_revocation_snapshots_container_scalar_is_rejected_not_a_crash`), hand-
-verified non-vacuous the same way as every other test in this phase. One round of gaps,
-closed; verified PASS on round 2.
+verified non-vacuous the same way as every other test in this phase. One round of gaps;
+a fresh round-2 verifier confirmed all four round-1 items closed, with PASS.
 
 **Delivers:** `tct.py::_check_revocation` and `delegation.py::_revocation_index`/
 `_verify_multihop`'s revocation lookup both route through the same structural + member-set +

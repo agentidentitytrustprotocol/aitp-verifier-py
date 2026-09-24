@@ -664,7 +664,8 @@ No gaps. Ready for `/ship`.
   filing didn't scope in. A second, separate follow-up issue (#31) was filed for a
   pre-existing, repo-wide `RecursionError`-escapes-`canonicalize` class, newly reachable
   through two more entry points by this phase's own routing — cross-cutting, not specific
-  to Phase 8, so fixed as its own follow-up rather than folded into this diff.
+  to Phase 8, so tracked as its own follow-up (open, unfixed) rather than folded into this
+  diff.
 - **ASSUMPTIONS.md:** one new entry (Phase 8) — `verify_snapshot_trust`'s shape validation
   now hard-rejects a malformed `snapshot` sub-field that previously silently produced an
   empty entry set, per the plan's own explicit instruction to log this distinct-from-the-
@@ -678,6 +679,13 @@ No gaps. Ready for `/ship`.
   items (test-count/split inaccuracies in this file and the plan, both now corrected; two
   narrow-scope fail-open sub-cases better tracked as follow-up issues than fixed in this
   diff, per the verifier's own recommendation — issue #30 extended, issue #31 filed). All
-  items closed same round. Commit `a276c28` (original) superseded by a second commit
-  closing the gap round, both on `revocation-snapshot-trust-24`, to be squash-merged as one
-  PR. Proceeding to `/ship` for PR 2.
+  items closed same round, committed as `4fdcdae` on top of `a276c28`, both on
+  `revocation-snapshot-trust-24`, to be squash-merged as one PR. A round-2 fresh-Opus
+  verifier (given the round-1 gap list, checking closure rather than reviewing cold)
+  independently re-derived every claimed count and hand-verified the new guard's
+  non-vacuity itself (reverted it in place, confirmed the same raw `TypeError` on all 3
+  new tests, restored) — returned `PASS`, no same-gap survival, no new substantive issue
+  introduced by the round-1 fix. Two cosmetic doc-wording slips it flagged (PROGRESS.md
+  said issue #31 was "fixed" rather than "tracked/open"; the plan file asserted "verified
+  PASS on round 2" before that verification had actually run) were corrected immediately
+  after, non-blocking. Proceeding to `/ship` for PR 2.
