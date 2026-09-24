@@ -854,3 +854,19 @@ No gaps. Ready for `/ship`.
 
 - pushed test-infra-26-27 26ea67d
 - PR #34 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/34
+- CI green: 8/8 checks passed (conformance+tests+types × 4 Python versions, 2 cross-platform,
+  wheel build/smoke-test, declared-floors advisory check) — notably the first PR to exercise
+  the new nested-pytest-subprocess tests (Phase 9) on `cross-platform (windows-latest, 3.13)`
+  (1m7s) and `cross-platform (macos-latest, 3.13)` (26s), both confirmed passing. `call /
+  auto-merge` reported `skipping` again, merged manually per `/ship`'s green-CI authorization.
+- merged #34 (squash) into `main` at `bada685`, branch `test-infra-26-27` deleted. Issues #26
+  and #27 confirmed auto-closed by the merge (`gh issue view` — both `state: CLOSED`). No
+  deploy to watch — same pure-Python-library reasoning as PR 1/PR 2 (no `vercel.json`/
+  `railway.json` in this repo).
+
+**PR 3 (Phases 9-10) fully shipped. All 10 phases across all 3 PRs (#29, #32+#33, #34) are
+now merged into `main`.** All 5 target issues (#23, #24, #25, #26, #27) confirmed CLOSED.
+Follow-up issues #30 (extended) and #31 (filed) remain open by design — out of scope for
+this plan, tracked separately. Next: `/reconcile` to close out `ASSUMPTIONS.md`'s 3
+UNCONFIRMED entries (Phase 3 `identity_hint` flip, Phase 7 harness-scope limitation, Phase 8
+`verify_snapshot_trust` hard-rejection).
