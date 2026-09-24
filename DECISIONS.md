@@ -247,6 +247,12 @@ change mutation-tested for non-vacuity, and `CHANGELOG.md`/`ASSUMPTIONS.md` corr
 describe what actually shipped rather than the superseded permissive design. Two optional
 cross-repo issues Fable surfaced (spec-repo conformance-runner-supplies-policy; `aitp-rs`
 delegation-path parity with its own TCT-path strict gate) are noted above and left to the
-user's discretion — not required to close this pass. Ships as its own PR, following
-`/ship`'s normal cycle from a feature branch, since `main` already has the previously
-permissive default from this plan's earlier merge.
+user's discretion — not required to close this pass.
+
+**Shipped as [PR #45](https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/45)**
+(branch `fix/require-revocation-policy`, 2 commits: the reversal itself `7357f02`, plus a
+follow-up `7df8160` closing 3 non-blocking gaps an independent Opus verifier found — a
+stale docstring in `delegation.py` still describing the superseded permissive design, a
+missing regression test for the eager-resolution fix, and a dead conjunct). CI green 8/8 on
+first push; merged `82b05e7` via squash. `main` now carries the mandatory-`policy` design
+this decision called for.
