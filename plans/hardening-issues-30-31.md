@@ -354,7 +354,32 @@ capped and why (it currently describes only number handling and the JCS profile)
 
 ### Phase 2 — `delegation.py` single-hop: consult the trusted deny list that is already being computed (RFC-AITP-0006 §4 step 7)
 
-**Status:** NOT STARTED.
+**Status:** DONE (2026-09-24) — code and tests landed, independently verified PASS by a fresh
+agent, which independently reproduced the bypass on pre-fix code (an `AitpError`-free
+`{"grants": [...]}` verdict for a `del-001` input whose voucher's `src_jti` sat in a
+self-signed, trusted deny list) and confirmed the fix closes it, confirmed both stated
+non-goals hold behaviorally (not just by reading), mutation-tested the ordering acceptance
+criterion, and re-ran the full gate independently (336 passed, mypy clean, conformance
+68/0/1 unchanged across all 10 fixtures). Implemented exactly as planned, with no divergence:
+the four-line insertion is the Approach block verbatim (`_revocation_index(inp)`, then
+`vclaims["src_jti"] in revoked.get(self_aid, set())` ⇒ `DELEGATION_SOURCE_TCT_REVOKED`),
+placed after the scope check and before the final `return`, with the bracket access the plan
+argues for; `delegation.py`'s module docstring updated per the Docs field; all five named
+tests present under their planned names, built on `_load_conformance_input(spec_dir,
+"del-001")` as specified. One addition beyond the plan's literal text, mechanical only: a
+module-level `DEL_001_SRC_JTI` constant and a `_single_hop_revoked_input(...)` helper in
+`tests/test_unknown_fields.py`, parameterized on entry jti and snapshot issuer so the four
+positive/negative-control cases vary exactly one thing each — the same shape
+`_tct_revocation_input` already establishes for the TCT side. The load-bearing non-vacuity
+criterion was hand-verified against pre-fix code: the revoked-source-TCT input returns
+`{"grants": ["read_data"]}` on `main`'s `delegation.py` (with `_revocation_index` on that
+same input demonstrably holding the voucher's `src_jti` under the `self_aid` key) and raises
+`DELEGATION_SOURCE_TCT_REVOKED` after the fix; two of the five new tests fail pre-fix (the
+revoked case and the forged-signature case), while the three negative controls pass in both
+worlds, which is what they are for. `pytest tests/ -q` 331 → **336 passed**;
+`run_conformance.py` **68 passed / 0 failed / 1 skipped**, unchanged, no fixture verdict
+moved; `mypy` clean, 37 source files. This phase's acceptance criteria require no
+`PROGRESS.md` measurement (unlike Phase 1's two), so none was recorded.
 
 **Delivers:** `verify_delegation_token`'s single-hop path performs the RFC-AITP-0006 §4
 step-7 source-TCT revocation lookup it currently skips entirely. A delegation token whose

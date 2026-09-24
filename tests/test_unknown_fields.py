@@ -866,6 +866,131 @@ def test_delegation_revocation_index_keys_on_the_signed_issuer_not_the_wrapper_l
     assert exc.value.code == "DELEGATION_SOURCE_TCT_REVOKED"
 
 
+# ── Single-hop source-TCT revocation (RFC-AITP-0006 §4 step 7). The
+#    single-hop path used to perform NO revocation check at all: a present,
+#    structurally valid, correctly-signed snapshot from `self_aid` listing the
+#    voucher's own `src_jti` was silently ignored and the delegation verified.
+#    That is not the "absent snapshot" question (RFC-AITP-0008 §3.1's
+#    `fail_mode`, deliberately untouched here) -- it is trusted evidence being
+#    computed by `_revocation_index` and then never consulted. §4:111 ("Look up
+#    `voucher.src_jti` in A's own deny list ... MUST be rejected =>
+#    DELEGATION_SOURCE_TCT_REVOKED") is a MUST on the core, required_for_v0_2
+#    path (del-001), and §4:97/RFC-AITP-0008 §3.3 fix its position: after every
+#    signature check. ────────────────────────────────────────────────────────
+
+# `del-001`'s own voucher `src_jti` -- the source TCT whose revocation §4 step 7
+# looks up. Pinned as a constant so each test below can assert against the
+# fixture's real handle rather than a jti it invented itself.
+DEL_001_SRC_JTI = "550e8400-e29b-41d4-a716-446655440101"
+
+
+def _single_hop_revoked_input(
+    spec_dir: Path, *, entry_jti: str = DEL_001_SRC_JTI, snapshot_issuer: str = ISSUER
+) -> dict[str, Any]:
+    """`del-001`'s single-hop input plus one to-be-minted `revocation_snapshots`
+    record listing *entry_jti* as revoked, genuinely signed by *snapshot_issuer*.
+
+    Built on the conformance fixture (via `_load_conformance_input`) rather than
+    hand-rolled, the same reuse the multi-hop tests above make of `del-mh-004`:
+    `del-001` already proves a valid single-hop token end to end, and every test
+    here only needs to vary its revocation data. The record shape is the one
+    `del-mh-004` and `PLACEHOLDERS.md` pin -- `{issuer_aid, snapshot}` -- and
+    `minter.py` signs the inner `revocation_list` body under whichever AID that
+    body's own `issuer` names, so `snapshot_issuer` produces a *genuinely*
+    signed snapshot for that peer, never a forgery.
+    """
+    inp = _load_conformance_input(spec_dir, "del-001")
+    # Pin the fixture's own pre-conditions: A (self) is the deny list's owner,
+    # and the voucher's src_jti is the handle §4 step 7 looks up.
+    assert inp["self_aid"] == ISSUER
+    assert inp["delegation_token_claims"]["voucher_claims"]["src_jti"] == DEL_001_SRC_JTI
+    inp["revocation_snapshots"] = [
+        {
+            "issuer_aid": snapshot_issuer,
+            "snapshot": {
+                "revocation_list": _revocation_body(
+                    issuer=snapshot_issuer, entries=[{"jti": entry_jti, "revoked_at": NOW}]
+                ),
+                "signature": "__VALID_B_SIG__",
+            },
+        }
+    ]
+    return inp
+
+
+def test_delegation_single_hop_revoked_source_tct_is_rejected(spec_dir: Path) -> None:
+    """The live bypass this phase closes. `del-001` verifies successfully today
+    (`{"grants": ["read_data"]}`) *even with* a fully trusted snapshot from A
+    (== self_aid) listing the voucher's `src_jti` -- the single-hop path never
+    consulted the deny list `_revocation_index` was already able to compute.
+    Hand-verified non-vacuous: on pre-fix code this exact input returns
+    `{"grants": ["read_data"]}`.
+    """
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_single_hop_revoked_input(spec_dir), REFERENCE_CLOCK, keys)
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(minted)
+    assert exc.value.code == "DELEGATION_SOURCE_TCT_REVOKED"
+
+
+def test_delegation_single_hop_unrelated_revoked_jti_still_verifies(spec_dir: Path) -> None:
+    """Negative control on the jti: A's deny list is genuine and applicable, but
+    lists someone else's jti. A verifier that rejected on the mere presence of a
+    deny list (rather than on a hit in it) would pass the test above for the
+    wrong reason -- this is what separates the two.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _single_hop_revoked_input(spec_dir, entry_jti="550e8400-e29b-41d4-a716-4466554409ff")
+    assert verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys)) == {"grants": ["read_data"]}
+
+
+def test_delegation_single_hop_snapshot_from_another_issuer_does_not_apply(spec_dir: Path) -> None:
+    """Negative control on the issuer: the deny list consulted is A's OWN
+    (`revoked.get(self_aid, ...)`), not any deny list anyone hands the verifier.
+    A snapshot genuinely signed by B, listing this voucher's `src_jti`, is
+    indexed under B's *verified* `body["issuer"]` and never reaches A's lookup
+    -- B cannot revoke a TCT A issued. This is the difference between "consult
+    A's deny list" and "consult any deny list supplied", and it is the property
+    the index's signed-issuer keying buys for free.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _single_hop_revoked_input(spec_dir, snapshot_issuer=SUBJECT)
+    assert verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys)) == {"grants": ["read_data"]}
+
+
+def test_delegation_single_hop_forged_snapshot_signature_is_rejected(spec_dir: Path) -> None:
+    """Routing single-hop through `_revocation_index` gives it the same
+    snapshot-trust guarantee the multi-hop path has (issue #24): the snapshot is
+    structurally validated, member-set checked and signature-verified before its
+    `entries` are read. One flipped signature byte must surface
+    `REVOCATION_SNAPSHOT_SIGNATURE_INVALID`, not the `DELEGATION_SOURCE_TCT_REVOKED`
+    a face-value read of `entries` would (correctly, by accident) still report.
+    """
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_single_hop_revoked_input(spec_dir), REFERENCE_CLOCK, keys)
+    tampered = bytearray(b64url_decode(minted["revocation_snapshots"][0]["snapshot"]["signature"]))
+    tampered[-1] ^= 0x01
+    minted["revocation_snapshots"][0]["snapshot"]["signature"] = b64url_encode(bytes(tampered))
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(minted)
+    assert exc.value.code == "REVOCATION_SNAPSHOT_SIGNATURE_INVALID"
+
+
+def test_delegation_single_hop_scope_check_precedes_revocation(spec_dir: Path) -> None:
+    """RFC-AITP-0006 §4's step order, pinned by an input that fails two steps at
+    once: the scope subset check is step 6 and the source-TCT revocation lookup
+    is step 7, so a token whose scope exceeds the voucher grants AND whose
+    source TCT is revoked must report `DELEGATION_SCOPE_EXCEEDED`. Placing the
+    new lookup anywhere earlier would flip this code.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _single_hop_revoked_input(spec_dir)
+    inp["delegation_token_claims"]["scope"] = ["admin"]  # not in voucher grants
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys))
+    assert exc.value.code == "DELEGATION_SCOPE_EXCEEDED"
+
+
 # ── Handshake payload + identity descriptor (handshake.py / identity.py) ──
 
 

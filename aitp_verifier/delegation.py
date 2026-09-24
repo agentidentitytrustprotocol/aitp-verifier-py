@@ -6,12 +6,18 @@ verifier that has not opted into RFC-AITP-0011 rejects it with
 structural rejection on mere presence of ``chain`` (del-007). Otherwise the
 §4 checklist runs: outer JWS (typ/alg/signature) → addressing/expiry → embedded
 voucher (issued by, and signed under, the verifier's own key) → delegator held
-the grant → expiry monotonicity → scope subset → no self-delegation.
+the grant → expiry monotonicity → scope subset → no self-delegation → source-TCT
+revocation. That last step is §4 step 7: ``voucher.src_jti`` is looked up in the
+verifier's *own* deny list (``DELEGATION_SOURCE_TCT_REVOKED``), strictly after
+every signature and claims check, per RFC-AITP-0008 §3.3 — one deny-list entry
+on the source TCT invalidates the voucher and every delegation built on it
+(RFC-AITP-0008 §1.1/§2). Both paths — single-hop and multi-hop — read that deny
+list from ``revocation_snapshots``; no other carrier is accepted on either.
 
-Multi-hop's per-hop revocation snapshots (RFC-AITP-0011 §6) are each fully
-verified (structural + member-set + signature, via
-``revocation.py::verify_snapshot_trust``) before their ``entries`` are
-consulted — not merely consulted at face value — and the deny-list index is
+Every revocation snapshot, single-hop step 7 and multi-hop's per-hop snapshots
+(RFC-AITP-0011 §6) alike, is fully verified (structural + member-set +
+signature, via ``revocation.py::verify_snapshot_trust``) before its ``entries``
+are consulted — not merely consulted at face value — and the deny-list index is
 keyed on each snapshot's own *verified* issuer, not a caller-supplied label.
 """
 
@@ -134,6 +140,19 @@ def verify_delegation_token(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> 
         raise AitpError("DELEGATION_EXPIRED", "voucher expired or delegation outlives voucher")
     if not set(claims["scope"]).issubset(set(vclaims["grants"])):
         raise AitpError("DELEGATION_SCOPE_EXCEEDED", "scope exceeds the voucher grants")
+
+    # Source TCT revocation (RFC-AITP-0006 §4 step 7) — strictly after every
+    # signature and claims check above, per RFC-AITP-0008 §3.3. `src_jti` is a
+    # shape-guaranteed `str` by here (`check_voucher_claims_shape` above), and
+    # `_revocation_index` keys on each snapshot's own *verified* issuer, so
+    # `revoked.get(self_aid, ...)` is literally "A's own deny list" — a
+    # snapshot genuinely signed by a third party never speaks for this lookup.
+    # RFC-AITP-0008 §1.1: the voucher has no independent revocation handle, so
+    # the source TCT's jti is the one lookup §4 step 7 names (the multi-hop
+    # per-hop `jti` sweep below is RFC-AITP-0011 §6, and stays multi-hop only).
+    revoked = _revocation_index(inp)
+    if vclaims["src_jti"] in revoked.get(self_aid, set()):
+        raise AitpError("DELEGATION_SOURCE_TCT_REVOKED", "source TCT revoked")
 
     return {"grants": claims["scope"]}
 
