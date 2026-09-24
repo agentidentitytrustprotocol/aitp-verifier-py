@@ -864,7 +864,35 @@ docstring updated if Phase 2's edit left it describing absence. `CHANGELOG.md` i
 
 ### Phase 5 — Docs, `CHANGELOG.md`, and the spec-repo fixture follow-ups
 
-**Status:** NOT STARTED.
+**Status:** DONE (2026-09-23) — documentation only; no code or test file touched, and the
+gate is byte-identical before and after (461 passed, `mypy` clean across 37 source files,
+`run_conformance.py` 68 passed / 0 failed / 1 skipped). All four `CHANGELOG.md` entries
+written under the existing `## Unreleased` → `### Security-relevant` heading in the severity
+order above (appended after the two existing issue-#24 entries rather than interleaved, so
+the already-shipped record is not rewritten; no `## 0.1.x` heading added), with the
+permissive default stated in bold rather than implied, and entry 4 confirmed absent
+beforehand — Phase 1 did defer it here as it said it would. Both spec-repo issues filed
+read-only, [#60](https://github.com/agentidentitytrustprotocol/agentidentitytrustprotocol/issues/60)
+(the `del-002` single-hop §4-step-7 fixture, carrying the `PLACEHOLDERS.md:86` doc request)
+and [#61](https://github.com/agentidentitytrustprotocol/agentidentitytrustprotocol/issues/61)
+(the `fail_open` fixture); the spec checkout is untouched and clean at `4b656b1`; the third
+candidate (`tct-0NN-no-snapshot-fail-closed`) deliberately **not** filed, per this phase's
+judgment call.
+
+**One divergence from the plan's literal text, in the README half.** The plan offered a
+binary choice — update `README.md:53`'s stale count as a one-line drive-by, or leave it and
+record the staleness. Chosen: **update**. But re-measuring first surfaced two *further* stale
+statements in the same paragraph that the plan had not measured: `run_conformance.py
+--verbose` reports exactly one SKIP (`del-004`), while the README claimed "Only **two**
+fixtures are skipped" and listed `mh-002` as the second — `mh-002` now passes
+(`MANIFEST_SIGNATURE_INVALID`). Correcting the count line while leaving the skip list beside
+it wrong would have been worse than either option offered, so all three were corrected
+together (`:53` count, `:65` skip count, and removal of the `mh-002` bullet), and nothing
+else in the section changed — every surrounding claim was re-checked against the runner
+output and holds. The plan's prediction about the other half was confirmed exactly:
+`README.md` documents no entry point's input-contract keys, so the new optional `policy` key
+needs no README change. Full record, including both issue numbers and the re-measured
+baseline, in `PROGRESS.md`'s `## Phase 5` section.
 
 **Delivers:** `CHANGELOG.md` records every behavior change in this plan under its existing
 `## Unreleased` → `### Security-relevant` structure; the README is checked and updated only

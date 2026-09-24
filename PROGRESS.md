@@ -1351,3 +1351,90 @@ PR.
   Phase 4 edits the exact call site Phase 2 just inserted, in the same file
   (`delegation.py`). Confirmed: the branch for Phase 3/4/5 is being cut from `main` at
   `32d01b3` (post-PR-2), satisfying this.
+
+## Phase 5 — docs, `CHANGELOG.md`, and the spec-repo fixture follow-ups — DONE (2026-09-23)
+
+Documentation-only phase, on branch `feat/revocation-policy-fail-mode` after Phases 3
+(`13a7af1`) and 4 (`29eb603`). **No code or test file was touched**, by design.
+
+- **Files touched:** `CHANGELOG.md` (four new entries), `README.md` (conformance-coverage
+  section — see the decision below), `PROGRESS.md` (this section),
+  `plans/hardening-issues-30-31.md` (Phase 5 status line).
+- **Gate, re-run before and after, identical both times:** `pytest tests/ -q` → **461
+  passed**; `mypy` → clean, **37 source files**; `run_conformance.py --spec-dir
+  ../agentidentitytrustprotocol` → **68 passed / 0 failed / 1 skipped**. Unchanged, as a
+  docs-only phase requires.
+- **`CHANGELOG.md`:** four entries appended under the existing `## Unreleased` →
+  `### Security-relevant` heading, in the plan's severity order — single-hop §4 step-7
+  revocation check (Phase 2), the optional `policy` object on `verify_tct`/
+  `verify_delegation_token` (Phases 3–4), `verify_revocation_snapshot`'s `fail_open` fix
+  (Phase 3), and the `canonicalize`/`canonical_bytes` depth cap (Phase 1, issue #31 —
+  confirmed *not* already present; Phase 1 deliberately deferred its entry to here).
+  Appended after the two existing issue-#24 entries rather than interleaved by severity, so
+  the already-shipped record is not rewritten. No `## 0.1.x` release heading added, per the
+  phase's Edge cases. The permissive default is stated in bold in the `policy` entry —
+  "an input with no `policy` key behaves exactly as it did before this key existed, and
+  fail-closed is an explicit opt-in" — rather than implied, which that entry's acceptance
+  criterion requires.
+
+### Decision — `README.md` was updated, not left (and the staleness was wider than the plan measured)
+
+The plan required an explicit choice. **Chosen: update it.** The plan's own review had
+already established that `README.md`'s conformance line was stale *before* this plan started
+(it read "53 fixtures pass, 0 fail"; the runner has reported 68/0/1 since well before Phase
+1). Re-measured live at the end of Phase 5: still **68 passed / 0 failed / 1 skipped**, so
+no verdict moved during this plan and the staleness is entirely pre-existing.
+
+Measuring it also turned up **two further stale statements the plan had not measured**, in
+the same paragraph, which is why this is a three-line correction and not the one-line one the
+plan anticipated. `run_conformance.py --verbose` reports exactly **one** SKIP — `del-004`
+("not required for v0.2 (draft/extension/v0.1-frozen)") — while the README claimed "Only
+**two** fixtures are skipped" and listed `mh-002` as the second. `mh-002` now **passes**
+(`MANIFEST_SIGNATURE_INVALID`); the README's stated reason for skipping it (the spec does not
+publish the attacker key's seed) no longer describes what the runner does. Leaving the count
+line corrected while the skip list next to it stayed wrong would have been worse than either
+option the plan offered, so all three were corrected together:
+
+- `README.md:53` — "**53 fixtures pass, 0 fail**" → "**68 fixtures pass, 0 fail, 1 skipped**".
+- `README.md:65` — "Only **two** fixtures are skipped" → "Exactly **one** fixture is skipped".
+- The `mh-002` bullet removed; the `del-004` bullet kept verbatim.
+
+Nothing else in the section changed: the surrounding claims (the whole re-mintable v0.2 pack,
+both Draft opt-ins, all multi-step sequences, the byte-for-byte KAT validation list, and the
+closing "Every other required-for-v0.2 fixture … passes") were each re-checked against the
+runner output and are accurate as written. Confirmed separately that `README.md` documents no
+entry point's input-contract keys at all — only the per-module coverage table, the
+independence claim, conformance counts and the dev workflow — so the new optional `policy`
+key needs no README change, exactly as the plan predicted.
+
+### Spec-repo follow-ups filed (read-only; no file in the spec checkout was modified)
+
+`git -C ../agentidentitytrustprotocol status --short` clean before and after; the spec
+checkout stays at `4b656b1`. Neither issue blocks PR 3.
+
+- **[#60](https://github.com/agentidentitytrustprotocol/agentidentitytrustprotocol/issues/60)**
+  — "Conformance pack has no vector for RFC-AITP-0006 §4 step 7 on the single-hop delegation
+  path (del-002 is an unused id)". Asks for `del-002-source-tct-revoked`: a `del-001`-shaped
+  input plus a `revocation_snapshots` record signed by A listing the voucher's `src_jti`
+  (`550e8400-e29b-41d4-a716-446655440101`), expecting
+  `failure: DELEGATION_SOURCE_TCT_REVOKED`. Verified while filing: `del-002` appears nowhere
+  in the spec repo, and the only step-7 vector that exists (`del-mh-004`) is a draft opt-in
+  (`required_for_v0_2: false`), so a core implementation can skip step 7 entirely and still
+  pass the required pack — which is exactly how this plan's most severe finding survived a
+  green pack. Carries the accompanying doc request: `PLACEHOLDERS.md:92` documents
+  `revocation_snapshots` only on the `del-mh-*` row, not the `del-*` row (`:86`).
+- **[#61](https://github.com/agentidentitytrustprotocol/agentidentitytrustprotocol/issues/61)**
+  — "No conformance vector exercises revocation policy fail_mode: fail_open — one of
+  RFC-AITP-0008 §3.1's three modes is untested". Asks for a `rev-0NN-fail-open` sibling of
+  `rev-001`/`rev-002`: byte-identical stale snapshot, `mode: fail_open`, expecting success.
+  Verified while filing: the string `fail_open` appears in **no** fixture in the pack, and
+  the eight `fail_mode` literals across it are 7 × `fail_closed` + 1 × `soft_fail` — which is
+  why `revocation.py` could alias `fail_open` to `fail_closed` indefinitely without a red
+  test (the bug Phase 3 fixed).
+- **Third candidate deliberately NOT filed**, per the plan's own judgment call: a
+  `tct-0NN-no-snapshot-fail-closed` vector. Because Phase 3's default is permissive-when-
+  absent, such a fixture would have to carry an explicit `policy` in its input to mean
+  anything, and no `verify_tct` fixture has ever carried a `policy` object — so it is a
+  request to extend the `verify_tct` *input shape*, not to add a vector. Deferred until
+  after `/reconcile` confirms this repo's own default. Both filed issues stand regardless of
+  how that lands.

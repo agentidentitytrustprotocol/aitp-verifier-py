@@ -50,7 +50,7 @@ keypairs and runs it against this implementation:
 python run_conformance.py --spec-dir ../agentidentitytrustprotocol
 ```
 
-Current status: **53 fixtures pass, 0 fail** — the entire re-mintable v0.2 pack
+Current status: **68 fixtures pass, 0 fail, 1 skipped** — the entire re-mintable v0.2 pack
 plus both Draft opt-ins (`experimental-multihop-delegation`,
 `experimental-session-bundle`) and all multi-step sequences (PoP
 challenge/response `tct-006`/`tct-007`, handshake replay `mh-001`). The surface — envelope, TCT (incl.
@@ -62,14 +62,10 @@ TCT) — is validated byte-for-byte against `known-answer/keypairs.json`,
 `jwk-thumbprints.json`, `jcs-sha256.json`, the `signed-examples/` compact-JWS
 artifacts, and the id-007 pinned-key proof vector.
 
-Only **two** fixtures are skipped, both for structural reasons rather than
-missing verification logic (SKIP is reported explicitly — never a silent pass,
-per PLACEHOLDERS.md §"Operation key"):
+Exactly **one** fixture is skipped, for a structural reason rather than missing
+verification logic (SKIP is reported explicitly — never a silent pass, per
+PLACEHOLDERS.md §"Operation key"):
 
-- **`mh-002`** — signed by a one-shot "attacker" key whose seed the spec does
-  not publish (only its public AID), so an independent re-minter cannot
-  reproduce its valid proof-of-possession. A runner consuming pre-minted
-  fixtures would have the concrete signature.
 - **`del-004`** — frozen in the retired v0.1 object wire shape
   (`required_for_v0_1` only); a v0.2 implementation legitimately does not run it.
 
