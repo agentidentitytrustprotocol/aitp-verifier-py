@@ -849,3 +849,8 @@ job will run on Windows/macOS for the first time — code looks sound (full env 
 behavior; `/ship`'s CI watch covers this directly.
 
 No gaps. Ready for `/ship`.
+
+## Ship checkpoints (PR 3)
+
+- pushed test-infra-26-27 26ea67d
+- PR #34 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/34
