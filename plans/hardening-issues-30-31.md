@@ -748,7 +748,21 @@ Phase 5.
 
 ### Phase 4 — `verify_delegation_token`: the same absence policy, applied symmetrically
 
-**Status:** NOT STARTED.
+**Status:** DONE (2026-09-24) — implemented exactly as planned: the two-rule resolution
+(top-level `policy` authoritative, else `fail_open`, no per-wrapper rung since
+`revocation_snapshots` records carry no policy member), the per-hop non-goal untouched, and
+`_revocation_index`'s untrusted-input discipline preserved. Independently verified `PASS`:
+the reviewer regenerated the executor's mutation-testing proof from scratch (forcing
+`_effective_fail_mode` to always `fail_open` fails single-hop/multi-hop test pairs together;
+reverting either call site alone fails only that path's half) to confirm single-hop and
+multi-hop genuinely share one `_check_source_tct_revocation` implementation rather than two
+that happen to agree, and found one non-blocking coverage gap (delegation's copy of `tct.py`'s
+`OverflowError`/no-`max_staleness_secs` regression tests was missing) — closed same-round by
+mirroring `tct.py`'s two tests exactly. A second, non-blocking design note (the freshness
+formula and `_FAIL_MODES` are now spelled out three times across `tct.py`/`delegation.py`/
+`revocation.py`) was logged to `ASSUMPTIONS.md` as a follow-up, not a blocking gap. One
+`UNCONFIRMED` `ASSUMPTIONS.md` entry logged, explicitly the same decision as Phase 3's, not a
+second one.
 
 **Delivers:** `verify_delegation_token` honors the identical optional `inp["policy"]`
 contract Phase 3 introduces, for the same absence case: when no trusted, applicable snapshot

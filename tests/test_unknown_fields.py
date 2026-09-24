@@ -1510,6 +1510,444 @@ def test_delegation_single_hop_scope_check_precedes_revocation(spec_dir: Path) -
     assert exc.value.code == "DELEGATION_SCOPE_EXCEEDED"
 
 
+# ── `verify_delegation_token`'s absence policy (RFC-AITP-0008 §3.1, issue #30).
+#    The same optional top-level `policy` key `verify_tct` takes, answering the
+#    same question for the analogous case: A supplied no trusted, applicable
+#    revocation snapshot of its *own*, so the source TCT's status is unknown.
+#    Resolution is `tct.py`'s minus its per-wrapper rung, which has no spelling
+#    on this path: (1) a top-level `policy` (default `fail_closed` within it);
+#    (2) else `fail_open`, today's behavior byte for byte.
+#
+#    EVERY case below runs against BOTH entry paths -- `del-001` (single-hop,
+#    required_for_v0_2) and `del-mh-001` (multi-hop, draft opt-in) -- from one
+#    parametrized test body, not two hand-written ones. That is deliberate and
+#    is the point of the block: the bug this plan closes was two call sites
+#    answering the same RFC step separately, so "both paths honor one policy"
+#    has to be asserted as one assertion run twice, never as two assertions
+#    that happen to agree today. `delegation.py` backs that with one
+#    `_check_source_tct_revocation` both paths call. ─────────────────────────
+
+# Both success fixtures supply NO revocation data at all, which is what makes
+# them the absence case straight from the spec's own pack -- and what makes
+# `fail_open` (not §3.1's `fail_closed`) the only possible no-policy default.
+_BOTH_DELEGATION_PATHS = pytest.mark.parametrize(
+    "fixture_id", ["del-001", "del-mh-001"], ids=["single-hop", "multi-hop"]
+)
+_DELEGATION_GRANTS = {"grants": ["read_data"]}
+
+# The `src_jti` each path's root voucher carries -- the source TCT handle §4
+# step 7 / RFC-AITP-0011 §6 look up in A's own deny list.
+DEL_MH_001_SRC_JTI = "550e8400-e29b-41d4-a716-446655443001"
+_SRC_JTI = {"del-001": DEL_001_SRC_JTI, "del-mh-001": DEL_MH_001_SRC_JTI}
+
+
+def _delegation_policy_input(spec_dir: Path, fixture_id: str, **policy: Any) -> dict[str, Any]:
+    """Either path's own success fixture plus a top-level `policy` and no
+    revocation data whatsoever -- the plainest absence case the effective
+    `fail_mode` answers.
+
+    `**policy` builds the policy object, the same spelling `_tct_policy_input`
+    and `_revocation_input` already use: one key shape across all three entry
+    points, deliberately not a third. Called with no keyword arguments it
+    yields `policy: {}`, which is itself a case -- an explicitly supplied
+    policy with no `fail_mode` fails closed.
+    """
+    inp = _load_conformance_input(spec_dir, fixture_id)
+    # Pin the fixtures' own pre-conditions: A (self) owns the deny list these
+    # tests are about, its `src_jti` is the handle looked up, and neither
+    # fixture ships revocation data -- so "absent" is the fixture's shape, not
+    # something this helper deleted.
+    assert inp["self_aid"] == ISSUER
+    assert "revocation_snapshots" not in inp
+    inp["policy"] = dict(policy)
+    return inp
+
+
+def _delegation_snapshot_record(
+    issuer: str = ISSUER, entries: list[dict[str, Any]] | None = None, **body_overrides: Any
+) -> dict[str, Any]:
+    """One to-be-minted `{issuer_aid, snapshot}` record -- the shape
+    `PLACEHOLDERS.md` and `del-mh-004` pin -- genuinely signed by *issuer*.
+
+    `minter.py::_sign_revocation` signs the inner `revocation_list` under
+    whichever AID that body's own `issuer` names, so a record built here is
+    always a real signature by that peer, never a forgery: an "absent for
+    `self_aid`" verdict over one of these is a genuine applicability decision,
+    not a trust failure in disguise.
+    """
+    body = _revocation_body(issuer=issuer, entries=entries if entries is not None else [])
+    body.update(body_overrides)
+    return {"issuer_aid": issuer, "snapshot": {"revocation_list": body, "signature": "__VALID_B_SIG__"}}
+
+
+@_BOTH_DELEGATION_PATHS
+def test_delegation_absent_snapshot_fail_closed_rejects(fixture_id: str, spec_dir: Path) -> None:
+    """Issue #30 on this entry point: RFC-AITP-0008 §3.1's "an absent snapshot
+    means revocation status is unknown, and unknown is treated as revoked".
+    Before this phase a delegation whose source TCT genuinely sat on an
+    unreachable deny list verified successfully no matter what the deployment
+    had configured.
+
+    The message assertion is what pins *which* branch raised: this is the
+    absence branch, not a deny-list hit -- there is no deny list here to hit.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _delegation_policy_input(spec_dir, fixture_id, fail_mode="fail_closed")
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys))
+    assert exc.value.code == "DELEGATION_SOURCE_TCT_REVOKED"
+    assert "fail_closed treats unknown revocation status as revoked" in exc.value.message
+
+
+@_BOTH_DELEGATION_PATHS
+def test_delegation_absent_snapshot_fail_closed_by_default_within_a_supplied_policy(
+    fixture_id: str, spec_dir: Path
+) -> None:
+    """`policy: {}` is enough to opt in. Secure-by-default *within* an
+    explicitly supplied policy -- the same `policy.get("fail_mode",
+    "fail_closed")` `revocation.py` has always applied and `verify_tct` now
+    applies. The permissive default lives one level up, at "no `policy` key at
+    all", never inside a policy the caller took the trouble to supply.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _delegation_policy_input(spec_dir, fixture_id)
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys))
+    assert exc.value.code == "DELEGATION_SOURCE_TCT_REVOKED"
+
+
+@_BOTH_DELEGATION_PATHS
+def test_delegation_absent_snapshot_soft_fail_verifies(fixture_id: str, spec_dir: Path) -> None:
+    """§3.1's first availability-first mode. The verdict stays exactly
+    `{"grants": [...]}` -- no `stale` member is added, deliberately:
+    `verify_delegation_token` exposes no grant-restriction surface for a caller
+    to act on, so `soft_fail` and `fail_open` are indistinguishable here, the
+    same call `verify_tct` makes.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _delegation_policy_input(spec_dir, fixture_id, fail_mode="soft_fail")
+    assert verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys)) == _DELEGATION_GRANTS
+
+
+@_BOTH_DELEGATION_PATHS
+def test_delegation_absent_snapshot_fail_open_verifies(fixture_id: str, spec_dir: Path) -> None:
+    """§3.1's second availability-first mode, spelled explicitly rather than
+    left to the no-policy default it coincides with."""
+    keys = load_kat_keys(spec_dir)
+    inp = _delegation_policy_input(spec_dir, fixture_id, fail_mode="fail_open")
+    assert verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys)) == _DELEGATION_GRANTS
+
+
+@_BOTH_DELEGATION_PATHS
+def test_delegation_absent_snapshot_no_policy_verifies_exactly_as_before(
+    fixture_id: str, spec_dir: Path
+) -> None:
+    """Resolution rule 2, as its own test rather than left to the conformance
+    runner: with no `policy` key and no `revocation_snapshots`, both paths are
+    byte-for-byte what they were before this key existed. `del-001` is
+    `required_for_v0_2` and ships exactly this input shape, which is why the
+    no-policy default is `fail_open` rather than §3.1's configured-policy
+    default of `fail_closed`.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _delegation_policy_input(spec_dir, fixture_id)
+    del inp["policy"]
+    assert verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys)) == _DELEGATION_GRANTS
+
+
+@_BOTH_DELEGATION_PATHS
+def test_delegation_absent_snapshot_unknown_mode_rejects(fixture_id: str, spec_dir: Path) -> None:
+    """A misspelled or future mode is never silently permissive."""
+    keys = load_kat_keys(spec_dir)
+    inp = _delegation_policy_input(spec_dir, fixture_id, fail_mode="typo_mode")
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys))
+    assert exc.value.code == "DELEGATION_SOURCE_TCT_REVOKED"
+
+
+@_BOTH_DELEGATION_PATHS
+@pytest.mark.parametrize("junk", ["not-an-object", 5, ["fail_open"], None], ids=["string", "int", "list", "none"])
+def test_delegation_absent_snapshot_non_dict_policy_rejects(
+    junk: Any, fixture_id: str, spec_dir: Path
+) -> None:
+    """A `policy` that is not an object at all resolves to `fail_closed` --
+    `AitpError`, never a raw `AttributeError` out of a bare `.get()` on a
+    string. `None` is included on purpose: the key was supplied, so the
+    malformed value is answered strictly rather than read as "no policy".
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _delegation_policy_input(spec_dir, fixture_id)
+    inp["policy"] = junk
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys))
+    assert exc.value.code == "DELEGATION_SOURCE_TCT_REVOKED"
+
+
+@_BOTH_DELEGATION_PATHS
+@pytest.mark.parametrize("fail_mode", [5, None, [], True], ids=["int", "none", "list", "bool"])
+def test_delegation_absent_snapshot_non_str_fail_mode_rejects(
+    fail_mode: Any, fixture_id: str, spec_dir: Path
+) -> None:
+    """A present-but-wrong-typed `fail_mode` lands on `fail_closed`, exactly
+    where a misspelled one does -- falling through to the permissive default
+    would treat the more broken input more leniently than a typo.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _delegation_policy_input(spec_dir, fixture_id, fail_mode=fail_mode)
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys))
+    assert exc.value.code == "DELEGATION_SOURCE_TCT_REVOKED"
+
+
+@_BOTH_DELEGATION_PATHS
+def test_delegation_absent_snapshot_other_issuer_snapshot_is_absent_for_self(
+    fixture_id: str, spec_dir: Path
+) -> None:
+    """The subtle one: `revocation_snapshots` is PRESENT and every record in it
+    is genuinely signed and fully trusted -- but none of them is A's. "Data was
+    supplied" is not an escape from absence: B cannot answer whether A revoked
+    a TCT A issued, so A's own deny list is exactly as unknown as it was with
+    an empty list, and `fail_closed` must still reject.
+
+    The delegation-side analogue of `verify_tct`'s wrong-issuer case, and the
+    one an implementation that keyed absence off `"revocation_snapshots" in
+    inp` would get wrong while passing every other test in this block. The
+    snapshot lists this path's own `src_jti`, so a verifier that ignored the
+    signed issuer would reject here for the wrong reason -- hence the
+    `soft_fail` half below, which must VERIFY: the record is trusted and
+    names the src_jti, and only the applicability skip keeps it from applying.
+    """
+    keys = load_kat_keys(spec_dir)
+    entries = [{"jti": _SRC_JTI[fixture_id], "revoked_at": NOW}]
+
+    inp = _delegation_policy_input(spec_dir, fixture_id, fail_mode="fail_closed")
+    inp["revocation_snapshots"] = [_delegation_snapshot_record(issuer=SUBJECT, entries=entries)]
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys))
+    assert exc.value.code == "DELEGATION_SOURCE_TCT_REVOKED"
+    assert "no trusted snapshot signed by this verifier was supplied" in exc.value.message
+
+    permissive = _delegation_policy_input(spec_dir, fixture_id, fail_mode="soft_fail")
+    permissive["revocation_snapshots"] = [_delegation_snapshot_record(issuer=SUBJECT, entries=entries)]
+    assert verify_delegation_token(mint_input(permissive, REFERENCE_CLOCK, keys)) == _DELEGATION_GRANTS
+
+
+@_BOTH_DELEGATION_PATHS
+@pytest.mark.parametrize(
+    "body_overrides",
+    [{"published_at": NOW - 7200}, {"expires_at": NOW - 1}],
+    ids=["staler-than-max_staleness_secs", "past-its-own-expires_at"],
+)
+def test_delegation_absent_snapshot_stale_snapshot_rejects_under_fail_closed(
+    body_overrides: dict[str, Any], fixture_id: str, spec_dir: Path
+) -> None:
+    """RFC-AITP-0008 §3.2's two freshness bounds, each making an otherwise
+    trusted, applicable snapshot from A *absent*: past its own `expires_at`, or
+    published longer than `max_staleness_secs` ago. Same formula `verify_tct`
+    and `verify_revocation_snapshot` apply.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _delegation_policy_input(spec_dir, fixture_id, fail_mode="fail_closed", max_staleness_secs=600)
+    inp["revocation_snapshots"] = [_delegation_snapshot_record(**body_overrides)]
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys))
+    assert exc.value.code == "DELEGATION_SOURCE_TCT_REVOKED"
+    assert "expired or stale" in exc.value.message
+
+
+@_BOTH_DELEGATION_PATHS
+def test_delegation_absent_snapshot_stale_snapshot_verifies_under_soft_fail(
+    fixture_id: str, spec_dir: Path
+) -> None:
+    """The permissive half of the staleness rule: the identical stale snapshot
+    under `soft_fail` proceeds on degraded revocation data."""
+    keys = load_kat_keys(spec_dir)
+    inp = _delegation_policy_input(spec_dir, fixture_id, fail_mode="soft_fail", max_staleness_secs=600)
+    inp["revocation_snapshots"] = [_delegation_snapshot_record(published_at=NOW - 7200)]
+    assert verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys)) == _DELEGATION_GRANTS
+
+
+@_BOTH_DELEGATION_PATHS
+def test_delegation_staleness_is_not_evaluated_without_a_top_level_policy(
+    fixture_id: str, spec_dir: Path
+) -> None:
+    """With no `policy` key, freshness and expiry are never evaluated at all --
+    the property that keeps this phase auditable. A long-stale, long-expired
+    snapshot from A that genuinely lists this path's `src_jti` still reaches
+    the deny-list scan and still rejects.
+
+    Non-vacuous by construction: with no `policy` the effective mode is
+    `fail_open`, so had staleness been evaluated the input would have taken the
+    absence branch and *verified*. The rejection is only reachable because the
+    scan ran.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _load_conformance_input(spec_dir, fixture_id)
+    assert "policy" not in inp
+    inp["revocation_snapshots"] = [
+        _delegation_snapshot_record(
+            entries=[{"jti": _SRC_JTI[fixture_id], "revoked_at": NOW}],
+            published_at=NOW - 999999,
+            expires_at=NOW - 1,
+        )
+    ]
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys))
+    assert exc.value.code == "DELEGATION_SOURCE_TCT_REVOKED"
+    assert exc.value.message == "source TCT revoked"
+
+
+@_BOTH_DELEGATION_PATHS
+def test_delegation_fresh_applicable_snapshot_under_fail_closed_still_verifies(
+    fixture_id: str, spec_dir: Path
+) -> None:
+    """The negative control the whole block needs: `fail_closed` rejects on
+    ABSENCE, not on the mere presence of a policy. A trusted, fresh snapshot
+    from A that lists someone else's jti answers the question -- the source TCT
+    is not revoked -- and the delegation verifies.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _delegation_policy_input(spec_dir, fixture_id, fail_mode="fail_closed", max_staleness_secs=600)
+    inp["revocation_snapshots"] = [
+        _delegation_snapshot_record(entries=[{"jti": "someone-elses-source-tct", "revoked_at": NOW}])
+    ]
+    assert verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys)) == _DELEGATION_GRANTS
+
+
+@_BOTH_DELEGATION_PATHS
+@pytest.mark.parametrize(
+    "max_staleness",
+    [float("inf"), float("-inf"), float("nan"), "ten minutes", [600], {"secs": 600}],
+    ids=["inf", "negative_inf", "nan", "string", "list", "dict"],
+)
+def test_delegation_policy_unusable_max_staleness_secs_is_stale_not_a_crash(
+    max_staleness: Any, fixture_id: str, spec_dir: Path
+) -> None:
+    """`delegation.py`'s copy of `tct.py`'s `_snapshot_is_stale` regression
+    test (`test_tct_policy_unusable_max_staleness_secs_is_stale_not_a_crash`).
+
+    Same reasoning, same three exception arms, same reason it matters: a
+    JSON-sourced `policy` can carry a bare `Infinity`/`-Infinity`, and
+    `int()` on a float infinity raises `OverflowError` -- neither `TypeError`
+    nor `ValueError` -- which would otherwise escape `verify_delegation_token`
+    raw. The snapshot here is fresh, trusted, applicable, and does NOT list
+    this path's `src_jti`, so under `fail_closed` the only route to
+    `DELEGATION_SOURCE_TCT_REVOKED` is the unusable bound being treated as
+    stale, not a deny-list hit.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _delegation_policy_input(spec_dir, fixture_id, fail_mode="fail_closed", max_staleness_secs=max_staleness)
+    inp["revocation_snapshots"] = [
+        _delegation_snapshot_record(entries=[{"jti": "someone-elses-source-tct", "revoked_at": NOW}])
+    ]
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys))
+    assert exc.value.code == "DELEGATION_SOURCE_TCT_REVOKED"
+
+
+@_BOTH_DELEGATION_PATHS
+def test_delegation_policy_without_max_staleness_secs_applies_only_the_expires_at_bound(
+    fixture_id: str, spec_dir: Path
+) -> None:
+    """`delegation.py`'s copy of
+    `test_tct_policy_without_max_staleness_secs_applies_only_the_expires_at_bound`.
+    A `policy` that omits `max_staleness_secs` sets no age bound at all: the
+    snapshot's own `expires_at` is still enforced, `published_at` is not
+    consulted. Published far outside any plausible staleness window yet not
+    expired, and it verifies under `fail_closed` -- proving the
+    `max_staleness is None` early return does real work here too, not just
+    in `tct.py`.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _delegation_policy_input(spec_dir, fixture_id, fail_mode="fail_closed")
+    inp["revocation_snapshots"] = [
+        _delegation_snapshot_record(
+            entries=[{"jti": "someone-elses-source-tct", "revoked_at": NOW}],
+            published_at=NOW - 10_000,
+            expires_at=NOW + 3600,
+        )
+    ]
+    assert verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys)) == _DELEGATION_GRANTS
+
+
+@_BOTH_DELEGATION_PATHS
+@pytest.mark.parametrize("fail_mode", ["fail_closed", "soft_fail", "fail_open"])
+@pytest.mark.parametrize("junk", [5, "", {}, False], ids=["int", "empty-str", "empty-dict", "false"])
+def test_delegation_malformed_revocation_snapshots_is_invalid_under_every_fail_mode(
+    junk: Any, fail_mode: str, fixture_id: str, spec_dir: Path
+) -> None:
+    """RFC-AITP-0008 §1.5's obtained-but-untrustworthy half, preserved exactly:
+    a malformed `revocation_snapshots` container is a defect in the data, not
+    an absence of it, so it reports `REVOCATION_SNAPSHOT_INVALID` under EVERY
+    mode and is never routed through the new absence policy.
+
+    The falsy values are the ones that matter most (`""`/`{}`/`False`): a naive
+    `or []` would fold them into "no snapshots", which under `fail_closed`
+    would still reject -- but with the wrong code, and under `soft_fail` would
+    silently succeed. Both would be the `/reconcile`-era `None`-vs-falsy fix
+    being undone by the policy layer.
+
+    The junk is injected *after* minting, as
+    `test_delegation_revocation_snapshots_container_scalar_is_rejected_not_a_crash`
+    already does: `minter.py` is test scaffolding, not the verifier under test,
+    and a truthy scalar stops it before `verify_delegation_token` is ever
+    called.
+    """
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_delegation_policy_input(spec_dir, fixture_id, fail_mode=fail_mode), REFERENCE_CLOCK, keys)
+    minted["revocation_snapshots"] = junk
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(minted)
+    assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID"
+
+
+def test_delegation_multihop_per_hop_absence_is_not_fail_closed(spec_dir: Path) -> None:
+    """The explicit non-goal, pinned so it cannot be widened by accident.
+
+    `fail_closed` governs A's OWN deny list -- the §4 step 7 / RFC-AITP-0011 §6
+    source-TCT lookup -- and nothing else. It is deliberately NOT extended to
+    require a trusted snapshot for every intermediate hop issuer in the
+    multi-hop per-hop sweep: RFC-AITP-0011 is Draft, its §6 lookup says nothing
+    about absence, requiring N snapshots would be a materially wider policy
+    with no RFC-stated default, and `del-mh-001` (a draft-opt-in success
+    fixture) supplies none.
+
+    So: `del-mh-001` under `fail_closed`, with a trusted fresh snapshot from A
+    that lists nothing, VERIFIES -- even though the chain's two hop issuers (B
+    and C) have no snapshot supplied at all. Were the absence policy applied
+    per hop, this would reject.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _delegation_policy_input(spec_dir, "del-mh-001", fail_mode="fail_closed", max_staleness_secs=600)
+    # Pin the pre-condition the test rests on: the hops really are issued by
+    # peers with no snapshot in the supplied data.
+    hop_issuers = {inp["delegation_token_claims"]["iss"]} | {
+        hop["iss"] for hop in inp["delegation_token_claims"]["chain_claims"]
+    }
+    assert hop_issuers == {DELEGATE, SUBJECT} and ISSUER not in hop_issuers
+    inp["revocation_snapshots"] = [_delegation_snapshot_record(issuer=ISSUER, entries=[])]
+    assert verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys)) == _DELEGATION_GRANTS
+
+
+def test_delegation_multihop_per_hop_revocation_still_fires_with_a_fresh_self_snapshot(
+    spec_dir: Path,
+) -> None:
+    """The other side of the non-goal: not applying the policy per hop does not
+    mean the per-hop sweep stopped working. `del-mh-004`'s B-signed snapshot
+    still revokes B's hop, and adding a fresh, empty A snapshot (so the
+    source-TCT check finds A's deny list present and clean, and the absence
+    branch is never taken) leaves that rejection exactly where it was.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _load_conformance_input(spec_dir, "del-mh-004")
+    inp["policy"] = {"fail_mode": "fail_closed", "max_staleness_secs": 600}
+    inp["revocation_snapshots"].append(_delegation_snapshot_record(issuer=ISSUER, entries=[]))
+    with pytest.raises(AitpError) as exc:
+        verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys))
+    assert exc.value.code == "DELEGATION_SOURCE_TCT_REVOKED"
+    assert exc.value.message == "a hop jti is revoked"
+
+
 # ── Handshake payload + identity descriptor (handshake.py / identity.py) ──
 
 

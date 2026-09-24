@@ -258,3 +258,77 @@ deny-list reason, unchanged).
 
 **Status:** UNCONFIRMED — pending `/reconcile`, alongside the default-mode entry above (it is
 that decision's blast radius on existing behavior, not a separate design choice).
+
+## Phase 4 (`plans/hardening-issues-30-31.md`) — `verify_delegation_token`'s absence policy (issue #30)
+
+### The same permissive no-`policy` default, and the per-hop boundary it is deliberately not extended across
+
+**What changed:** `verify_delegation_token`'s input contract gains the same optional
+top-level `policy` key Phase 3 gave `verify_tct`, governing the analogous absence case: when
+no trusted, applicable revocation snapshot for `self_aid` was supplied, an effective
+`fail_closed` rejects with `DELEGATION_SOURCE_TCT_REVOKED` instead of proceeding. Two things
+are logged here.
+
+**(1) The default.** The precedence is Phase 3's *minus its rule 2*: (a) a supplied top-level
+`policy` is authoritative (a `policy` dict without `fail_mode`, and a non-dict `policy`, both
+resolve to `fail_closed`; an unrecognized or non-`str` mode likewise); (b) else — **no
+`policy` key at all — `fail_open`, preserving today's behavior byte for byte**. There is no
+per-wrapper rung because there is no per-wrapper spelling to read: a delegation input carries
+`revocation_snapshots: [{issuer_aid, snapshot}]` (`schemas/conformance/PLACEHOLDERS.md:92`),
+whose records have no policy member, and honoring an invented one would be *widening the
+accepted wire shape* rather than reading what the spec puts on the wire. **This is the same
+underlying decision as the Phase 3 entry above ("An absent `policy` means today's permissive
+behavior, not `fail_closed`"), not a second one** — the same contract, the same default, at
+the sibling entry point, logged here only so the delegation path's own blast radius is
+visible. Confirming or reversing that decision settles both entry points at once and MUST be
+applied to both together; the plan's Long-term posture is explicit that if `/reconcile` flips
+the default to fail-closed it flips in all three places (`verify_revocation_snapshot`,
+`verify_tct`, `verify_delegation_token`) at once. `del-001` (`required_for_v0_2`, core) and
+`del-mh-001` are both success fixtures supplying no revocation data whatsoever, so an
+unconditional fail-closed default would turn the spec's own pack red here exactly as
+`tct-012` does on the TCT path.
+
+**(2) The per-hop non-goal, stated rather than silently skipped.** `fail_closed` is applied
+**only to A's own deny list** — the RFC-AITP-0006 §4 step-7 / RFC-AITP-0011 §6 *source-TCT*
+check, which both the single-hop and the multi-hop path now run through one shared
+`_check_source_tct_revocation`. It is **not** extended to require a trusted snapshot for
+every intermediate hop issuer in the multi-hop per-hop sweep: absence there proceeds under
+every `fail_mode`, exactly as before this key existed. Requiring N snapshots under
+fail-closed is a materially wider policy with no RFC-stated default and no fixture —
+RFC-AITP-0011 is Draft, its §6 per-hop lookup says nothing about absence, and `del-mh-001`
+(a draft-opt-in success fixture) supplies none. Logged as a decision so `/reconcile` sees a
+boundary that was chosen, not one that was overlooked.
+
+**How to apply:** Callers wanting RFC-AITP-0008 §3.1's fail-closed posture on delegation MUST
+opt in explicitly by passing `policy` (any dict, including `{}`); callers that pass nothing
+keep the pre-existing behavior and are unaffected. No conformance fixture supplies a
+top-level `policy` to this operation, so all 10 `verify_delegation_token` fixtures pass
+unchanged and `run_conformance.py`'s counts do not move. Two adjacent behaviors are
+preserved untouched and MUST stay that way if the default is ever flipped: a malformed
+`revocation_snapshots` (non-list, truthy or falsy) still raises
+`REVOCATION_SNAPSHOT_INVALID`, and an untrustworthy snapshot still reports its own code,
+under **every** `fail_mode` — obtained-but-untrustworthy is never routed through the absence
+policy. The one counter-intuitive consequence the Phase 3 entry records — an explicitly
+permissive `policy` over a *stale* snapshot that genuinely lists the handle verifies, where
+the identical input with no `policy` rejects, because freshness is evaluated before the
+deny-list scan and only under a supplied policy — holds identically here, for the same
+reason, and `tests/test_unknown_fields.py` pins both directions on both paths. If
+`/reconcile` reverses the default, the per-hop boundary in (2) is a *separate* question and
+does not flip with it.
+
+**Status:** UNCONFIRMED — pending `/reconcile`, as the same decision as the Phase 3
+default-mode entry above rather than an independent one.
+
+**Follow-up noted during verification, not a decision to confirm — logged so it isn't lost:**
+`_resolve_fail_mode`, `_snapshot_is_stale`, and `_FAIL_MODES` are now spelled out identically
+(byte-for-byte, confirmed via AST comparison) in both `tct.py` (Phase 3) and `delegation.py`
+(this phase), rather than sharing one implementation — and `revocation.py`'s own stage-4
+dispatch has a *third*, differently-spelled freshness formula (`revocation.py:190`, bracket
+access, no `OverflowError` guard, predates this plan). This diff already produced one concrete
+instance of the copies drifting: `delegation.py`'s copy initially shipped without the two
+`OverflowError`/no-`max_staleness_secs` regression tests `tct.py`'s copy has, closed as a
+same-round fix (see `PROGRESS.md`'s Phase 4 entry) rather than left open. Consolidating three
+copies into one shared implementation in `revocation.py` (which both modules already import
+`verify_snapshot_trust` from, so no new dependency edge) is a reasonable Phase 5 or later
+follow-up — not logged as `UNCONFIRMED` itself, since it's a refactor with no behavior
+change, not a design decision, but named here so it's visible to whoever reads this file next.

@@ -19,6 +19,33 @@ Every revocation snapshot, single-hop step 7 and multi-hop's per-hop snapshots
 signature, via ``revocation.py::verify_snapshot_trust``) before its ``entries``
 are consulted — not merely consulted at face value — and the deny-list index is
 keyed on each snapshot's own *verified* issuer, not a caller-supplied label.
+
+``verify_delegation_token``'s input carries one **optional** top-level
+``policy`` key, spelled exactly as ``verify_tct``'s and
+``verify_revocation_snapshot``'s own (``{"fail_mode": ...,
+"max_staleness_secs": ...}``) — one shape, not a third spelling. It answers the
+single question RFC-AITP-0008 §3.1 reserves for ``fail_mode``: what to do when
+**no trusted, applicable revocation snapshot for ``self_aid`` was supplied at
+all** — "unknown is treated as revoked" (``DELEGATION_SOURCE_TCT_REVOKED``)
+under ``fail_closed``, proceed under ``soft_fail``/``fail_open``. It never
+answers what to do about a snapshot that *was* supplied and cannot be trusted:
+§1.5 decides that first, and ``verify_snapshot_trust`` still reports that
+snapshot's own defect under every mode. With no ``policy`` key this module
+behaves exactly as it did before the key existed (fail-open on absence) — see
+``_effective_fail_mode`` for the precedence and ``ASSUMPTIONS.md`` for why that
+default, rather than §3.1's configured-policy default of ``fail_closed``,
+governs the no-policy case.
+
+That policy governs **A's own deny list and nothing else** — the §4 step 7 /
+RFC-AITP-0011 §6 source-TCT lookup, which both the single-hop and the multi-hop
+path run through the one ``_check_source_tct_revocation`` below rather than
+each answering separately. It is deliberately **not** extended to the multi-hop
+per-hop issuer sweep: an absent snapshot for an intermediate hop issuer
+proceeds under every ``fail_mode``, exactly as it did before this key existed.
+RFC-AITP-0011 is Draft, its §6 per-hop lookup says nothing about absence, and
+requiring N trusted snapshots under fail-closed would be a materially wider
+policy with no RFC-stated default; ``ASSUMPTIONS.md`` records that boundary as
+a decision rather than an omission.
 """
 
 from __future__ import annotations
@@ -143,32 +170,29 @@ def verify_delegation_token(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> 
 
     # Source TCT revocation (RFC-AITP-0006 §4 step 7) — strictly after every
     # signature and claims check above, per RFC-AITP-0008 §3.3. `src_jti` is a
-    # shape-guaranteed `str` by here (`check_voucher_claims_shape` above), and
-    # `_revocation_index` keys on each snapshot's own *verified* issuer, so
-    # `revoked.get(self_aid, ...)` is literally "A's own deny list" — a
-    # snapshot genuinely signed by a third party never speaks for this lookup.
-    # RFC-AITP-0008 §1.1: the voucher has no independent revocation handle, so
-    # the source TCT's jti is the one lookup §4 step 7 names (the multi-hop
-    # per-hop `jti` sweep below is RFC-AITP-0011 §6, and stays multi-hop only).
-    revoked = _revocation_index(inp)
-    if vclaims["src_jti"] in revoked.get(self_aid, set()):
-        raise AitpError("DELEGATION_SOURCE_TCT_REVOKED", "source TCT revoked")
+    # shape-guaranteed `str` by here (`check_voucher_claims_shape` above).
+    # This is the *same* `_check_source_tct_revocation` the multi-hop path
+    # calls, not a second spelling of it: one implementation is what keeps the
+    # two paths from drifting apart again (the single-hop path silently
+    # skipping this step is exactly how they last diverged).
+    _check_source_tct_revocation(inp, _verified_snapshot_bodies(inp), self_aid, vclaims["src_jti"], now)
 
     return {"grants": claims["scope"]}
 
 
-def _revocation_index(inp: dict[str, Any]) -> dict[str, set[str]]:
-    """Map issuer AID -> set of revoked jti, from the caller's per-hop
-    snapshots (RFC-AITP-0011 §6).
+def _verified_snapshot_bodies(inp: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every supplied revocation snapshot, fully verified, in input order.
 
     Each snapshot is fully verified (structural + member-set + signature, via
     `revocation.py::verify_snapshot_trust`) before its ``entries`` are
     consulted -- closing issue #24's gap, where a forged/unsigned snapshot
     was previously accepted at face value via a bare ``.get()`` chain.
-    Indexes on the *verified* ``body["issuer"]``, not the caller-supplied
-    ``record.get("issuer_aid")`` label: the signed value wins, so a
-    correctly-signed snapshot can never be filed under an issuer the caller's
-    own wrapper merely claims for it.
+    Returns the verified ``revocation_list`` bodies because that is what both
+    consumers need: ``_revocation_index`` keys them by issuer for the per-hop
+    sweep, and ``_check_source_tct_revocation`` additionally reads their
+    ``published_at``/``expires_at`` for the §3.2 freshness bound. Scanning once
+    and sharing the result is also what keeps each snapshot's signature
+    verified exactly once per call.
 
     ``revocation_snapshots`` itself is untrusted remote input, same as every
     record inside it. Absent (``None``) is the one legitimate "no snapshots"
@@ -180,6 +204,15 @@ def _revocation_index(inp: dict[str, Any]) -> dict[str, set[str]]:
     check at all) -- is a malformed field, not an absent one, and must be
     rejected the same way. Checking ``is None`` explicitly, rather than
     truthiness, is what keeps the two cases apart.
+
+    That whole discipline sits deliberately *upstream* of every ``fail_mode``:
+    a malformed ``revocation_snapshots``, or a record whose snapshot is
+    unsigned/forged/misshapen, is RFC-AITP-0008 §1.5's
+    obtained-but-untrustworthy case, not its absent one, so it raises its own
+    code under every mode and is never routed through the absence policy
+    below. Collapsing "malformed" into "absent" is precisely the bug
+    ``revocation.py``'s module docstring records as having shipped once
+    already.
     """
     snaps = inp.get("revocation_snapshots")
     if snaps is None:
@@ -189,11 +222,208 @@ def _revocation_index(inp: dict[str, Any]) -> dict[str, set[str]]:
             "REVOCATION_SNAPSHOT_INVALID",
             f"revocation_snapshots must be an array, got {type(snaps).__name__}",
         )
+    return [
+        verify_snapshot_trust(record.get("snapshot") if isinstance(record, dict) else None)
+        for record in snaps
+    ]
+
+
+def _revocation_index(bodies: list[dict[str, Any]]) -> dict[str, set[str]]:
+    """Map issuer AID -> set of revoked jti, over already-verified snapshot
+    bodies (`_verified_snapshot_bodies`). RFC-AITP-0011 §6's per-hop sweep is
+    this map's one consumer.
+
+    Indexes on the *verified* ``body["issuer"]``, not the caller-supplied
+    ``record.get("issuer_aid")`` label: the signed value wins, so a
+    correctly-signed snapshot can never be filed under an issuer the caller's
+    own wrapper merely claims for it.
+
+    Deliberately policy-free and ``now``-free -- a pure index. The per-hop
+    sweep that consumes it is RFC-AITP-0011 §6 (Draft), where the absence of a
+    snapshot for a hop issuer is not governed by ``fail_mode`` at all (the
+    module docstring's stated non-goal), so neither ``policy`` nor freshness
+    has any business in this function. Both live in
+    ``_check_source_tct_revocation``, which answers for ``self_aid`` alone.
+    """
     index: dict[str, set[str]] = {}
-    for record in snaps:
-        body = verify_snapshot_trust(record.get("snapshot") if isinstance(record, dict) else None)
+    for body in bodies:
         index.setdefault(body["issuer"], set()).update(e.get("jti") for e in body["entries"])
     return index
+
+
+# RFC-AITP-0008 §3.1's three revocation-policy modes. Anything else -- a
+# misspelling, a value of the wrong JSON type, a mode minted by some future
+# revision -- resolves to `fail_closed` (`_resolve_fail_mode`): unrecognized
+# configuration is never silently permissive. The vocabulary is the RFC's, and
+# `tct.py` pins the identical set for the identical question on its own path.
+_FAIL_MODES = frozenset({"fail_closed", "fail_open", "soft_fail"})
+
+
+def _resolve_fail_mode(value: Any) -> str:
+    """Normalize one declared ``fail_mode`` value to a §3.1 mode -- the same
+    rule ``tct.py::_resolve_fail_mode`` applies, deliberately identical rather
+    than merely similar.
+
+    A present-but-non-``str`` value (``5``, ``None``, ``[]``) lands on
+    ``fail_closed`` for the same reason a misspelled one does. The obvious
+    alternative spelling -- an ``isinstance(..., str)`` guard that *falls
+    through* to the caller's default -- would send a **wrong-typed**
+    ``fail_mode`` to the permissive default while a merely **misspelled** one
+    (``"fail_klosed"``) failed closed: the more broken input treated more
+    leniently, which is backwards.
+    """
+    return value if isinstance(value, str) and value in _FAIL_MODES else "fail_closed"
+
+
+def _effective_fail_mode(inp: dict[str, Any]) -> str:
+    """Resolve the ``fail_mode`` that governs *absence* on this entry point.
+
+    Two rules, where ``tct.py`` has three:
+
+    1. A top-level ``policy`` key, when supplied, is authoritative. A ``policy``
+       dict without ``fail_mode`` resolves to ``fail_closed``, matching
+       ``revocation.py``'s own ``policy.get("fail_mode", "fail_closed")`` -- so
+       ``policy: {}`` is enough to opt into fail-closed. A non-dict ``policy``
+       resolves to ``fail_closed`` too, never to a raw ``AttributeError``.
+    2. Else -- no ``policy`` key at all -- ``fail_open``, preserving this
+       module's pre-``policy`` behavior byte for byte. See ``ASSUMPTIONS.md``:
+       ``del-001`` (``required_for_v0_2``, core) and ``del-mh-001`` are both
+       success fixtures that supply no revocation data whatsoever, so an
+       unconditional fail-closed default would turn the spec's own pack red.
+
+    ``tct.py``'s rule 2 -- the per-wrapper ``issuer_revocation_list["fail_mode"]``
+    -- has **no counterpart here, on purpose**. The wire shape a delegation
+    input carries is ``revocation_snapshots: [{issuer_aid, snapshot}]``
+    (``schemas/conformance/PLACEHOLDERS.md``), whose records have no policy
+    member at all; honoring one would be *widening the accepted wire shape*
+    rather than reading what the spec already puts on the wire, and it would
+    hand an unsigned caller-assembled wrapper a say in this deployment's
+    revocation posture. Absent that rung, the precedence collapses to
+    "the deployment's policy, else today's behavior".
+    """
+    if "policy" in inp:
+        policy = inp["policy"]
+        if not isinstance(policy, dict):
+            return "fail_closed"
+        return _resolve_fail_mode(policy.get("fail_mode", "fail_closed"))
+    return "fail_open"
+
+
+def _apply_absence(fail_mode: str, detail: str) -> None:
+    """RFC-AITP-0008 §3.1 applied to the *absent* case only: under
+    ``fail_closed`` an absent deny list means the source TCT's revocation
+    status is unknown, and unknown is treated as revoked; under
+    ``soft_fail``/``fail_open`` the delegation verifies on degraded revocation
+    data.
+
+    ``verify_delegation_token``'s verdict stays exactly ``{"grants": [...]}``
+    in the permissive modes -- no ``stale`` member is added, for the same
+    reason ``tct.py`` adds none: this entry point exposes no
+    grant-restriction surface for a caller to act on, so §3.1's distinction
+    between ``soft_fail`` ("allow with restricted grants") and ``fail_open``
+    ("allow, log a warning") has no representation here.
+    """
+    if fail_mode == "fail_closed":
+        raise AitpError(
+            "DELEGATION_SOURCE_TCT_REVOKED",
+            "no trusted, applicable revocation snapshot for this verifier's own deny list "
+            f"({detail}); fail_closed treats unknown revocation status as revoked",
+        )
+
+
+def _snapshot_is_stale(body: dict[str, Any], policy: dict[str, Any], now: int) -> bool:
+    """RFC-AITP-0008 §3.2's freshness rule -- the same formula ``tct.py`` and
+    ``revocation.py``'s stage 4 apply, one rule answering one question at three
+    entry points: a snapshot past its own ``expires_at``, or published longer
+    than ``max_staleness_secs`` ago, gives this verifier no usable revocation
+    data.
+
+    Every *policy* member is read with ``.get()``, never a bracket: a policy is
+    untrusted caller configuration, and this module's boundary contract is
+    "raise ``AitpError`` or return a verdict", never a raw ``KeyError``. A
+    ``max_staleness_secs`` that is present but not an integer is treated as
+    stale rather than ignored -- unusable configuration resolves toward
+    "status unknown", which the effective ``fail_mode`` then answers, instead
+    of quietly skipping the check. ``OverflowError`` sits in that except tuple
+    beside ``TypeError``/``ValueError`` because ``json.loads`` parses a bare
+    ``Infinity`` by default, so a JSON-sourced ``policy`` can hand this
+    function a ``max_staleness_secs`` of ``float("inf")``, on which ``int()``
+    raises ``OverflowError`` rather than ``ValueError``. *body* is already
+    type-validated by ``verify_snapshot_trust``, so its two timestamps are
+    ``int`` by here.
+    """
+    if now >= int(body["expires_at"]):
+        return True
+    max_staleness = policy.get("max_staleness_secs")
+    if max_staleness is None:
+        return False
+    try:
+        bound = int(max_staleness)
+    except (TypeError, ValueError, OverflowError):
+        return True
+    return (now - int(body["published_at"])) > bound
+
+
+def _check_source_tct_revocation(
+    inp: dict[str, Any], bodies: list[dict[str, Any]], self_aid: str, src_jti: Any, now: int
+) -> None:
+    """RFC-AITP-0006 §4 step 7 (single-hop) and RFC-AITP-0011 §6's source-TCT
+    clause (multi-hop): look up the root voucher's ``src_jti`` in **A's own**
+    deny list -- plus RFC-AITP-0008 §3.1's answer for the case where A has no
+    such deny list to look in.
+
+    **Both entry paths call this one function.** The asymmetry this closes came
+    from two call sites answering the same RFC step separately; a single
+    implementation is what makes "the absence policy fires identically from
+    both paths" a property of the code rather than of two test suites that
+    happen to agree today.
+
+    *bodies* are already fully verified (``_verified_snapshot_bodies``), so
+    §1.5's obtained-but-untrustworthy case has already raised -- under every
+    ``fail_mode`` -- before anything here runs. What is left is §1.5's *absent*
+    case, which on this entry point is exactly two things:
+
+    * no trusted snapshot whose **signed** ``issuer`` is ``self_aid``. Note the
+      shape difference from ``tct.py``: absence here is "the supplied set has
+      no entry for A", not "the input field is missing", because a present list
+      carrying only other peers' snapshots leaves A's own deny list just as
+      unknown as an empty one -- B cannot answer whether A revoked a TCT A
+      issued. "Data was supplied" is not an escape from absence;
+    * **only when a top-level ``policy`` is supplied**: every such snapshot is
+      expired or staler than ``max_staleness_secs``. Gating freshness on
+      ``policy`` is what keeps this auditable -- with no ``policy`` key,
+      freshness and expiry are never evaluated at all, so on that dimension
+      this path behaves exactly as it did before the key existed.
+
+    The deny-list scan then reads only the applicable, still-fresh snapshots'
+    own ``entries``, never a stale one's -- §3.2 treats a stale snapshot as
+    data this verifier has no business reading rather than as a deny list to
+    consult anyway. ``ASSUMPTIONS.md`` records the one counter-intuitive
+    consequence, shared with ``tct.py`` and with ``revocation.py``'s own
+    pre-existing stage-4 ordering: an explicitly *permissive* ``policy`` over a
+    stale snapshot that genuinely lists ``src_jti`` verifies, where the
+    identical input with no ``policy`` at all rejects.
+
+    Per-hop issuer deny lists are governed by none of this -- see the module
+    docstring's stated non-goal.
+    """
+    applicable = [body for body in bodies if body["issuer"] == self_aid]
+    detail = "no trusted snapshot signed by this verifier was supplied"
+    if applicable and "policy" in inp:
+        policy = inp["policy"]
+        applicable = [
+            body
+            for body in applicable
+            if not _snapshot_is_stale(body, policy if isinstance(policy, dict) else {}, now)
+        ]
+        detail = "every snapshot signed by this verifier is expired or stale"
+
+    if not applicable:
+        _apply_absence(_effective_fail_mode(inp), detail)
+        return
+
+    if any(entry.get("jti") == src_jti for body in applicable for entry in body["entries"]):
+        raise AitpError("DELEGATION_SOURCE_TCT_REVOKED", "source TCT revoked")
 
 
 def _verify_multihop(
@@ -283,9 +513,16 @@ def _verify_multihop(
         prev, prev_scope = hc, scope
 
     # Per-hop revocation (§6) — only after every signature check.
-    revoked = _revocation_index(inp)
-    if root_voucher.get("src_jti") in revoked.get(self_aid, set()):
-        raise AitpError("DELEGATION_SOURCE_TCT_REVOKED", "source TCT revoked")
+    bodies = _verified_snapshot_bodies(inp)
+
+    # The source-TCT check, through the identical helper the single-hop path
+    # calls — same lookup, same absence policy, one implementation.
+    _check_source_tct_revocation(inp, bodies, self_aid, root_voucher.get("src_jti"), now)
+
+    # The per-hop sweep is RFC-AITP-0011 §6 (Draft) and is deliberately NOT
+    # policy-governed: a hop issuer with no supplied snapshot proceeds under
+    # every `fail_mode`, exactly as before (module docstring's non-goal).
+    revoked = _revocation_index(bodies)
     for hop in hops:
         hc = parse_compact(hop, structural_code="DELEGATION_INVALID_SIGNATURE").claims
         if hc.get("jti") in revoked.get(str(hc.get("iss")), set()):
