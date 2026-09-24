@@ -808,13 +808,21 @@ def test_delegation_revocation_snapshot_malformed_shape_is_rejected_not_a_crash(
     assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID"
 
 
-@pytest.mark.parametrize("junk", [5, True, 1.5], ids=["int", "bool", "float"])
+@pytest.mark.parametrize(
+    "junk",
+    [5, True, 1.5, "", 0, False, {}, 0.0],
+    ids=["int", "bool", "float", "empty-str", "zero", "false", "empty-dict", "zero-float"],
+)
 def test_delegation_revocation_snapshots_container_scalar_is_rejected_not_a_crash(junk: Any, spec_dir: Path) -> None:
     """`revocation_snapshots` itself is untrusted remote input, same as any
-    record inside it. A scalar there is truthy and would otherwise survive
+    record inside it. A truthy scalar there would otherwise survive
     `inp.get("revocation_snapshots", []) or []` and reach the `for` loop as a
-    bare `TypeError: '...' object is not iterable`, escaping this module's
-    own `AitpError`-or-verdict contract.
+    bare `TypeError: '...' object is not iterable`; a falsy-but-present
+    scalar (`""`, `0`, `False`, `{}`, `0.0`) would otherwise be silently
+    folded into "no snapshots" by that same `or []` and never even reach a
+    type check. Both escape this module's own `AitpError`-or-verdict
+    contract unless `None`-vs-anything-else is checked explicitly rather
+    than by truthiness.
     """
     keys = load_kat_keys(spec_dir)
     minted = mint_input(_load_conformance_input(spec_dir, "del-mh-004"), REFERENCE_CLOCK, keys)
@@ -822,6 +830,19 @@ def test_delegation_revocation_snapshots_container_scalar_is_rejected_not_a_cras
     with pytest.raises(AitpError) as exc:
         verify_delegation_token(minted)
     assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID"
+
+
+def test_delegation_revocation_snapshots_genuinely_absent_is_accepted_not_rejected(spec_dir: Path) -> None:
+    """The one legitimate falsy case: the field is not present at all. This
+    must default to "no snapshots" and verify successfully, distinguishing
+    it from the malformed-falsy cases above (`""`/`0`/`False`/`{}`/`0.0`),
+    which must all still raise. Proves the fix checks `is None`, not
+    truthiness.
+    """
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "del-mh-004"), REFERENCE_CLOCK, keys)
+    del minted["revocation_snapshots"]
+    verify_delegation_token(minted)
 
 
 def test_delegation_revocation_index_keys_on_the_signed_issuer_not_the_wrapper_label(spec_dir: Path) -> None:
