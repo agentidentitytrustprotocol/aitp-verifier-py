@@ -693,3 +693,4 @@ No gaps. Ready for `/ship`.
 ## Ship checkpoints (PR 2)
 
 - pushed revocation-snapshot-trust-24 d0643a2
+- PR #32 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/32
