@@ -111,3 +111,16 @@ here, so a future integrator has one place to check before upgrading.
   `extensions` member whose interior RFC-AITP-0001 §7 forbids inspecting. Callers now see
   `AitpError` where they previously saw an unhandled `RecursionError`, which is the
   boundary contract this library states everywhere else. (issue #31)
+- **`verify_revocation_snapshot` now guards its own `policy` argument** the same way
+  `verify_tct`/`verify_delegation_token`'s new `policy` handling above does, instead of
+  bracket-reading it raw. Previously, a missing `max_staleness_secs` raised `KeyError`; a
+  value of `Infinity` raised `OverflowError`; `NaN` or a non-numeric string raised
+  `ValueError`; a list or dict raised `TypeError`; and a non-dict `policy` raised
+  `AttributeError` — none of them `AitpError`, on this entry point's own top-level call
+  argument. A **missing `max_staleness_secs` now behaves differently**: previously a crash,
+  it now means "no staleness bound — only the snapshot's own signed `expires_at` governs",
+  matching `verify_tct`/`verify_delegation_token`'s identical default. A non-dict `policy`
+  now resolves to `fail_closed` rather than crashing, the same resolution the other two
+  entry points already give a non-dict `policy`. Found and fixed during this plan's
+  finalization pass, closing the fail-mode-helper triplication the `policy` work above had
+  already introduced across three modules.

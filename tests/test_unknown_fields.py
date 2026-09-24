@@ -1066,7 +1066,7 @@ def test_tct_wrapper_misspelled_fail_mode_is_fail_closed(spec_dir: Path) -> None
     tempting alternative implementation: an `isinstance(..., str)` guard that
     falls through to the default would send `fail_mode: 5` to `fail_open`
     while catching this one, so only a membership check against the mode set
-    -- which is what `_resolve_fail_mode` does -- gets both right.
+    -- which is what `revocation.py::resolve_fail_mode` does -- gets both right.
     """
     keys = load_kat_keys(spec_dir)
     minted = mint_input(_tct_different_issuer_input(fail_mode="fail_klosed"), REFERENCE_CLOCK, keys)
@@ -1267,7 +1267,7 @@ def test_tct_non_dict_policy_with_a_snapshot_present_still_governs_as_fail_close
     Two directions, because "present" is not by itself an answer. A snapshot
     that is fresh and clean is real revocation data, so the TCT verifies (and
     the `policy if isinstance(policy, dict) else {}` guard hands
-    `_snapshot_is_stale` an empty dict instead of `.get()`-ing a string). An
+    `revocation.py::snapshot_is_stale` an empty dict instead of `.get()`-ing a string). An
     *expired* one is not usable data, so the unreadable policy's `fail_closed`
     governs and the TCT is rejected -- a snapshot merely being in the input
     must not buy silent success. `max_staleness_secs` is unreachable through a
@@ -1884,8 +1884,8 @@ def test_delegation_fresh_applicable_snapshot_under_fail_closed_still_verifies(
 def test_delegation_policy_unusable_max_staleness_secs_is_stale_not_a_crash(
     max_staleness: Any, fixture_id: str, spec_dir: Path
 ) -> None:
-    """`delegation.py`'s copy of `tct.py`'s `_snapshot_is_stale` regression
-    test (`test_tct_policy_unusable_max_staleness_secs_is_stale_not_a_crash`).
+    """`delegation.py`'s use of the shared `revocation.py::snapshot_is_stale`
+    regression test (`test_tct_policy_unusable_max_staleness_secs_is_stale_not_a_crash`).
 
     Same reasoning, same three exception arms, same reason it matters: a
     JSON-sourced `policy` can carry a bare `Infinity`/`-Infinity`, and
