@@ -1352,6 +1352,76 @@ PR.
   (`delegation.py`). Confirmed: the branch for Phase 3/4/5 is being cut from `main` at
   `32d01b3` (post-PR-2), satisfying this.
 
+## Phase 3 — `verify_tct` gains an optional `policy`/`fail_mode` (closes #30's core) — DONE (2026-09-24)
+
+- **Verdict:** PASS after 1 gap round (2 verification rounds total). Not critical to
+  *execute* by the Autonomy ladder's usual "trust boundary" sense, but this is the plan's
+  one true one-way door (a new, permanent public-input-contract member on `verify_tct`), so
+  both rounds got a fresh-Opus verifier holding the plan's own security-relevant precedence
+  ordering, not just its acceptance-criteria checklist.
+- **Round 1:** mutation-tested the security-critical precedence ordering itself — confirmed
+  the "top-level `policy` beats wrapper `fail_mode`" test provably fails under the original,
+  inverted draft ordering (the exact bug the plan-review round caught and fixed before any
+  code existed) — plus the `revocation.py` `fail_open` fix, the freshness-gated-on-`policy`
+  behavior, and the obtained-but-untrustworthy/absent isolation. **GAPS** (4 items): a raw
+  `OverflowError` on `max_staleness_secs: Infinity` (`int(inf)` in the staleness formula —
+  the exact bug class issue #31 targets, on a path #31's own fix doesn't reach since the
+  value never touches `jcs.canonicalize`), an undocumented non-monotonicity (an explicitly
+  permissive `policy` over a stale-but-genuinely-revoking snapshot can verify where the
+  identical input with *no* `policy` at all rejects, because freshness is only evaluated
+  when `policy` is present), 4 untested branches, 2 doc/naming inaccuracies.
+- **Round 2 (re-verify against the round-1 gap list):** all 4 items confirmed closed — `PASS`.
+- **Files touched:** `aitp_verifier/tct.py` (`_FAIL_MODES`, `_resolve_fail_mode`,
+  `_effective_fail_mode` — the corrected 3-rule precedence — `_apply_absence`,
+  `_snapshot_is_stale`, rewritten `_check_revocation`; `verify_tct` threads its own `now`
+  through), `aitp_verifier/revocation.py` (stage-4 mode dispatch: `fail_open` now returns
+  `{"revoked": False, "stale": True}` instead of falling through to `fail_closed`'s raise),
+  `tests/test_unknown_fields.py` (+~45 tests across both rounds), `ASSUMPTIONS.md` (2 new
+  `UNCONFIRMED` entries: the no-`policy`-default-permissive decision, and the
+  `different_issuer` test-expectation flip), `plans/hardening-issues-30-31.md`.
+- **Tests:** commit `13a7af1` — `ASSUMPTIONS.md` +110, `tct.py` +217/-cut, `revocation.py`
+  +20/-cut, `tests/test_unknown_fields.py` +529. Full suite green, mypy clean, conformance
+  68/0/1 unchanged (all 10 `verify_tct` fixtures plus all 7 `verify_revocation_snapshot`
+  fixtures pass exactly as before).
+- **What's next:** Phase 4 (`delegation.py`, same decision applied symmetrically — depends on
+  this phase and on Phase 2) and Phase 5 (docs), both landing in the same PR (PR 3) per the
+  plan's hard branch-ordering constraint.
+
+## Phase 4 — `verify_delegation_token`: the same absence policy, symmetrically — DONE (2026-09-24)
+
+- **Verdict:** PASS after 1 gap round. Not critical to execute (reuses Phase 3's
+  already-reviewed design, doesn't reopen the precedence question), but verified with the
+  same rigor given it touches the exact call site Phase 2 inserted, in the same file.
+- **Round 1:** the reviewer **regenerated the executor's mutation-testing proof from
+  scratch** rather than taking it on the executor's word — forcing `_effective_fail_mode` to
+  always return `fail_open` fails the single-hop and multi-hop test pairs *together*;
+  reverting either call site alone fails only that path's half — confirming single-hop and
+  multi-hop genuinely share one `_check_source_tct_revocation` implementation, not two that
+  happen to agree today. Also independently reproduced the malformed-input combinations, the
+  per-hop non-goal, the wrong-issuer-only case, and the staleness-not-evaluated-without-policy
+  claim live. **GAPS** (1 blocking, 1 non-blocking): delegation's copy of `tct.py`'s
+  `OverflowError`/missing-`max_staleness_secs` regression tests was absent (the code itself
+  already carried the fix, copied correctly from `tct.py` — only the *test* coverage was
+  missing) — closed same-round by mirroring `tct.py`'s two tests exactly (14 test items:
+  `_BOTH_DELEGATION_PATHS` parametrized). The non-blocking note (freshness formula and
+  `_FAIL_MODES` spelled out three times across `tct.py`/`delegation.py`/`revocation.py`) was
+  logged to `ASSUMPTIONS.md` as a follow-up, not treated as a gap requiring this phase to
+  fix — **resolved during the finalization pass below**, not deferred indefinitely.
+- **Files touched:** `aitp_verifier/delegation.py` (`_revocation_index` split into
+  `_verified_snapshot_bodies`/pure `_revocation_index`; new `_FAIL_MODES`,
+  `_resolve_fail_mode`, `_apply_absence`, `_snapshot_is_stale`, `_effective_fail_mode` — the
+  2-rule version, no per-wrapper rung since `revocation_snapshots` records carry no policy
+  member — and `_check_source_tct_revocation`, called from both the single-hop and multi-hop
+  sites), `tests/test_unknown_fields.py` (+~80 tests across both rounds, including the 14
+  gap-closure items added directly, not via a subagent), `ASSUMPTIONS.md` (1 new
+  `UNCONFIRMED` entry, explicit that it's the same decision as Phase 3's, not independent).
+- **Tests:** commit `29eb603` — `delegation.py` +281/-cut, `tests/test_unknown_fields.py`
+  +438, `ASSUMPTIONS.md` +74. Full suite green, mypy clean, conformance 68/0/1 unchanged
+  (`del-001`/`del-mh-001` — the only two fixtures requiring success with zero revocation
+  data supplied — both still pass).
+- **What's next:** Phase 5 (docs/changelog/spec-repo follow-ups), then the finalization pass
+  over all 5 phases together, then PR 3.
+
 ## Phase 5 — docs, `CHANGELOG.md`, and the spec-repo fixture follow-ups — DONE (2026-09-23)
 
 Documentation-only phase, on branch `feat/revocation-policy-fail-mode` after Phases 3
@@ -1438,3 +1508,75 @@ checkout stays at `4b656b1`. Neither issue blocks PR 3.
   request to extend the `verify_tct` *input shape*, not to add a vector. Deferred until
   after `/reconcile` confirms this repo's own default. Both filed issues stand regardless of
   how that lands.
+
+## Finalization pass (whole-plan, before PR 3) — 2026-09-23
+
+Per `/implement` §4: after all 5 phases individually passed their own gate, one Opus
+verification pass over the *cumulative* diff (`git diff 8f03366...HEAD`, `8f03366` being the
+commit immediately before Phase 1 merged) against the plan as a whole — not re-reviewing any
+phase in isolation, but checking the seams between them.
+
+- **Gates, fresh run:** 461 passed, mypy clean (37 files), conformance 68/0/1 — all unchanged.
+- **Seam A (Phase 2 → Phase 4's rework of the same call site): PASS**, proven live plus
+  mutation. Traced a `del-001` input plus a self-signed snapshot listing the voucher's
+  `src_jti` through the current `delegation.py` end to end — correctly raises
+  `DELEGATION_SOURCE_TCT_REVOKED`. Re-proved non-vacuous by neutering
+  `_check_source_tct_revocation`, which then returns the pre-fix grant instead. All three
+  Phase 2 negative controls (unrelated jti, other-issuer snapshot, forged signature) still
+  hold. **No silent regression from Phase 4's rework of Phase 2's insertion point.**
+- **Seam B (`tct.py` vs `delegation.py` behavioral equivalence): PASS**, confirmed
+  behaviorally identical, not merely similar — `_resolve_fail_mode` agrees over 17 hostile
+  values, `_snapshot_is_stale` over 234 cells, `_effective_fail_mode` over 60 cells, and an
+  end-to-end 9-shape absence matrix agrees on every verdict class through both real entry
+  points. `tct.py`'s extra rule-2 rung is the only difference, confirmed one-directional (a
+  wrapper `fail_mode` never overrides a supplied `policy`).
+- **Seam C (Phase 1's depth cap vs Phase 3/4's new fields): PASS.** A deep value inside
+  `revocation_snapshots[].snapshot` or `issuer_revocation_list.snapshot` still hits the cap
+  (`REVOCATION_SNAPSHOT_INVALID`); `policy` has no recursion surface at all (never
+  canonicalized, only `.get()`-read), confirmed structurally safe across 6 spellings.
+- **Automated seam coverage: PASS, not a gap** — Phase 2's five original single-hop tests
+  are unmodified in Phase 4's diff and still exercise the reworked helper directly; two
+  further present-snapshot × policy tests cover the interaction explicitly.
+- **Context's 3 named findings: all genuinely closed**, re-verified live — issue #31 (cap
+  plus boundary conversion), the single-hop bypass (Seam A), and all three of issue #30's
+  sub-findings (absent wrapper now policy-governed, wrong-issuer snapshot now rejects under
+  `fail_closed` where it silently passed before, wrapper `fail_mode` now read).
+
+**Verdict: GAPS (2 items), both closed in this same pass — no second round needed.**
+
+- **GAP 1 (medium, closed) — `verify_revocation_snapshot` leaked 8 raw exceptions on its own
+  `policy`.** `revocation.py:178`/`:190` bracket-read `inp["policy"]` and
+  `policy["max_staleness_secs"]` directly: a missing `max_staleness_secs` raised `KeyError`,
+  `Infinity` raised `OverflowError`, `NaN`/a non-numeric string raised `ValueError`, a
+  list/dict raised `TypeError`, a non-dict `policy` raised `AttributeError` — none of them
+  `AitpError`. This is the same `policy["max_staleness_secs"]` formula Phase 3 hardened in
+  `tct.py` and Phase 4 mirrored into `delegation.py`, left unfixed in the one module that
+  actually owns RFC-AITP-0008 §3.2 — a genuine seam finding (Phase 3 edited this exact
+  function four lines away for the `fail_open` fix) and a real regression risk given
+  CHANGELOG entry 2's headline claim that `policy` is "one shape reused three times."
+  **Fixed by consolidating the three independently-hand-copied implementations into one**:
+  `FAIL_MODES`/`resolve_fail_mode`/`snapshot_is_stale` now live once in `revocation.py`
+  (public within the package, added to `__all__`), imported by both `tct.py` and
+  `delegation.py` in place of their own private copies — no circular import, since
+  `revocation.py` already had zero dependency on either and both already imported
+  `verify_snapshot_trust` from it. `verify_revocation_snapshot` now guards `policy` the same
+  way the other two entry points guard theirs: a non-dict `policy` resolves to `fail_closed`
+  with no staleness bound beyond `expires_at`, never a structural rejection (there is no wire
+  schema for a local call argument to violate) and never a raw exception. This also closes
+  the triplication follow-up Phase 4 had already logged to `ASSUMPTIONS.md` as a non-blocking
+  design note — resolved here rather than left for an indefinite future cleanup.
+  Added 12 new regression tests to `tests/test_unknown_fields.py`
+  (`test_revocation_unusable_max_staleness_secs_is_stale_not_a_crash` ×6 hostile shapes,
+  `test_revocation_missing_max_staleness_secs_applies_only_the_expires_at_bound`,
+  `test_revocation_non_dict_policy_is_an_aitp_error_not_a_crash` ×5 hostile shapes). Full
+  suite re-run green (473 passed), mypy clean, conformance 68/0/1 unchanged.
+- **GAP 2 (low, closed) — this file had no `## Phase 3`/`## Phase 4` sections.** The trail
+  broke precisely at the two phases carrying the one-way door, the security-critical
+  precedence inversion, and both phases' verification rounds. Not a correctness gap (the
+  content lived in the plan's own `Status:` lines and the two commit messages, both
+  tracked), but `/implement` requires a timestamped per-phase entry here regardless. Added
+  above, matching Phase 1's level of detail.
+
+`plans/hardening-issues-30-31.md` already shows all 5 phases `Status: DONE`; `ASSUMPTIONS.md`
+carries Phase 3's 2 entries and Phase 4's 1 entry, all logged (not transcript-only). No
+`CLAUDE.md` exists in this repo, so no doc-drift check was owed there.

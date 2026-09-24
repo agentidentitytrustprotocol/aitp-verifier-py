@@ -1320,3 +1320,28 @@ complete and honest once fix 11's branch-ordering constraint is stated); Phase 1
 "the boundary-contract mutation entry is probably vacuous" assessment stands unverified by
 design — the phase already requires it to be *measured* rather than assumed, which is the
 correct treatment.
+
+## Finalization (2026-09-23)
+
+Per `/implement` §4, run once after all 5 phases individually hit `PASS`: one fresh-Opus
+verification pass over the cumulative diff (`git diff 8f03366...HEAD`, the commit
+immediately before Phase 1 merged) against this plan as a whole, checking the seams between
+phases rather than re-reviewing any single one. **Verdict: GAPS (2 items), both closed in
+this same pass — no second round needed.** Full detail, including the seam-by-seam findings
+(Phase 2's single-hop check proven un-regressed by Phase 4's rework of the same call site;
+`tct.py`/`delegation.py` proven behaviorally identical, not merely similar, across hundreds
+of compared cells; Phase 1's depth cap proven to still cover Phase 3/4's new `policy`/
+`revocation_snapshots` fields), is in `PROGRESS.md`'s "Finalization pass" section — not
+repeated here.
+
+The two gaps, summarized: (1) `revocation.py`'s own `verify_revocation_snapshot` — the
+module that actually owns RFC-AITP-0008 §3.2 — still bracket-read `policy` and
+`max_staleness_secs` raw and leaked 8 kinds of Python exception past its own `AitpError`
+contract, the identical bug class Phase 3 and Phase 4 had already found and fixed on their
+own copies of this exact formula. Fixed by consolidating all three modules' independently
+hand-copied `FAIL_MODES`/`resolve_fail_mode`/`snapshot_is_stale` into one shared
+implementation in `revocation.py`, closing the triplication `ASSUMPTIONS.md` had already
+logged as a Phase 4 follow-up in the same motion, plus 12 new regression tests. (2)
+`PROGRESS.md` was missing its `## Phase 3`/`## Phase 4` entries — added, matching Phase 1's
+level of detail. Suite re-run green (473 passed, up from 461), mypy clean, conformance
+68/0/1 unchanged. Ready for PR 3.

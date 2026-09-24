@@ -48,7 +48,7 @@ from .errors import AitpError
 from .fields import check_types, reject_unknown_fields, require_members
 from .jwk import thumbprint
 from .jws import parse_compact, verify_jws
-from .revocation import verify_snapshot_trust
+from .revocation import resolve_fail_mode, snapshot_is_stale, verify_snapshot_trust
 from .timeutil import REFERENCE_CLOCK
 
 __all__ = ["verify_tct", "TCT_CLAIM_FIELDS", "TCT_CNF_FIELDS", "check_tct_claims_shape"]
@@ -146,27 +146,6 @@ def verify_tct(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any
     return {"grants": claims["grants"]}
 
 
-# RFC-AITP-0008 §3.1's three revocation-policy modes. Anything else -- a
-# misspelling, a value of the wrong JSON type, a mode minted by some future
-# revision -- resolves to `fail_closed` (`_resolve_fail_mode`): unrecognized
-# configuration is never silently permissive.
-_FAIL_MODES = frozenset({"fail_closed", "fail_open", "soft_fail"})
-
-
-def _resolve_fail_mode(value: Any) -> str:
-    """Normalize one declared ``fail_mode`` value to a §3.1 mode.
-
-    A present-but-non-``str`` value (``5``, ``None``, ``[]``) lands on
-    ``fail_closed`` for the same reason a misspelled one does. The obvious
-    alternative spelling -- an ``isinstance(..., str)`` guard that *falls
-    through* to the caller's default -- would send a **wrong-typed**
-    ``fail_mode`` to the permissive default while a merely **misspelled** one
-    (``"fail_klosed"``) failed closed: the more broken input treated more
-    leniently, which is backwards.
-    """
-    return value if isinstance(value, str) and value in _FAIL_MODES else "fail_closed"
-
-
 def _effective_fail_mode(inp: dict[str, Any], revlist: Any) -> str:
     """Resolve the ``fail_mode`` that governs *absence*, in strict precedence.
 
@@ -206,9 +185,9 @@ def _effective_fail_mode(inp: dict[str, Any], revlist: Any) -> str:
         policy = inp["policy"]
         if not isinstance(policy, dict):
             return "fail_closed"
-        return _resolve_fail_mode(policy.get("fail_mode", "fail_closed"))
+        return resolve_fail_mode(policy.get("fail_mode", "fail_closed"))
     if isinstance(revlist, dict) and "fail_mode" in revlist:
-        return _resolve_fail_mode(revlist["fail_mode"])
+        return resolve_fail_mode(revlist["fail_mode"])
     return "fail_open"
 
 
@@ -230,41 +209,6 @@ def _apply_absence(fail_mode: str, detail: str) -> None:
             f"no trusted, applicable revocation snapshot for this TCT ({detail}); "
             "fail_closed treats unknown revocation status as revoked",
         )
-
-
-def _snapshot_is_stale(body: dict[str, Any], policy: dict[str, Any], now: int) -> bool:
-    """RFC-AITP-0008 §3.2's freshness rule, the same formula
-    ``revocation.py``'s stage 4 applies: a snapshot past its own
-    ``expires_at``, or published longer than ``max_staleness_secs`` ago, gives
-    this verifier no usable revocation data.
-
-    Every *policy* member is read with ``.get()``, never a bracket: a policy is
-    untrusted caller configuration, and this module's boundary contract is
-    "raise ``AitpError`` or return a verdict", never a raw ``KeyError``. A
-    ``max_staleness_secs`` that is present but not an integer is treated as
-    stale rather than ignored -- unusable configuration resolves toward
-    "status unknown", which the effective ``fail_mode`` then answers, instead
-    of quietly skipping the check. *body* is already type-validated by
-    ``verify_snapshot_trust``, so its two timestamps are ``int`` by here.
-
-    ``OverflowError`` sits in that except tuple beside ``TypeError`` and
-    ``ValueError`` for the same boundary-contract reason, and it is genuinely
-    reachable: ``json.loads`` parses a bare ``Infinity``/``-Infinity`` by
-    default, so a JSON-sourced ``policy`` can hand this function a
-    ``max_staleness_secs`` of ``float("inf")``, on which ``int()`` raises
-    ``OverflowError`` rather than ``ValueError``. Left uncaught it escaped
-    ``verify_tct`` raw -- the exact bug class issue #31 targets.
-    """
-    if now >= int(body["expires_at"]):
-        return True
-    max_staleness = policy.get("max_staleness_secs")
-    if max_staleness is None:
-        return False
-    try:
-        bound = int(max_staleness)
-    except (TypeError, ValueError, OverflowError):
-        return True
-    return (now - int(body["published_at"])) > bound
 
 
 def _check_revocation(claims: dict[str, Any], inp: dict[str, Any], now: int) -> None:
@@ -334,7 +278,7 @@ def _check_revocation(claims: dict[str, Any], inp: dict[str, Any], now: int) -> 
     # snapshot's own `expires_at` bound applies to it.
     if "policy" in inp:
         policy = inp["policy"]
-        if _snapshot_is_stale(body, policy if isinstance(policy, dict) else {}, now):
+        if snapshot_is_stale(body, policy if isinstance(policy, dict) else {}, now):
             _apply_absence(fail_mode, "the supplied snapshot is expired or stale")
             return
 

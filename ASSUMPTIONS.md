@@ -319,16 +319,19 @@ does not flip with it.
 **Status:** UNCONFIRMED — pending `/reconcile`, as the same decision as the Phase 3
 default-mode entry above rather than an independent one.
 
-**Follow-up noted during verification, not a decision to confirm — logged so it isn't lost:**
-`_resolve_fail_mode`, `_snapshot_is_stale`, and `_FAIL_MODES` are now spelled out identically
-(byte-for-byte, confirmed via AST comparison) in both `tct.py` (Phase 3) and `delegation.py`
-(this phase), rather than sharing one implementation — and `revocation.py`'s own stage-4
-dispatch has a *third*, differently-spelled freshness formula (`revocation.py:190`, bracket
-access, no `OverflowError` guard, predates this plan). This diff already produced one concrete
-instance of the copies drifting: `delegation.py`'s copy initially shipped without the two
-`OverflowError`/no-`max_staleness_secs` regression tests `tct.py`'s copy has, closed as a
-same-round fix (see `PROGRESS.md`'s Phase 4 entry) rather than left open. Consolidating three
-copies into one shared implementation in `revocation.py` (which both modules already import
-`verify_snapshot_trust` from, so no new dependency edge) is a reasonable Phase 5 or later
-follow-up — not logged as `UNCONFIRMED` itself, since it's a refactor with no behavior
-change, not a design decision, but named here so it's visible to whoever reads this file next.
+**Follow-up noted during verification, not a decision to confirm — RESOLVED during this
+plan's finalization pass (2026-09-23), not left for later:** `_resolve_fail_mode`,
+`_snapshot_is_stale`, and `_FAIL_MODES` were spelled out identically (byte-for-byte,
+confirmed via AST comparison) in both `tct.py` (Phase 3) and `delegation.py` (this phase),
+rather than sharing one implementation — and `revocation.py`'s own stage-4 dispatch had a
+*third*, differently-spelled freshness formula (bracket access, no `OverflowError` guard,
+predating this plan), which the finalization pass's whole-feature verifier found was not
+merely stale but genuinely **unguarded**: `revocation.py`'s own `policy`/`max_staleness_secs`
+reads leaked 8 raw Python exceptions past its `AitpError` contract (GAP 1 in
+`PROGRESS.md`'s Finalization pass entry). Consolidated in that same pass: `FAIL_MODES`,
+`resolve_fail_mode`, and `snapshot_is_stale` now live once, in `revocation.py` (added to its
+`__all__`), imported by both `tct.py` and `delegation.py` in place of their own private
+copies — no new dependency edge, since both already imported `verify_snapshot_trust` from
+it. `verify_revocation_snapshot` itself was hardened onto the same shared, tested formula in
+the same motion. See `PROGRESS.md`'s Finalization pass section for the fix, the 12 new
+regression tests, and the full re-verification.

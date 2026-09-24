@@ -690,6 +690,67 @@ def test_revocation_fail_open_still_reports_a_listed_jti_as_revoked(spec_dir: Pa
     assert exc.value.code == "TCT_REVOKED"
 
 
+@pytest.mark.parametrize(
+    "max_staleness",
+    [float("inf"), float("-inf"), float("nan"), "ten minutes", [600], {"secs": 600}],
+    ids=["inf", "negative_inf", "nan", "string", "list", "dict"],
+)
+def test_revocation_unusable_max_staleness_secs_is_stale_not_a_crash(max_staleness: Any, spec_dir: Path) -> None:
+    """A hostile `max_staleness_secs` -- this entry point's own top-level call
+    argument, not a wire artifact -- used to reach
+    `int(policy["max_staleness_secs"])` raw: `float("inf")` raised
+    `OverflowError`, `float("nan")` and a non-numeric string raised
+    `ValueError`, a list/dict raised `TypeError`. Found during this plan's
+    finalization pass -- the identical bug class Phase 3 (`tct.py`) and
+    Phase 4 (`delegation.py`) had already found and fixed on their own copy
+    of this exact formula, one function away, while this module (the one that
+    actually owns RFC-AITP-0008 §3.2) kept the unguarded original. Unusable
+    configuration now resolves toward "stale" (status unknown), which
+    `fail_mode` then answers, instead of escaping as a raw exception.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _revocation_input(published_at=NOW)  # fresh by wall-clock -- only the policy is hostile
+    inp["policy"]["max_staleness_secs"] = max_staleness
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    with pytest.raises(AitpError) as exc:
+        verify_revocation_snapshot(minted)
+    assert exc.value.code == "TCT_REVOKED"
+
+
+def test_revocation_missing_max_staleness_secs_applies_only_the_expires_at_bound(spec_dir: Path) -> None:
+    """No `max_staleness_secs` in `policy` means no staleness bound -- only
+    `expires_at` governs freshness -- matching `tct.py`/`delegation.py`'s
+    already-shipped `snapshot_is_stale` default (``.get(...) is None`` ->
+    not stale), not a raw `KeyError`. Before this plan's finalization fix,
+    this member was read with a bare `policy["max_staleness_secs"]` and its
+    absence escaped uncaught.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _revocation_input(published_at=NOW - 10_000)  # would be stale under any nonzero bound
+    del inp["policy"]["max_staleness_secs"]
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    assert verify_revocation_snapshot(minted) == {"revoked": False}
+
+
+@pytest.mark.parametrize("policy", [None, "fail_closed", 5, [], True], ids=["null", "string", "int", "list", "bool"])
+def test_revocation_non_dict_policy_is_an_aitp_error_not_a_crash(policy: Any, spec_dir: Path) -> None:
+    """A non-dict `policy` -- this entry point's own top-level call argument,
+    the same category as `tct.py`/`delegation.py`'s optional one -- used to
+    reach `policy.get("fail_mode", ...)` and `policy["max_staleness_secs"]`
+    raw and escape as `AttributeError`/`TypeError`. It now resolves the same
+    way a non-dict `policy` resolves on the other two entry points:
+    `fail_closed`, with no staleness bound beyond `expires_at`. A fresh,
+    unexpired, correctly-issued snapshot with no matching queried jti still
+    verifies even under a broken `policy`, since nothing about the snapshot
+    itself was untrustworthy.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _revocation_input(published_at=NOW)
+    inp["policy"] = policy
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    assert verify_revocation_snapshot(minted) == {"revoked": False}
+
+
 # ── Embedded revocation-snapshot trust (issue #24): tct.py / delegation.py
 #    each consume a revocation snapshot as an EMBEDDED artifact rather than
 #    their own top-level operation, and (before this phase) read its
