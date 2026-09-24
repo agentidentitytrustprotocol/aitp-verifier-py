@@ -222,6 +222,16 @@ def _sweep(spec_dir: Path, op: str) -> list[str]:
                     # finding about the verifier under test, which hasn't
                     # been called yet.
                     continue
+                # `verify_tct`/`verify_delegation_token` require a top-level
+                # `policy` key (a revocation decision is mandatory -- see
+                # `/reconcile` on `plans/hardening-issues-30-31.md`), which is
+                # a Python-calling-convention argument this harness's own
+                # documented scope deliberately never mutates or deletes (see
+                # module docstring). Supply the harness's own default so every
+                # mutation still reaches the wire-artifact field under test,
+                # the same role `run_conformance.py` plays for its fixtures.
+                if op in ("verify_tct", "verify_delegation_token"):
+                    minted.setdefault("policy", {"fail_mode": "fail_open"})
                 try:
                     OPERATIONS[op](minted)
                 except AitpError:

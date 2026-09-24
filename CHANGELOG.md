@@ -47,45 +47,68 @@ here, so a future integrator has one place to check before upgrading.
   they are a behavior change for a caller who was passing junk in that field to a
   single-hop verification and getting away with it. A genuinely absent
   `revocation_snapshots` is unaffected. (issue #30)
-- **`verify_tct` and `verify_delegation_token` accept an optional top-level `policy`
-  object** — `{"fail_mode": ..., "max_staleness_secs": ...}`, the same shape
-  `verify_revocation_snapshot` has always taken — governing what happens when *no* trusted,
-  applicable revocation snapshot was supplied. **The default is permissive: an input with
-  no `policy` key behaves exactly as it did before this key existed, and fail-closed is an
-  explicit opt-in.** Supplying `policy: {}` is enough to opt in: within a supplied
-  `policy`, an absent `fail_mode` resolves to `fail_closed`, matching
-  `verify_revocation_snapshot`'s own long-standing `policy.get("fail_mode",
-  "fail_closed")`. Under an effective `fail_closed`, absence is rejected with `TCT_REVOKED`
-  (`verify_tct`) or `DELEGATION_SOURCE_TCT_REVOKED` (`verify_delegation_token`) —
-  RFC-AITP-0008 §3.1's "unknown is treated as revoked"; `soft_fail` and `fail_open` verify
-  normally. A non-dict `policy`, an unrecognized mode string, or a `fail_mode` of the wrong
-  JSON type (`5`, `None`, `[]`) all resolve to `fail_closed`: unrecognized configuration is
-  never silently permissive, and never a raw `TypeError`/`AttributeError`.
+- **`verify_tct` and `verify_delegation_token` require a top-level `policy` object** —
+  `{"fail_mode": ..., "max_staleness_secs": ...}`, the same shape `verify_revocation_snapshot`
+  has always taken — governing what happens when *no* trusted, applicable revocation
+  snapshot was supplied. **A revocation decision is mandatory, not optional: a caller
+  supplying no `policy` — and, on `verify_tct` only, no `issuer_revocation_list.fail_mode`
+  fallback either (see rung 2 below) — gets a raw `KeyError("policy")`, never a silent
+  `fail_open`.** This was reversed from this release's own initial permissive-default
+  design via `/reconcile`, before any real caller could come to depend on it — see
+  `ASSUMPTIONS.md`/`DECISIONS.md` for the full reasoning, including why the
+  conformance-pack constraint that originally justified the permissive default does not,
+  on inspection, force it: `run_conformance.py` supplies the deployment's own policy for
+  fixtures that carry none, the same role it already plays for other call-time-only inputs
+  like `_feature`. A caller with no revocation infrastructure must say so explicitly —
+  `policy: {"fail_mode": "fail_open"}` — rather than getting that outcome by omission.
+  Supplying `policy: {}` is enough to opt into fail-closed: within a supplied `policy`, an
+  absent `fail_mode` resolves to `fail_closed`, matching `verify_revocation_snapshot`'s own
+  long-standing `policy.get("fail_mode", "fail_closed")`. Under an effective `fail_closed`,
+  absence is rejected with `TCT_REVOKED` (`verify_tct`) or
+  `DELEGATION_SOURCE_TCT_REVOKED` (`verify_delegation_token`) — RFC-AITP-0008 §3.1's
+  "unknown is treated as revoked"; `soft_fail` and `fail_open` verify normally. A non-dict
+  `policy`, an unrecognized mode string, or a `fail_mode` of the wrong JSON type (`5`,
+  `None`, `[]`) all resolve to `fail_closed`: unrecognized configuration is never silently
+  permissive, and never a raw `TypeError`/`AttributeError`. On `verify_delegation_token`,
+  an effective `fail_closed` governs only the verifier's own (`self_aid`'s) deny list — the
+  RFC-AITP-0006 §4 step-7 / RFC-AITP-0011 §6 source-TCT check — and is deliberately **not**
+  extended to require a trusted snapshot for every intermediate hop issuer on the multi-hop
+  path: an intermediate hop's absent revocation data is unaffected by `policy` and proceeds
+  under every mode, unchanged by this release.
 
   The effective mode resolves in strict precedence: (1) a supplied top-level `policy` is
   **authoritative** and cannot be overridden by anything in the input artifact; (2)
-  `verify_tct` only — `issuer_revocation_list["fail_mode"]`; (3) otherwise `fail_open`,
-  preserving the pre-`policy` behavior. Rung (2) is deliberately below rung (1) because the
+  `verify_tct` only — `issuer_revocation_list["fail_mode"]`; (3) otherwise — no `policy`
+  and, on `verify_tct`, no wrapper `fail_mode` either — **raise `KeyError("policy")`**, not
+  a default. Rung (2) is deliberately below rung (1) because the
   `{revocation_list, signature}` wrapper is unsigned caller-supplied data: were it to
   outrank an explicitly configured `policy`, a deployment that had chosen `fail_closed`
   could be silently downgraded by whatever assembled the wrapper. In the one position it
-  does hold — the deployment said nothing — it can only tighten. `verify_delegation_token`
-  has no rung (2): `revocation_snapshots` records are `{issuer_aid, snapshot}` and carry no
-  policy member, and inventing one would widen the wire shape rather than read it.
+  does hold — the deployment supplied no top-level `policy` at all — it is what keeps that
+  specific case from raising: a caller whose only outstanding fail-mode signal is the
+  wrapper's own declared member (as the spec's own `tct-004` fixture already carries) still
+  gets a decision instead of `KeyError`. `verify_delegation_token` has no rung (2):
+  `revocation_snapshots` records are `{issuer_aid, snapshot}` and carry no policy member,
+  and inventing one would widen the wire shape rather than read it — so `policy` is
+  unconditionally required there.
 
-  Two consequences to check before upgrading, both on `verify_tct`. It **now honors
+  Two more consequences to check before upgrading, both on `verify_tct`. It **now honors
   `issuer_revocation_list.fail_mode`, which it previously ignored entirely** even though
   the spec's own `tct-004` fixture carries that member — so an input supplying a wrapper
-  that declares `fail_mode: "fail_closed"` and no top-level `policy` is now governed by it.
-  And a trusted snapshot whose **signed** `issuer` is not this TCT's `iss` is now treated
-  as *absent* and answered by the effective `fail_mode`, rather than being silently
-  skipped — under a `fail_closed` wrapper that input now rejects where it previously
-  verified. (The wrapper's own unsigned `issuer` label remains ignored for every trust
-  decision: the signed value wins.) Unchanged in both entry points: an
+  that declares `fail_mode: "fail_closed"` and no top-level `policy` is now governed by it
+  instead of raising. And a trusted snapshot whose **signed** `issuer` is not this TCT's
+  `iss` is now treated as *absent* and answered by the effective `fail_mode`, rather than
+  being silently skipped — under an effective `fail_closed` that input now rejects where it
+  previously verified. (The wrapper's own unsigned `issuer` label remains ignored for every
+  trust decision: the signed value wins.) Unchanged in both entry points: an
   obtained-but-untrustworthy snapshot is never answered by `fail_mode` and still raises its
   own `REVOCATION_SNAPSHOT_INVALID` / `UNKNOWN_FIELD` /
-  `REVOCATION_SNAPSHOT_SIGNATURE_INVALID` under every mode, and snapshot
-  freshness/expiry is evaluated only when a top-level `policy` is supplied. (issue #30)
+  `REVOCATION_SNAPSHOT_SIGNATURE_INVALID` under every mode. On `verify_delegation_token`,
+  snapshot freshness/staleness is now evaluated on every successful call, since reaching one
+  requires a `policy` decision to already have been made — the asymmetry this module
+  previously documented, where an explicitly permissive `policy` over a stale snapshot
+  could verify while the identical input with no `policy` at all rejected outright, can no
+  longer be constructed by any caller once `policy` is mandatory. (issue #30)
 - **`verify_revocation_snapshot` now honors `fail_mode: "fail_open"`**, which previously
   fell through to the `fail_closed` branch and so behaved identically to it, raising
   `TCT_REVOKED` for a stale or wrong-issuer snapshot — a valid RFC-AITP-0008 §3.1 mode

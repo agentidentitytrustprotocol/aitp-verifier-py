@@ -165,6 +165,11 @@ impact.
 
 ### An absent `policy` means today's permissive behavior, not `fail_closed`
 
+**Superseded by `/reconcile` (2026-09-23) — see the Status line at the end of this entry
+for the reversal actually shipped.** The rest of this entry is kept as originally written
+(the assumption as it was made, and the reasoning weighed at the time) since that is the
+record `/reconcile` itself worked from; do not read the body below as current behavior.
+
 **What changed:** `verify_tct`'s input contract gains one optional top-level key, `policy`,
 spelled exactly as `verify_revocation_snapshot`'s existing required one
 (`{"fail_mode": ..., "max_staleness_secs": ...}`). The effective `fail_mode` it resolves
@@ -224,7 +229,24 @@ RFC-AITP-0008 §3.2 treating a stale snapshot as data the verifier has no busine
 rather than as a deny list to consult anyway. Deployments that want the strictest reading of
 a stale-but-hit snapshot should use `fail_closed`, under which both spellings reject.
 
-**Status:** UNCONFIRMED — pending `/reconcile`.
+**Status:** CHANGED (2026-09-23, via `/reconcile`). Fable's independent analysis
+recommended reversing rule 3 from a silent `fail_open` default to a mandatory decision —
+no `policy` key and no wrapper `fail_mode` now raises `KeyError("policy")` — and the user
+chose that option directly (`AskUserQuestion`: "Require policy (Fable's pick)") over
+"fail-closed by default", "confirm as shipped (permissive default)", and "defer". See
+`DECISIONS.md`'s "`verify_tct`/`verify_delegation_token`'s absent-`policy` default" entry
+for Fable's full analysis (the empirical conformance-pack finding, the Rust
+reference-implementation precedent, and the eager-vs-lazy resolution fix this reversal
+required in `delegation.py`). Rules 1 and 2 are unchanged; only rule 3 changed, so this
+does not reopen the Phase 8 fail-closed-for-untrustworthy-snapshots decision, which this
+entry's own "Why" paragraph above already distinguishes. The "consequence worth stating
+outright" paragraph above still holds for `verify_tct` specifically, because rung 2 (the
+wrapper's own `fail_mode`) remains a way to reach a successful call with no *top-level*
+`policy` — staleness rule (c) is gated on a top-level `policy` being present, not on the
+effective fail mode being resolved, so a caller relying on the wrapper alone still sees
+this asymmetry. It does **not** hold for `verify_delegation_token` any more (Phase 4 below
+has no rung 2, so "no policy at all" is now unconditionally unreachable by a successful
+call, and the asymmetry it produced is unconstructible with it).
 
 ### The `different_issuer` test flip: a wrapper-declared `fail_closed` now rejects where the same input verified
 
@@ -256,8 +278,14 @@ issuer and relied on success will now see `TCT_REVOKED`; no conformance fixture 
 (`tct-004`'s snapshot is from the TCT's own issuer and lists its `jti`, so it rejects for the
 deny-list reason, unchanged).
 
-**Status:** UNCONFIRMED — pending `/reconcile`, alongside the default-mode entry above (it is
-that decision's blast radius on existing behavior, not a separate design choice).
+**Status:** CONFIRMED (2026-09-23, via `/reconcile`) — unaffected by the default-mode
+reversal above, so confirmed as originally shipped with no further code change. This test
+exercises rung 2 (a wrapper that declares `fail_mode` explicitly), which is reached before
+rung 3 is ever consulted; the reversal changed only rung 3 (no `policy` and no wrapper
+`fail_mode`, now `KeyError` instead of `fail_open`). Rung 1/2 precedence and behavior are
+untouched, so this entry's own rejection/pass pair stays exactly as pinned by
+`test_tct_revocation_snapshot_different_issuer_under_wrapper_fail_closed_is_revoked` /
+`..._under_wrapper_soft_fail_verifies`.
 
 ## Phase 4 (`plans/hardening-issues-30-31.md`) — `verify_delegation_token`'s absence policy (issue #30)
 
@@ -299,25 +327,59 @@ RFC-AITP-0011 is Draft, its §6 per-hop lookup says nothing about absence, and `
 (a draft-opt-in success fixture) supplies none. Logged as a decision so `/reconcile` sees a
 boundary that was chosen, not one that was overlooked.
 
-**How to apply:** Callers wanting RFC-AITP-0008 §3.1's fail-closed posture on delegation MUST
-opt in explicitly by passing `policy` (any dict, including `{}`); callers that pass nothing
-keep the pre-existing behavior and are unaffected. No conformance fixture supplies a
-top-level `policy` to this operation, so all 10 `verify_delegation_token` fixtures pass
-unchanged and `run_conformance.py`'s counts do not move. Two adjacent behaviors are
-preserved untouched and MUST stay that way if the default is ever flipped: a malformed
-`revocation_snapshots` (non-list, truthy or falsy) still raises
-`REVOCATION_SNAPSHOT_INVALID`, and an untrustworthy snapshot still reports its own code,
-under **every** `fail_mode` — obtained-but-untrustworthy is never routed through the absence
-policy. The one counter-intuitive consequence the Phase 3 entry records — an explicitly
-permissive `policy` over a *stale* snapshot that genuinely lists the handle verifies, where
-the identical input with no `policy` rejects, because freshness is evaluated before the
-deny-list scan and only under a supplied policy — holds identically here, for the same
-reason, and `tests/test_unknown_fields.py` pins both directions on both paths. If
-`/reconcile` reverses the default, the per-hop boundary in (2) is a *separate* question and
-does not flip with it.
+**How to apply — superseded, kept for the historical record.** *The paragraph below
+described the originally-shipped permissive default; it no longer describes current
+behavior. See the Status line for what actually shipped.* Callers wanting RFC-AITP-0008
+§3.1's fail-closed posture on delegation MUST opt in explicitly by passing `policy` (any
+dict, including `{}`); callers that pass nothing keep the pre-existing behavior and are
+unaffected. No conformance fixture supplies a top-level `policy` to this operation, so all
+10 `verify_delegation_token` fixtures pass unchanged and `run_conformance.py`'s counts do
+not move. Two adjacent behaviors are preserved untouched and MUST stay that way if the
+default is ever flipped: a malformed `revocation_snapshots` (non-list, truthy or falsy)
+still raises `REVOCATION_SNAPSHOT_INVALID`, and an untrustworthy snapshot still reports its
+own code, under **every** `fail_mode` — obtained-but-untrustworthy is never routed through
+the absence policy. The one counter-intuitive consequence the Phase 3 entry records — an
+explicitly permissive `policy` over a *stale* snapshot that genuinely lists the handle
+verifies, where the identical input with no `policy` rejects, because freshness is
+evaluated before the deny-list scan and only under a supplied policy — held identically
+here, for the same reason, before this reversal.
 
-**Status:** UNCONFIRMED — pending `/reconcile`, as the same decision as the Phase 3
-default-mode entry above rather than an independent one.
+**What actually shipped instead.** `policy` is now mandatory on `verify_delegation_token`
+with **no** wrapper-level fallback (unlike `verify_tct`'s rung 2 — `revocation_snapshots`
+records carry no policy member to fall back to, per the "What changed" paragraph above):
+supplying no `policy` at all now raises `KeyError("policy")`. `run_conformance.py` was
+updated to supply `policy: {"fail_mode": "fail_open"}` for `verify_tct`/
+`verify_delegation_token` fixtures that carry none — re-run live, confirming Fable's
+central empirical claim: the pack stays 68 passed / 0 failed / 1 skipped with no fixture
+file edited, because the runner is itself a deployment and can supply its own policy the
+same way it already supplies `_feature`. A direct, welcome consequence: because every
+successful call now requires a `policy` decision to have been made, the "consequence"
+paragraph above — the asymmetry where an explicit permissive `policy` over a stale
+snapshot verifies while no `policy` at all rejects — is now **structurally impossible to
+construct** by any legitimate caller on this entry point (it survives only on `verify_tct`,
+via its rung-2 wrapper fallback — see the Phase 3 entry's Status line). Rewritten into
+`test_delegation_staleness_is_always_evaluated_once_policy_is_mandatory`, which now asserts
+the previously-rejecting case verifies instead. A second, independent fix this reversal
+required: `_check_source_tct_revocation` originally resolved `_effective_fail_mode` lazily,
+only inside the `if not applicable:` branch — a caller who always supplies fresh/applicable
+snapshots would never discover a missing `policy` key until the first time absence was
+actually reached, potentially in production. Moved to the unconditional top of the
+function so a missing `policy` is discovered on the very first call, not on the first
+stale day.
+
+**Status:** Split by `/reconcile` (2026-09-23) into its two constituent points. **(1) The
+default** — CHANGED (2026-09-23, via `/reconcile`). Fable analyzed this jointly with the
+Phase 3 entry (one decision governing both entry points, per the "same underlying
+decision" note above) and the user chose "Require policy" directly. See `DECISIONS.md`'s
+"`verify_tct`/`verify_delegation_token`'s absent-`policy` default" entry for the full
+analysis; see the "What actually shipped instead" paragraph above for what changed in this
+module specifically. **(2) The per-hop non-goal** — CONFIRMED (2026-09-23, via
+`/reconcile`). Opus's independent analysis: see `DECISIONS.md`'s "Phase 4 — the multi-hop
+per-hop sweep is deliberately not governed by `fail_closed`" entry. The one follow-up it
+produced (stating the scope limit in `CHANGELOG.md`, which previously covered only the
+default) was applied immediately. This per-hop boundary is unaffected by (1)'s reversal —
+it was already, and remains, a separate question from the top-level `policy` default, per
+the "if `/reconcile` reverses the default" sentence originally logged here.
 
 **Follow-up noted during verification, not a decision to confirm — RESOLVED during this
 plan's finalization pass (2026-09-23), not left for later:** `_resolve_fail_mode`,

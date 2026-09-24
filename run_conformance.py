@@ -132,6 +132,20 @@ def run_fixture(fixture: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str
         return SKIP, f"could not mint fixture: {exc}"
     minted["_feature"] = fixture.get("feature")
 
+    # `verify_tct`/`verify_delegation_token` require a top-level `policy` key
+    # (a revocation decision is mandatory, not optional -- a caller must say
+    # explicitly how to treat absent revocation data, per `/reconcile` on
+    # `plans/hardening-issues-30-31.md`). This runner is a deployment, the
+    # same role it already plays via `_feature` above, and most conformance
+    # fixtures predate `policy` entirely: supply the pack's own long-standing
+    # default (`fail_open`, i.e. run the fixture as every implementation ran
+    # it before `policy` existed) for one that carries none, exactly as a
+    # real deployment would supply its own configured policy rather than
+    # leaving the decision unmade. A fixture that DOES carry a `policy`
+    # always wins -- `setdefault` only fills the gap, never overrides.
+    if op in ("verify_tct", "verify_delegation_token"):
+        minted.setdefault("policy", {"fail_mode": "fail_open"})
+
     try:
         OPERATIONS[op](minted)
         outcome, code = "success", None

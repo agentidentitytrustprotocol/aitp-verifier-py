@@ -148,7 +148,8 @@ def test_tct_ext_claim_ignored(spec_dir: Path) -> None:
     keys = load_kat_keys(spec_dir)
     claims = _tct_claims(ext={"com.example.vendor_hint": "opaque"})
     token = encode_jws("aitp-tct+jwt", claims, keys[ISSUER], alg="EdDSA")
-    assert verify_tct({"tct_token": token}) == {"grants": ["macp.mode.task.v1"]}
+    inp = {"tct_token": token, "policy": {"fail_mode": "fail_open"}}
+    assert verify_tct(inp) == {"grants": ["macp.mode.task.v1"]}
 
 
 def test_tct_cnf_unknown_key_rejected(spec_dir: Path) -> None:
@@ -299,7 +300,8 @@ def test_delegation_ext_claim_ignored(spec_dir: Path) -> None:
     voucher_token = _mint_root_voucher(keys)
     claims = _delegation_claims(voucher_token, ext={"com.example.audit_tag": "abc"})
     token = encode_jws("aitp-delegation+jwt", claims, keys[SUBJECT], alg="EdDSA")
-    result = verify_delegation_token({"self_aid": ISSUER, "delegation_token": token})
+    inp = {"self_aid": ISSUER, "delegation_token": token, "policy": {"fail_mode": "fail_open"}}
+    result = verify_delegation_token(inp)
     assert result == {"grants": ["macp.mode.task.v1"]}
 
 
@@ -945,19 +947,24 @@ def _tct_applicable_snapshot_input(**body_overrides: Any) -> dict[str, Any]:
     return inp
 
 
-def test_tct_no_policy_and_no_snapshot_verifies_exactly_as_before(spec_dir: Path) -> None:
+def test_tct_no_policy_and_no_snapshot_raises_key_error(spec_dir: Path) -> None:
     """Resolution rule 3, stated as its own test rather than left to the
     unrelated assertions that happen to cover it: with no `policy` key and no
-    `issuer_revocation_list`, `verify_tct` is byte-for-byte what it was before
-    this key existed. The spec's own `tct-012` (`required_for_v0_2`) is exactly
-    this input shape, which is why the no-policy default is `fail_open` rather
-    than §3.1's configured-policy default of `fail_closed`.
+    `issuer_revocation_list`, `verify_tct` made no revocation decision at
+    all, and raises `KeyError("policy")` rather than silently defaulting to
+    `fail_open` -- a `/reconcile` reversal of this module's own initial
+    design (see `ASSUMPTIONS.md`/`DECISIONS.md`), applied before any real
+    caller could depend on the permissive default. The spec's own `tct-012`
+    (`required_for_v0_2`) is exactly this input shape; `run_conformance.py`
+    supplies the deployment's own policy for it rather than editing the
+    fixture, the same role it already plays for other call-time-only inputs.
     """
     keys = load_kat_keys(spec_dir)
     inp = _tct_policy_input()
     del inp["policy"]
     minted = mint_input(inp, REFERENCE_CLOCK, keys)
-    assert verify_tct(minted) == {"grants": ["macp.mode.task.v1"]}
+    with pytest.raises(KeyError):
+        verify_tct(minted)
 
 
 def test_tct_policy_fail_closed_with_no_snapshot_is_revoked(spec_dir: Path) -> None:
@@ -1075,12 +1082,13 @@ def test_tct_wrapper_misspelled_fail_mode_is_fail_closed(spec_dir: Path) -> None
     assert exc.value.code == "TCT_REVOKED"
 
 
-def test_tct_wrapper_without_a_fail_mode_and_no_policy_falls_through_to_fail_open(spec_dir: Path) -> None:
+def test_tct_wrapper_without_a_fail_mode_and_no_policy_raises_key_error(spec_dir: Path) -> None:
     """Resolution rule 3 reached through a *present* wrapper, rather than
-    through no `issuer_revocation_list` at all: the wrapper exists but declares
-    no `fail_mode`, and no top-level `policy` was supplied, so the default is
-    `fail_open` and this inapplicable (wrong-issuer) snapshot leaves the TCT
-    verifying exactly as it did before the key was read.
+    through no `issuer_revocation_list` at all: the wrapper exists but
+    declares no `fail_mode`, and no top-level `policy` was supplied -- no
+    decision was made through either channel, so this raises `KeyError`
+    rather than falling through to `fail_open` (the `/reconcile` reversal;
+    see `ASSUMPTIONS.md`/`DECISIONS.md`).
 
     The `del` is the point of the test -- `_tct_revocation_input`'s wrapper
     always carries `fail_mode: "fail_closed"` (mirroring `tct-004-revoked`),
@@ -1092,7 +1100,8 @@ def test_tct_wrapper_without_a_fail_mode_and_no_policy_falls_through_to_fail_ope
     inp = _tct_different_issuer_input()
     del inp["issuer_revocation_list"]["fail_mode"]
     assert "policy" not in inp
-    assert verify_tct(mint_input(inp, REFERENCE_CLOCK, keys)) == {"grants": ["macp.mode.task.v1"]}
+    with pytest.raises(KeyError):
+        verify_tct(mint_input(inp, REFERENCE_CLOCK, keys))
 
 
 @pytest.mark.parametrize("wrapper_mode", ["soft_fail", "fail_open"])
@@ -1422,6 +1431,7 @@ def test_delegation_revocation_snapshots_genuinely_absent_is_accepted_not_reject
     keys = load_kat_keys(spec_dir)
     minted = mint_input(_load_conformance_input(spec_dir, "del-mh-004"), REFERENCE_CLOCK, keys)
     del minted["revocation_snapshots"]
+    minted["policy"] = {"fail_mode": "fail_open"}
     verify_delegation_token(minted)
 
 
@@ -1441,6 +1451,7 @@ def test_delegation_revocation_index_keys_on_the_signed_issuer_not_the_wrapper_l
     assert inp["revocation_snapshots"][0]["issuer_aid"] == SUBJECT  # pin the fixture's own pre-condition
     inp["revocation_snapshots"][0]["issuer_aid"] = DELEGATE
     minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    minted["policy"] = {"fail_mode": "fail_open"}
     with pytest.raises(AitpError) as exc:
         verify_delegation_token(minted)
     assert exc.value.code == "DELEGATION_SOURCE_TCT_REVOKED"
@@ -1484,6 +1495,12 @@ def _single_hop_revoked_input(
     # and the voucher's src_jti is the handle §4 step 7 looks up.
     assert inp["self_aid"] == ISSUER
     assert inp["delegation_token_claims"]["voucher_claims"]["src_jti"] == DEL_001_SRC_JTI
+    # `policy` is now mandatory (a revocation decision is required -- see
+    # `/reconcile` on `plans/hardening-issues-30-31.md`). Every test built on
+    # this helper supplies genuine, present deny-list data and is testing
+    # whether it's consulted correctly, not the absence case -- `fail_open`
+    # is inert here, the same as any other mode would be.
+    inp["policy"] = {"fail_mode": "fail_open"}
     inp["revocation_snapshots"] = [
         {
             "issuer_aid": snapshot_issuer,
@@ -1700,20 +1717,52 @@ def test_delegation_absent_snapshot_fail_open_verifies(fixture_id: str, spec_dir
 
 
 @_BOTH_DELEGATION_PATHS
-def test_delegation_absent_snapshot_no_policy_verifies_exactly_as_before(
+def test_delegation_absent_snapshot_no_policy_raises_key_error(
     fixture_id: str, spec_dir: Path
 ) -> None:
     """Resolution rule 2, as its own test rather than left to the conformance
-    runner: with no `policy` key and no `revocation_snapshots`, both paths are
-    byte-for-byte what they were before this key existed. `del-001` is
-    `required_for_v0_2` and ships exactly this input shape, which is why the
-    no-policy default is `fail_open` rather than §3.1's configured-policy
-    default of `fail_closed`.
+    runner: with no `policy` key at all, this entry point has no fallback
+    source for a decision (unlike `tct.py`'s wrapper rung), so it raises
+    `KeyError("policy")` rather than silently defaulting to `fail_open` -- a
+    `/reconcile` reversal of this module's own initial design (see
+    `ASSUMPTIONS.md`/`DECISIONS.md`), applied before any real caller could
+    depend on the permissive default. `del-001`/`del-mh-001` are both
+    success fixtures shipping exactly this input shape;
+    `run_conformance.py` supplies the deployment's own policy for them
+    rather than editing the fixtures, the same role it already plays for
+    other call-time-only inputs.
     """
     keys = load_kat_keys(spec_dir)
     inp = _delegation_policy_input(spec_dir, fixture_id)
     del inp["policy"]
-    assert verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys)) == _DELEGATION_GRANTS
+    with pytest.raises(KeyError):
+        verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys))
+
+
+@_BOTH_DELEGATION_PATHS
+def test_delegation_no_policy_with_a_fresh_applicable_snapshot_still_raises_key_error(
+    fixture_id: str, spec_dir: Path
+) -> None:
+    """Regression guard for `_check_source_tct_revocation`'s eager, not lazy,
+    resolution -- distinct from the sibling test above, which supplies no
+    revocation data at all and so cannot tell eager and lazy resolution
+    apart (both reach the same absence branch either way).
+
+    Here `applicable` is genuinely non-empty: a fresh, self-signed snapshot
+    for `self_aid` that lists nothing, so absent lazy resolution the
+    function would never reach the branch that calls `_effective_fail_mode`
+    at all and would return successfully with `policy` never having been
+    consulted -- exactly the "caller with always-fresh snapshots discovers
+    the missing key only in production, on the first stale day" gap the
+    module docstring records `/reconcile` closing. With `policy` resolved
+    eagerly, this still raises `KeyError("policy")` immediately.
+    """
+    keys = load_kat_keys(spec_dir)
+    inp = _delegation_policy_input(spec_dir, fixture_id)
+    del inp["policy"]
+    inp["revocation_snapshots"] = [_delegation_snapshot_record(issuer=ISSUER, entries=[])]
+    with pytest.raises(KeyError):
+        verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys))
 
 
 @_BOTH_DELEGATION_PATHS
@@ -1829,22 +1878,31 @@ def test_delegation_absent_snapshot_stale_snapshot_verifies_under_soft_fail(
 
 
 @_BOTH_DELEGATION_PATHS
-def test_delegation_staleness_is_not_evaluated_without_a_top_level_policy(
+def test_delegation_staleness_is_always_evaluated_once_policy_is_mandatory(
     fixture_id: str, spec_dir: Path
 ) -> None:
-    """With no `policy` key, freshness and expiry are never evaluated at all --
-    the property that keeps this phase auditable. A long-stale, long-expired
-    snapshot from A that genuinely lists this path's `src_jti` still reaches
-    the deny-list scan and still rejects.
+    """Before the `/reconcile` reversal, freshness/expiry were evaluated only
+    when a top-level `policy` was supplied -- so a caller with NO `policy` at
+    all got `fail_open`'s default AND skipped staleness filtering entirely,
+    meaning a long-stale, long-expired, genuinely-listing snapshot still
+    reached the deny-list scan and rejected (a documented asymmetry: an
+    explicit `fail_open` policy over that same stale snapshot verified,
+    while no policy at all rejected).
 
-    Non-vacuous by construction: with no `policy` the effective mode is
-    `fail_open`, so had staleness been evaluated the input would have taken the
-    absence branch and *verified*. The rejection is only reachable because the
-    scan ran.
+    Now that `policy` is mandatory, that asymmetry cannot occur: every call
+    that reaches this far necessarily has `"policy" in inp`, so staleness
+    filtering is now unconditional. The identical long-stale, long-expired,
+    genuinely-listing snapshot from A, under an explicit `fail_open` policy,
+    now VERIFIES -- the stale snapshot is filtered out as inapplicable
+    before the deny-list scan ever runs, exactly matching what
+    `test_delegation_absent_snapshot_stale_snapshot_verifies_under_soft_fail`
+    already pins for `soft_fail`. This is the previously-documented
+    non-monotonicity collapsing, not a new gap: it can no longer be
+    constructed by any legitimate caller, since "no policy at all" now
+    raises `KeyError` before reaching this code.
     """
     keys = load_kat_keys(spec_dir)
-    inp = _load_conformance_input(spec_dir, fixture_id)
-    assert "policy" not in inp
+    inp = _delegation_policy_input(spec_dir, fixture_id, fail_mode="fail_open")
     inp["revocation_snapshots"] = [
         _delegation_snapshot_record(
             entries=[{"jti": _SRC_JTI[fixture_id], "revoked_at": NOW}],
@@ -1852,10 +1910,7 @@ def test_delegation_staleness_is_not_evaluated_without_a_top_level_policy(
             expires_at=NOW - 1,
         )
     ]
-    with pytest.raises(AitpError) as exc:
-        verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys))
-    assert exc.value.code == "DELEGATION_SOURCE_TCT_REVOKED"
-    assert exc.value.message == "source TCT revoked"
+    assert verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys)) == _DELEGATION_GRANTS
 
 
 @_BOTH_DELEGATION_PATHS

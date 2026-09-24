@@ -15,20 +15,26 @@ issuer's revocation snapshot, once supplied, is itself fully verified
 ``verify_snapshot_trust``) before its ``entries`` are consulted — not merely
 consulted at face value.
 
-``verify_tct``'s input carries one **optional** top-level ``policy`` key,
-spelled exactly as ``verify_revocation_snapshot``'s own required one
-(``{"fail_mode": ..., "max_staleness_secs": ...}``). It answers the single
-question RFC-AITP-0008 §3.1 reserves for ``fail_mode``: what to do when **no
-trusted, applicable revocation snapshot was supplied at all** — "unknown is
-treated as revoked" under ``fail_closed``, proceed under
-``soft_fail``/``fail_open``. It never answers what to do about a snapshot that
-*was* obtained and cannot be trusted; §1.5 decides that first, and
-``verify_snapshot_trust`` still reports that snapshot's own defect under every
-mode. With no ``policy`` supplied and no wrapper-level ``fail_mode``, this
-module behaves exactly as it did before the key existed (fail-open on
-absence) — see ``_check_revocation`` for the full precedence and
-``ASSUMPTIONS.md`` for why that default, rather than §3.1's configured-policy
-default of ``fail_closed``, governs the no-policy case.
+``verify_tct``'s input carries a top-level ``policy`` key, spelled exactly as
+``verify_revocation_snapshot``'s own (``{"fail_mode": ..., "max_staleness_secs":
+...}``). It answers the single question RFC-AITP-0008 §3.1 reserves for
+``fail_mode``: what to do when **no trusted, applicable revocation snapshot
+was supplied at all** — "unknown is treated as revoked" under
+``fail_closed``, proceed under ``soft_fail``/``fail_open``. It never answers
+what to do about a snapshot that *was* obtained and cannot be trusted; §1.5
+decides that first, and ``verify_snapshot_trust`` still reports that
+snapshot's own defect under every mode. **A revocation decision is
+mandatory, not optional**: a caller supplying neither a top-level ``policy``
+nor a wrapper-declared ``fail_mode`` (``issuer_revocation_list.fail_mode``)
+gets a raw ``KeyError("policy")``, the same failure mode this function
+already gives a caller who omits any of its other required top-level
+arguments (``tct_token``, ...) — never a silent ``fail_open``. A caller with
+no revocation infrastructure must say so explicitly:
+``policy={"fail_mode": "fail_open"}``. See ``_effective_fail_mode`` for the
+full precedence and ``ASSUMPTIONS.md``/``DECISIONS.md`` for why a mandatory
+decision, not a configured default, governs the no-policy case — reversed
+from this module's own initial design via `/reconcile` before any real
+caller could depend on the permissive default.
 
 ``check_tct_claims_shape`` is exported so ``handshake.py`` and
 ``sessionbundle.py`` -- which each verify an *embedded* peer-issued TCT
@@ -160,11 +166,27 @@ def _effective_fail_mode(inp: dict[str, Any], revlist: Any) -> str:
        ``tct-004-revoked`` fixture already carries and this module read
        nowhere before (issue #30's "the wrapper's declared members are never
        read at all").
-    3. Else -- no ``policy`` key and no wrapper ``fail_mode`` -- ``fail_open``,
-       preserving this module's pre-``policy`` behavior byte for byte. See
-       ``ASSUMPTIONS.md``: an unconditional fail-closed default would turn the
-       spec's own ``tct-012`` (``required_for_v0_2``) success fixture red,
-       since it supplies no revocation data at all.
+    3. Else -- no ``policy`` key and no wrapper ``fail_mode`` -- **raise
+       ``KeyError("policy")``**. A revocation decision is mandatory: a caller
+       supplying neither a top-level ``policy`` nor a wrapper-declared
+       ``fail_mode`` has made no decision at all, and this module's earlier
+       behavior of silently treating that as ``fail_open`` reintroduced
+       exactly the "revocation check skipped by omission, not by choice" bug
+       class issue #30 was filed against -- merely made optional to close
+       rather than impossible to have. ``policy`` joins ``tct_token`` and
+       ``self_aid`` as one of this function's own required top-level call
+       arguments (see ``tests/test_boundary_contract.py``'s own documented
+       scope exclusion for exactly this category of key); it is not a wire
+       artifact, so a raw ``KeyError`` here is consistent with how every
+       other required top-level argument already fails when a caller omits
+       it, not a violation of this library's "``AitpError`` or a verdict"
+       contract for artifacts that actually arrive over the wire. See
+       ``ASSUMPTIONS.md`` and ``DECISIONS.md`` for the full reasoning,
+       including why the conformance-pack constraint that originally
+       justified the permissive default does not, on inspection, force it:
+       ``run_conformance.py`` supplies the deployment's own policy for
+       fixtures that carry none, the same role it already plays for other
+       call-time-only inputs.
 
     **Why 1 outranks 2, and why that ordering is security-relevant.**
     ``issuer_revocation_list.fail_mode`` is an *unsigned* member of the
@@ -188,7 +210,7 @@ def _effective_fail_mode(inp: dict[str, Any], revlist: Any) -> str:
         return resolve_fail_mode(policy.get("fail_mode", "fail_closed"))
     if isinstance(revlist, dict) and "fail_mode" in revlist:
         return resolve_fail_mode(revlist["fail_mode"])
-    return "fail_open"
+    raise KeyError("policy")
 
 
 def _apply_absence(fail_mode: str, detail: str) -> None:
@@ -238,17 +260,19 @@ def _check_revocation(claims: dict[str, Any], inp: dict[str, Any], now: int) -> 
       wins, as ``delegation.py::_revocation_index`` already establishes);
     * (c) **only when a top-level ``policy`` is supplied**: the snapshot is
       expired or staler than ``max_staleness_secs``. Gating (c) on ``policy``
-      is what keeps this diff auditable -- with no ``policy`` key, freshness
-      and expiry are never evaluated at all, so on *that* dimension
-      ``verify_tct`` behaves exactly as it did before this key existed. (Only
-      that dimension: a wrapper carrying ``fail_mode`` with no top-level
-      ``policy`` does change the outcome on absence, via rule 2 of
-      ``_effective_fail_mode`` -- it is "no ``policy`` **and** no
-      wrapper-level ``fail_mode``" that is byte-for-byte the old behavior,
-      as this module's own docstring states.) The wrapper's ``fail_mode``
-      selects what happens *on* absence; it does not switch on freshness
-      evaluation, because ``max_staleness_secs`` is a deployment value with no
-      per-wrapper spelling in the fixture shape.
+      is what keeps this diff auditable -- with no ``policy`` key at all,
+      freshness and expiry are never evaluated (they were never evaluated
+      before this key existed either, and that much is unaffected by
+      `/reconcile`'s mandatory-decision reversal below). What DID change: a
+      caller supplying neither a top-level ``policy`` nor a wrapper-level
+      ``fail_mode`` no longer silently resolves to ``fail_open`` -- see
+      ``_effective_fail_mode``'s rule 3, which now raises ``KeyError``
+      instead. A wrapper carrying ``fail_mode`` with no top-level ``policy``
+      still governs the outcome on absence via rule 2, unaffected by that
+      reversal. The wrapper's ``fail_mode`` selects what happens *on*
+      absence; it does not switch on freshness evaluation, because
+      ``max_staleness_secs`` is a deployment value with no per-wrapper
+      spelling in the fixture shape.
 
     Present, trusted and applicable ⇒ the deny-list scan, unchanged.
     """
