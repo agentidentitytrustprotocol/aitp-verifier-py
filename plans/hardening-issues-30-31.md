@@ -511,7 +511,18 @@ source-TCT lookup, so the docstring stops documenting the gap as if it were the 
 
 ### Phase 3 — `verify_tct` gains an optional `policy`/`fail_mode`, and `revocation.py`'s `fail_open` stops behaving like `fail_closed` (closes #30's core)
 
-**Status:** NOT STARTED.
+**Status:** DONE (2026-09-24) — implemented exactly as planned, including the corrected
+precedence order (a supplied top-level `policy` is authoritative; the wrapper's `fail_mode`
+is consulted only when no `policy` key is present; no policy at all preserves today's
+`fail_open` behavior). Independently verified `PASS` across two rounds: the first
+mutation-tested the security-critical precedence ordering itself (confirmed it fails exactly
+as expected under the original, inverted draft ordering), the `revocation.py` `fail_open`
+fix, the freshness-gated-on-`policy` behavior, and the untrustworthy-branch isolation, and
+found 4 minor gaps (a raw `OverflowError` on `max_staleness_secs: Infinity`, an undocumented
+non-monotonicity where a permissive policy can be weaker than no policy at all, 4 untested
+branches, 2 doc/naming inaccuracies); all four closed and re-verified `PASS` in a second
+round. Two `UNCONFIRMED` `ASSUMPTIONS.md` entries logged for `/reconcile` at the end of this
+plan, per the plan's Open questions section.
 
 **Delivers:** `verify_tct`'s input contract gains one optional top-level key, `policy`,
 mirroring `verify_revocation_snapshot`'s existing `inp["policy"]` shape; `_check_revocation`

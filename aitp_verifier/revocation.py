@@ -16,8 +16,15 @@ obtained and could not trust reports what was wrong with it, and the policy's
 A snapshot that is unreachable, stale beyond ``max_staleness_secs``, or issued
 by someone other than the expected peer is **absent** — the peer never obtained
 one it could evaluate. Only that case consults ``fail_mode``: ``fail_closed``
-treats unknown revocation status as revoked (``TCT_REVOKED``), ``soft_fail``
-reports the queried jti not-revoked and stale (the safe read-only subset).
+treats unknown revocation status as revoked (``TCT_REVOKED``), while both
+``soft_fail`` and ``fail_open`` — RFC-AITP-0008 §3.1's two availability-first
+modes, which this entry point cannot tell apart because it returns no grants to
+restrict — report the queried jti not-revoked and ``stale: True`` (the safe
+read-only subset). ``stale`` there means "this verifier has no fresh,
+applicable revocation *status* for the queried subject", not "this snapshot
+document is old": the branch is ``not (issuer_ok and fresh)``, so it fires for
+a perfectly fresh snapshot issued by the wrong peer too. Any mode string
+outside §3.1's three is treated as ``fail_closed`` — never silently permissive.
 
 Every one of those codes is raised, not folded into a boolean. An earlier
 version of this module collapsed all three untrustworthy cases into a
@@ -182,7 +189,14 @@ def verify_revocation_snapshot(inp: dict[str, Any], now: int | None = None) -> d
     issuer_ok = body["issuer"] == inp.get("expected_issuer")
     fresh = (now - int(body["published_at"])) <= int(policy["max_staleness_secs"]) and now < int(body["expires_at"])
     if not (issuer_ok and fresh):
-        if fail_mode == "soft_fail":
+        # All three §3.1 modes are handled explicitly. `fail_open` used to fall
+        # through to the `raise` below and so behaved identically to
+        # `fail_closed` -- a valid mode silently mishandled, invisible because
+        # no conformance fixture exercises it. It shares `soft_fail`'s verdict
+        # rather than a bare `{"revoked": False}`: both mean "proceed on
+        # degraded revocation data", and dropping `stale` would make a degraded
+        # verdict indistinguishable from a fully-verified fresh one.
+        if fail_mode in ("soft_fail", "fail_open"):
             return {"revoked": False, "stale": True}
         raise AitpError("TCT_REVOKED", "no fresh valid revocation snapshot (fail_closed)")
 
