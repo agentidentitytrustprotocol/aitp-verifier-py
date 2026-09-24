@@ -524,6 +524,12 @@ branches, 2 doc/naming inaccuracies); all four closed and re-verified `PASS` in 
 round. Two `UNCONFIRMED` `ASSUMPTIONS.md` entries logged for `/reconcile` at the end of this
 plan, per the plan's Open questions section.
 
+**Post-ship update (2026-09-23, via `/reconcile`):** the "no policy at all preserves
+today's `fail_open` behavior" rung above was reversed — see Open questions and
+`DECISIONS.md` for the full record. Rule 3 now raises `KeyError("policy")`; the wrapper
+rung (2) is unchanged and remains the only way to reach a successful call with no
+top-level `policy`.
+
 **Delivers:** `verify_tct`'s input contract gains one optional top-level key, `policy`,
 mirroring `verify_revocation_snapshot`'s existing `inp["policy"]` shape; `_check_revocation`
 honors it, and also honors the per-wrapper `issuer_revocation_list.fail_mode` the spec's own
@@ -763,6 +769,15 @@ formula and `_FAIL_MODES` are now spelled out three times across `tct.py`/`deleg
 `revocation.py`) was logged to `ASSUMPTIONS.md` as a follow-up, not a blocking gap. One
 `UNCONFIRMED` `ASSUMPTIONS.md` entry logged, explicitly the same decision as Phase 3's, not a
 second one.
+
+**Post-ship update (2026-09-23, via `/reconcile`):** the "else `fail_open`" rung above was
+reversed, in lockstep with Phase 3 (same decision, both entry points) — see Open questions
+and `DECISIONS.md` for the full record. With no per-wrapper fallback rung at all on this
+entry point, `policy` is now unconditionally required: rule 2 raises `KeyError("policy")`
+rather than returning `"fail_open"`. `_check_source_tct_revocation` was also changed to
+resolve `_effective_fail_mode` eagerly at the top of the function rather than lazily inside
+the absence branch, so a caller discovers a missing `policy` on the first call rather than
+only the first time a snapshot is genuinely absent.
 
 **Delivers:** `verify_delegation_token` honors the identical optional `inp["policy"]`
 contract Phase 3 introduces, for the same absence case: when no trusted, applicable snapshot
@@ -1062,9 +1077,10 @@ convention.
   substantive enterprise change here: before this plan, `verify_tct`/`verify_delegation_token`
   were unconditionally availability-first on absence with no way to say otherwise; after it,
   a deployment handling high-value capabilities can pass `policy: {}` and get RFC-AITP-0008
-  §3.1's `fail_closed` posture. The default stays permissive for conformance reasons (see
-  Open questions) — which makes the `CHANGELOG.md` wording in Phase 5 load-bearing, not
-  cosmetic.
+  §3.1's `fail_closed` posture. **Superseded by `/reconcile` (2026-09-23):** the default no
+  longer stays permissive — see Open questions below for the reversal actually shipped. The
+  `CHANGELOG.md` wording remains load-bearing, now describing the mandatory-decision design
+  instead.
 - **Rollback**: the tests are the rollback signal, as before — no persisted state, no
   published package, no schema migration. Each phase is independently revertible; Phase 4 is
   the only one that must be reverted together with another (Phase 3), since they are one
@@ -1078,9 +1094,26 @@ convention.
 ## Open questions
 
 - **The one substantive open question: what an absent `policy` means for `verify_tct` and
-  `verify_delegation_token` (Phases 3–4).** Decided in this plan as **absent `policy` ⇒
-  today's permissive behavior preserved; `fail_closed` is an explicit opt-in, and supplying
-  `policy: {}` is enough to get it**. The reasoning, in order of weight: (1) an unconditional
+  `verify_delegation_token` (Phases 3–4). RESOLVED by `/reconcile` (2026-09-23) — see the
+  note immediately below before reading the rest of this bullet as current.** This plan
+  originally decided **absent `policy` ⇒ today's permissive behavior preserved** (the text
+  below is kept as the historical record of that reasoning). At `/reconcile`, Fable
+  analyzed this as the plan's own one genuine one-way door and recommended reversing it —
+  the conformance-pack constraint that justified the permissive default does not actually
+  force it (`run_conformance.py` can supply the deployment's own `policy` for fixtures
+  that carry none, verified live: 68 passed / 0 failed / 1 skipped, unchanged), and the
+  sibling Rust reference implementation (`aitp-rs`) already made the stricter call for its
+  own TCT path after its own security review. Presented to the user as four options
+  (Require policy / Fail-closed by default / Confirm as shipped / Defer); the user chose
+  **"Require policy."** `verify_tct`'s rule 3 and `verify_delegation_token`'s rule 2 (its
+  only no-`policy` rung, since it has no wrapper fallback) now raise `KeyError("policy")`
+  instead of returning `"fail_open"` — a caller with no revocation infrastructure must now
+  say so explicitly (`policy: {"fail_mode": "fail_open"}`) rather than getting that outcome
+  by omission. Full detail, including the code-level consequences and the test rewrites
+  this required, is in `DECISIONS.md`'s "`verify_tct`/`verify_delegation_token`'s
+  absent-`policy` default" entry and `ASSUMPTIONS.md`'s Phase 3/Phase 4 entries — this plan
+  file is not the durable record for it, `/reconcile`'s own tracked files are. The original
+  reasoning for the now-superseded design follows, in order of weight: (1) an unconditional
   fail-closed-on-absent default fails the spec's own conformance pack — `tct-012`
   (`required_for_v0_2`), `del-001` (`required_for_v0_2`, core) and `del-mh-001` all expect
   success with no revocation data supplied at all, re-derived live for this plan rather than

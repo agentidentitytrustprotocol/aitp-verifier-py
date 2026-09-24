@@ -1618,3 +1618,70 @@ escapes) — verdict **PASS**, clear to ship.
   entries (the absent-`policy`-default-permissive decision, spanning Phase 3 and Phase 4 as
   one decision since Phase 4's entry explicitly says so, plus the `different_issuer`
   test-expectation flip) — the last step of the plan, per its own Handoff section.
+
+## `/reconcile` pass (2026-09-23)
+
+Ran `/reconcile` on this plan's 3 `UNCONFIRMED` `ASSUMPTIONS.md` entries — effectively 2
+distinct decisions, ranked by blast radius: the absent-`policy`-default (a genuine one-way
+door spanning Phase 3 and Phase 4) analyzed by Fable and decided by the user; the multi-hop
+per-hop non-goal boundary (Phase 4's second point, reversible) analyzed and settled by Opus
+without escalation. Full reasoning and verdicts are logged in `DECISIONS.md`'s
+`## 2026-09-23 — /reconcile on plans/hardening-issues-30-31.md` section; this checkpoint
+records only the outcome and the follow-up work it required.
+
+- **Per-hop non-goal — CONFIRMED as shipped**, Opus's independent analysis. One small,
+  safe fix applied immediately: `CHANGELOG.md`'s `policy` entry now states the per-hop
+  scope limit explicitly (it previously covered only the top-level default).
+- **Absent-`policy` default — CHANGED.** Fable's analysis found the permissive default's
+  own stated justification (three required conformance fixtures would go red under
+  fail-closed) isn't actually load-bearing — `run_conformance.py` can supply the
+  deployment's own `policy` for fixtures that carry none, the same role it already plays
+  for `_feature`, verified live (pack stays 68/0/1, no fixture edited) — and found the
+  sibling Rust implementation (`aitp-rs`) already made the stricter call on its own TCT
+  path after its own security review. Presented to the user as 4 options; the user chose
+  **"Require policy."**
+- **Code follow-up this decision required, implemented and independently verified in this
+  same pass** (a `NEEDS-CHANGE` per `/reconcile`'s own rule that a one-way-door CHANGE
+  blocks shipping until its follow-up lands — now landed):
+  - `tct.py`'s `_effective_fail_mode` rule 3 and `delegation.py`'s `_effective_fail_mode`
+    rule 2 (its only no-`policy` rung — no wrapper fallback exists there) now raise
+    `KeyError("policy")` instead of returning `"fail_open"`.
+  - `delegation.py::_check_source_tct_revocation` now resolves `_effective_fail_mode`
+    eagerly, unconditionally, at the top of the function — was previously resolved lazily,
+    only inside the `if not applicable:` branch, which would have let a caller with
+    always-fresh snapshots discover a missing `policy` key only in production.
+  - `run_conformance.py` and `tests/test_boundary_contract.py`'s `_sweep` both supply
+    `policy: {"fail_mode": "fail_open"}` for `verify_tct`/`verify_delegation_token`
+    fixtures/mutations that carry none, mirroring how `_feature` is already supplied —
+    keeping the conformance pack and the boundary-contract sweep green with zero fixture
+    edits.
+  - 15 tests fixed across `tests/test_boundary_contract.py` and
+    `tests/test_unknown_fields.py`: some renamed and rewritten to assert `KeyError`
+    instead of success, some given an explicit `policy` because they weren't testing this
+    default at all, and `test_delegation_staleness_is_always_evaluated_once_policy_is_mandatory`
+    rewritten entirely — its old premise (an explicit permissive `policy` over a stale
+    snapshot can verify while an absent `policy` on the identical input rejects) is now
+    structurally impossible to construct on `verify_delegation_token` once `policy` is
+    mandatory there with no wrapper fallback. The same asymmetry still holds on
+    `verify_tct`, which does have a wrapper fallback (rung 2) — documented, not fixed,
+    since it isn't the decision under review.
+  - Full suite green: **473 passed**, `mypy` clean (37 files), conformance pack unchanged
+    at **68 passed / 0 failed / 1 skipped**.
+  - **Mutation-tested for non-vacuity**: reverted both `raise KeyError("policy")` lines
+    back to `return "fail_open"`, ran the 4 tests specifically asserting `KeyError`,
+    confirmed all 4 failed as predicted ("DID NOT RAISE KeyError"), then restored both
+    files byte-identically from a `/tmp` backup (sha256-verified) and reconfirmed the full
+    suite green.
+  - `CHANGELOG.md`'s previously-stale "the default is permissive" claim corrected to
+    describe the mandatory-`policy` design; `ASSUMPTIONS.md`'s Phase 3/Phase 4 entries and
+    `plans/hardening-issues-30-31.md`'s Phase 3/Phase 4 status lines and Open questions
+    section all updated to point at the reversal rather than describe the superseded
+    design as current.
+- **Not yet done as of this checkpoint:** branch, commit, independent verification, and
+  `/ship` (push → PR → CI → merge) for this reversal — this repo's `main` still carries the
+  originally-shipped permissive default until that lands. See the next `/ship` checkpoint
+  below once it exists.
+- **Optional cross-repo follow-ups Fable surfaced, left to the user's discretion, not
+  required to close this pass:** a spec-repo issue proposing conformance runners supply
+  the deployment's own policy for fixtures that carry none; an `aitp-rs` issue noting its
+  `VerifyDelegationContext` lacks the `R3` strict-verify gate its own TCT-path sibling has.
