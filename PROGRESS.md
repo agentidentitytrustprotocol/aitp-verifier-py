@@ -870,3 +870,33 @@ Follow-up issues #30 (extended) and #31 (filed) remain open by design — out of
 this plan, tracked separately. Next: `/reconcile` to close out `ASSUMPTIONS.md`'s 3
 UNCONFIRMED entries (Phase 3 `identity_hint` flip, Phase 7 harness-scope limitation, Phase 8
 `verify_snapshot_trust` hard-rejection).
+
+## `/reconcile` (2026-09-24)
+
+All 3 `ASSUMPTIONS.md` entries reviewed and CONFIRMED — see `DECISIONS.md` for the full
+record. Phase 7 (test-harness scope note, no behavior change) settled by Opus without
+escalation. Phase 3 (`identity_hint` flip) and Phase 8 (`verify_snapshot_trust`
+hard-rejection) — both public verifier-behavior flips, one auth-model-adjacent and one a
+security/trust-boundary — analyzed by Fable and decided by explicit user confirmation
+(both CONFIRM).
+
+Phase 8's Fable analysis directly found a genuine, previously-unknown, live security gap
+in the already-merged fix: `delegation.py`'s `revocation_snapshots` guard let
+falsy-but-malformed values (`""`, `0`, `False`, `{}`, `0.0`) bypass validation via an
+`or []`-before-`isinstance` ordering bug, silently producing an empty (no-op) revocation
+index instead of raising — the exact fail-open class issue #24 was meant to close, missed
+by the original fix's test sweep (which only covered truthy scalars). Fixed same-session
+(`is None` check instead of truthiness), independently re-verified by a fresh Opus agent
+(PASS — confirmed the new control test genuinely discriminates absent-vs-malformed, and
+swept for the same pattern elsewhere; one instance found in `minter.py:389` but confirmed
+harmless, fixture-minting-only code, not fixed), shipped as PR #36, merged into `main` at
+`8f03366` (CI: 8/8 green). Added `CHANGELOG.md` (new file) recording both this and the
+original issue #24 fix as security-relevant behavior changes.
+
+One cross-repo follow-up filed (read-only, no code changed elsewhere):
+`agentidentitytrustprotocol/agentidentitytrustprotocol#59` — missing `man-007`
+conformance vector for the oidc-`identity_hint`-forbids-`public_key` case, plus a
+one-line RFC-AITP-0003 §3 prose gap.
+
+**The whole plan is now fully closed: all 10 phases, all 4 PRs (#29, #32+#33, #34+#35,
+#36), all 5 target issues, and all 3 `ASSUMPTIONS.md` entries are done.**
