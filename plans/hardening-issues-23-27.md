@@ -1205,7 +1205,21 @@ matching file with this kind of run instructions actually exists.
 
 ### Phase 10 — CI: a dedicated, visible signed-examples check (issue #27)
 
-**Status:** TODO
+**Status:** DONE (2026-09-24). Implemented per plan: a new step (not a new job) inside the
+existing `conformance` job, positioned after `Install` and before `Conformance`/`Unit
+tests`/`Types` for fastest-useful-signal ordering, running `pytest
+tests/test_signed_examples.py -v` with the same `AITP_SPEC` env the adjacent `Unit tests`
+step already sets. One refinement beyond the plan's literal prose: used a path argument
+(`tests/test_signed_examples.py`) rather than a `-k` expression, which the plan described
+as "fundamentally a `pytest -k` subset" — a path argument is strictly more precise (a `-k`
+substring match could collide with same-named tests in another file), not a divergence in
+intent. Deliberately not duplicated into `floors`/`cross-platform` — confirmed via
+`pytest --collect-only` that both jobs' existing bundled `pytest -q` steps already collect
+all 8 `test_signed_examples.py` items, so a dedicated step there would add zero coverage,
+only the same fast-fail-ordering benefit, not worth tripling the checkout/install overhead
+for. PASS, round 1, fresh Opus verifier (not critical per the Autonomy ladder — CI-
+visibility-only, no production code, no public contract, no new required-status-check
+context). No gaps.
 
 **Delivers:** `.github/workflows/ci.yml` gains a separately named CI step/job that runs the
 production verifiers over the committed spec `signed-examples/` fixtures — the same tests

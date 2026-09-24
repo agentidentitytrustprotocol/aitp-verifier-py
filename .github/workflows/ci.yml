@@ -71,6 +71,31 @@ jobs:
       - name: Install
         working-directory: aitp-verifier-py
         run: python -m pip install --upgrade pip && pip install -e ".[dev]"
+      # A dedicated, separately-attributable step for the byte-exact signed
+      # compact-JWS fixtures under known-answer/signed-examples/ (issue #27):
+      # this is the exact regression class Phase 1 exists to catch (a
+      # verifier that quietly diverges from the reference signing
+      # convention), and folding it into the general "Unit tests" step below
+      # buries a failure here inside a much larger bundle's red X. Run before
+      # Conformance/Unit tests, not after: it's cheap, and gives the fastest
+      # possible fail for exactly this regression class ahead of the slower
+      # full suite. A *step* here, not a new top-level job: a new job would
+      # mint a new required-status-check context name that main's branch
+      # protection doesn't know about yet, where a step stays inside the
+      # existing "conformance + tests + types" context and is still
+      # independently visible, pass or fail, in the job's own step log.
+      # Deliberately only in this job, not duplicated in `floors`/
+      # `cross-platform` below: both of those already run the identical file
+      # as part of their own bundled `pytest -q`, so a second explicit
+      # invocation here would only buy the same fast-fail-ordering benefit,
+      # not new coverage -- not worth tripling the redundant checkout/install
+      # overhead for. Does not build/pull `aitp-rs`: out of scope per the
+      # issue's own stated preference for the same-repo-verifier approach.
+      - name: Signed examples (byte-exact known-answer/signed-examples/ fixtures)
+        working-directory: aitp-verifier-py
+        env:
+          AITP_SPEC: ${{ github.workspace }}/agentidentitytrustprotocol
+        run: pytest tests/test_signed_examples.py -v
       - name: Conformance (independent re-derivation of every golden vector)
         working-directory: aitp-verifier-py
         run: python run_conformance.py --spec-dir ../agentidentitytrustprotocol

@@ -767,3 +767,46 @@ No gaps. Ready for `/ship`.
   against a future CI change, though nothing in this repo currently sets it.
 - **What's next:** Phase 10 (CI: a dedicated, visible signed-examples check — issue #27,
   depends on Phase 1, already landed on `main`), then PR 3's finalization pass and `/ship`.
+
+### Phase 10 — CI: a dedicated, visible signed-examples check (issue #27) — DONE (2026-09-24)
+
+- **Files touched:** `.github/workflows/ci.yml` (one new step, "Signed examples (byte-exact
+  known-answer/signed-examples/ fixtures)", inside the existing `conformance` job — not a
+  new job, so no new required-status-check context is introduced — positioned after
+  `Install` and before `Conformance`/`Unit tests`/`Types` for fastest-useful-signal ordering;
+  runs `pytest tests/test_signed_examples.py -v` with the same `AITP_SPEC` env the adjacent
+  `Unit tests` step already sets; a 20-line comment explains the regression class, the
+  step-not-job naming rationale, why the ordering, why not duplicated into
+  `floors`/`cross-platform`, and why `aitp-rs` stays out of scope). No test/production files
+  touched — this phase is CI-config-only.
+- **Tests:** none in the traditional sense (the plan's own Tests field: "this phase's 'test'
+  is the CI workflow file itself"). Verified locally the way CI runs it:
+  `AITP_SPEC=... pytest tests/test_signed_examples.py -v` → 8 passed. Full suite unaffected
+  (this phase touches no test files): `pytest tests/ -q` → 294 passed, unchanged from Phase
+  9's count. `mypy aitp_verifier tests` → clean, 35 files. YAML validated via
+  `yaml.safe_load` — well-formed, new step lands at the claimed position with the claimed
+  `env` block, job `name:`/`matrix` fields byte-identical to before (confirmed no
+  required-check-context rename).
+- **Acceptance criteria confirmed:** `pytest --collect-only` from the repo root shows
+  `floors`'s and `cross-platform`'s existing bundled `pytest -q` steps already collect all 8
+  `test_signed_examples.py` items, confirming the "don't duplicate" call adds zero coverage
+  gap, only skips a redundant fast-fail-ordering step in those two jobs. Since
+  `test_signed_examples.py` was already inside the general `Unit tests` step's collection
+  before this phase, a regression there already reddened the job — this phase only changes
+  *when in the step sequence* that becomes visible, not *whether* CI goes red, satisfying
+  the plan's "adds visibility, does not change what causes CI to go red" criterion.
+- **ASSUMPTIONS.md:** none logged this phase — the step-vs-job choice, placement, and scope
+  (conformance job only) were fully specified/reasoned through in the plan itself, not a
+  new judgment call.
+- **Docs:** the workflow file's own inline comment, per the plan's Docs field (no separate
+  doc file to update).
+- **Gap rounds:** 0 — PASS on first verify. Fresh Opus verifier (not critical per the
+  Autonomy ladder — CI-visibility-only, no production code, no public contract) confirmed
+  the step position, the zero-new-check-context claim (byte-exact comparison of `name:`/
+  `matrix` fields), the non-duplication reasoning (independently re-ran
+  `pytest --collect-only`), ran the new step and the full suite itself, spot-checked that
+  `test_signed_examples.py`'s functions genuinely call real `aitp_verifier` entry points
+  (not vacuous inline crypto), and judged the new comment's density against the file's
+  existing established convention (found it consistent, not thin).
+- **What's next:** PR 3's finalization pass (`/implement` §4 — Phases 9-10 collectively
+  close #26 and #27) before handing off to `/ship`.
