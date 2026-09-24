@@ -810,3 +810,42 @@ No gaps. Ready for `/ship`.
   existing established convention (found it consistent, not thin).
 - **What's next:** PR 3's finalization pass (`/implement` §4 — Phases 9-10 collectively
   close #26 and #27) before handing off to `/ship`.
+
+## PR 3 finalization (2026-09-24)
+
+Phase 10 committed as `8945582` on top of Phase 9's `debd6cf`. Confirmed branch is current
+with `origin/main` (no rebase needed; `main` == `origin/main` == merge-base(`main`,
+`test-infra-26-27`) == `fbb0694`). Doc sweep: both phases' own `Docs` fields already applied
+inline (README clause in Phase 9, `ci.yml`'s own comment in Phase 10); no further doc update
+needed. No new integration-test boundary introduced by either phase (test-infra/CI-config
+only) beyond what each phase's own tests already cover.
+
+**Final whole-PR verification (fresh Opus, cumulative diff `main...HEAD`, both phases
+against the plan as a whole): PASS.** Confirmed the one seam between the two phases worth
+checking: Phase 10's new CI step sets the same `AITP_SPEC` env var the adjacent `Unit tests`
+step already does (byte-identical expression), so it cannot accidentally trip Phase 9's new
+hard-failure path in CI for the wrong reason — verified by reading every `pytest`-invoking
+step across the whole workflow file (4 total, all set `AITP_SPEC`), plus confirmed a second,
+independent safety net (the sibling-directory fallback resolves correctly in CI's checkout
+layout even if the env var were dropped). Test-count chain re-confirmed by running, not
+reading: 291 (Phase 8 baseline, on `main`) → 294 (Phase 9, both with `AITP_SPEC` set and
+unset) → 294 (Phase 10, CI-config-only, no new tests). Both phases' `Status` lines in
+`plans/hardening-issues-23-27.md` read `DONE`, mutually consistent with each other and with
+this file's own entries. Independently re-derived the non-vacuity of Phase 9's 3 tests a
+second time (against `main`'s pre-Phase-9 code: 3/3 fail; against the plan's rejected nested-
+ordering design: exactly 1/3 fails, on the discriminating test, as claimed). Confirmed issue
+closure for both #26 (hard `pytest.fail` naming both resolution paths + the opt-out,
+verified executing both the failure and opt-out paths) and #27 (own named,
+independently-attributable CI step). Three non-blocking advisories, none requiring action
+before ship: (1) `plans/hardening-issues-23-27.md`'s Phase 9 prose still says "a silent
+73-test skip," pre-existing plan-authoring-time text predating Phases 1-8 growing the suite,
+not touched by either phase's actual diff; (2) the plan's own Phase 10 "Delivers" wording
+("a distinct red status") reads in slight tension with its "Approach" section's deliberate
+step-not-job choice — the plan's own Acceptance Criteria are worded correctly
+("independently-attributable step") and are what was actually verified against; (3) this PR
+introduces the suite's first nested-`pytest`-subprocess tests, which the `cross-platform`
+job will run on Windows/macOS for the first time — code looks sound (full env passthrough,
+`sys.executable`, `pathlib`, a 60s timeout), but real CI is what actually confirms Windows
+behavior; `/ship`'s CI watch covers this directly.
+
+No gaps. Ready for `/ship`.
