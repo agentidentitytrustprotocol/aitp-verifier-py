@@ -47,6 +47,14 @@ to each other, a caller runs them -- each artifact module owns that ordering
 itself, since it is not the same across modules (see ``manifest.py`` vs.
 ``revocation.py`` for two deliberately different orderings).
 
+Finally it carries ``describe_value``, which is not a gate at all but the
+counterpart to these gates' *messages*: the cost-bounded way to name a value
+a gate has just rejected. It lives here because the modules that need it sit
+on opposite sides of the import graph -- ``jws.py`` (which ``identity.py``
+imports) and ``identity.py`` itself -- so neither can own it without
+inverting that dependency, while this module is already imported by both and
+depends on nothing above ``b64``/``errors``/``jcs``.
+
 The single exception is remapped at its call site, not here:
 ``sessionbundle.py``'s embedded participant TCT, where RFC-AITP-0010 §5 step 7
 collapses "other TCT-level failures" into ``BUNDLE_PARTICIPANT_TCT_INVALID``.
@@ -74,7 +82,54 @@ from .b64 import b64url_decode
 from .errors import AitpError
 from .jcs import JcsError, canonicalize
 
-__all__ = ["reject_unknown_fields", "require_members", "check_types", "canonical_bytes", "decode_b64url"]
+__all__ = [
+    "reject_unknown_fields",
+    "require_members",
+    "check_types",
+    "canonical_bytes",
+    "decode_b64url",
+    "describe_value",
+]
+
+# Only these render with bounded cost; every other JSON value is a container.
+_JSON_SCALAR_TYPES = (str, int, float, bool, type(None))
+
+
+def describe_value(value: Any) -> str:
+    """A cost-bounded rendering of *value* for an error message.
+
+    A JSON scalar is shown verbatim (``repr``); anything else is reported by
+    type name alone and is NEVER handed to ``repr()``/``str()``/an f-string
+    conversion.
+
+    ``repr()`` recurses once per nesting level and carries no depth cap of its
+    own, so interpolating an unvalidated, attacker-supplied container into a
+    message can exhaust the interpreter stack and raise a raw
+    ``RecursionError`` *before* the ``AitpError`` the message was being built
+    for is ever constructed. That is the same contract break -- a bare Python
+    exception escaping the verifier's "raise ``AitpError`` or return a verdict"
+    boundary -- that ``jcs.py``'s depth cap and ``canonical_bytes``'s
+    ``RecursionError`` clause close for canonicalization, reached by a path
+    that never calls ``canonicalize`` at all, so no depth cap there can see it.
+    It is also version-sensitive rather than absolute: how deep a ``repr()`` a
+    build tolerates depends on its C-stack budget, so the identical value can
+    render on one interpreter and crash on another (this was found by CI on
+    3.11 after passing on 3.13). Bounding what a message may cost,
+    unconditionally, is the same discipline ``canonical_bytes`` applies by
+    keeping its own recovery message a constant.
+
+    The stack is only the sharper half of the exposure. A container that DOES
+    render still puts an unbounded, wholly attacker-chosen string into the
+    caller's logs: measured against ``jws.py``'s header sites, a single token
+    whose ``typ`` nests as deep as the JSON parser will admit produced a ~68 KB
+    message on CPython 3.13 and ~472 KB on 3.14. Capping every such message at
+    a type name makes the cost of a rejection independent of what was rejected,
+    which is the property a verifier's error path needs whether or not the
+    stack is the binding limit on the interpreter at hand.
+    """
+    if isinstance(value, _JSON_SCALAR_TYPES):
+        return repr(value)
+    return f"<{type(value).__name__}>"
 
 
 def reject_unknown_fields(obj: dict[Any, Any], allowed: Container[str], *, shape_code: str, what: str) -> None:
@@ -152,11 +207,23 @@ def canonical_bytes(value: Any, *, shape_code: str, what: str) -> bytes:
     RFC-AITP-0001 §7 forbids inspecting, so no upstream ``check_types`` call
     can intercept it -- this is the one point every such value must pass
     through.
+
+    ``RecursionError`` is converted too, as defense in depth behind
+    ``jcs.py``'s own depth cap: the cap bounds this walk's frames, but a
+    caller whose stack was already near-exhausted when it called in can still
+    exhaust it inside a walk the cap would have admitted. ``RecursionError``
+    subclasses ``RuntimeError``, not ``ValueError``, so the two clauses are
+    disjoint and their order is immaterial. Its message is a constant literal
+    with no interpolation on purpose: formatting a message while the stack is
+    exhausted can itself re-trigger the error, and this recovery path must not
+    be fragile.
     """
     try:
         return canonicalize(value)
     except JcsError as exc:
         raise AitpError(shape_code, f"{what} is not canonicalizable: {exc}") from exc
+    except RecursionError as exc:
+        raise AitpError(shape_code, "value is too deeply nested to canonicalize") from exc
 
 
 def decode_b64url(text: str, *, code: str, what: str) -> bytes:

@@ -549,6 +549,74 @@ def test_malformed_compact_jws_padded_segments() -> None:
     assert _err(exc_info) == "IDENTITY_FAILED"
 
 
+# --- error messages must never render an unvalidated container (issue #31) ------
+#
+# `identity.py` builds several failure messages out of values it has NOT
+# type-checked. `repr()` recurses once per nesting level with no depth cap of
+# its own, so interpolating a deeply nested container blows the interpreter
+# stack and raises a bare `RecursionError` *before* the `AitpError` exists --
+# breaking the same "raise AitpError or return a verdict" contract the JCS
+# depth cap closes for canonicalization, by a path that never calls
+# `canonicalize` and so no depth cap can see. Found by CI on 3.11/the declared
+# floors (whose smaller `repr()` budget overflows at 2000 levels) after the
+# 3.13 dev interpreter, which tolerates ~8k, passed the same assertion.
+
+
+def _deep_dict(n: int, leaf: Any = "deep-leaf-sentinel") -> Any:
+    """*n* nested `dict` levels around a scalar leaf."""
+    value: Any = leaf
+    for _ in range(n):
+        value = {"a": value}
+    return value
+
+
+@pytest.mark.parametrize("depth", [2000, 20000])
+def test_unknown_identity_type_deeply_nested_is_identity_failed_not_recursionerror(depth: int) -> None:
+    """`verify_identity` with a container at `identity.type`.
+
+    Nothing upstream constrains `type`'s JSON type -- `reject_unknown_fields`
+    checks the member SET only -- so the dispatcher's "unknown identity type"
+    message is the first thing to touch the value. 2000 is the depth CI
+    actually failed at; 20000 is past every current interpreter's `repr()`
+    budget, so this case fails pre-fix everywhere rather than only on the
+    builds with the smaller stack.
+    """
+    with pytest.raises(AitpError) as exc_info:
+        _verify({"type": _deep_dict(depth)}, _envelope(), self_aid=SENDER_AID)
+    assert _err(exc_info) == "IDENTITY_FAILED"
+    assert "<dict>" in exc_info.value.message
+    assert "deep-leaf-sentinel" not in exc_info.value.message
+
+
+@pytest.mark.parametrize("header_param", ["alg", "kid"])
+def test_container_valued_jwt_header_param_is_reported_by_type_not_rendered(header_param: str) -> None:
+    """The same discipline on the two OIDC-branch sites that read raw header
+    JSON with no type check: `alg` (reported precisely when it failed the
+    `isinstance(..., str)` test) and `kid` (never type-checked -- a non-string
+    simply matches no candidate).
+
+    These two cannot be driven past the stack the way `identity.type` can --
+    they must survive `jcs.loads` first, and the JSON parser's own recursion
+    ceiling is reached at a deeper stack position than these messages are
+    built at. The guard is pinned by asserting the message reports the value's
+    TYPE and never its contents, which is what a regression to `{x!r}` breaks.
+    """
+    identity = _identity()
+    env = _envelope()
+    jwt = _mint(identity, env, self_aid=SENDER_AID, kid="issuer-key-1")
+    header_b64, payload_b64, sig_b64 = jwt.split(".")
+    header = json.loads(b64url_decode(header_b64))
+    header[header_param] = {"a": "deep-leaf-sentinel"}
+    tampered = b64url_encode(json.dumps(header, separators=(",", ":")).encode())
+    identity["proof"] = f"{tampered}.{payload_b64}.{sig_b64}"
+    jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA")), "kid": "issuer-key-1"}
+    with pytest.raises(AitpError) as exc_info:
+        _verify(identity, env, self_aid=SENDER_AID, issuer_keys={ISSUER: jwk})
+    assert _err(exc_info) == "IDENTITY_FAILED"
+    assert "<dict>" in exc_info.value.message
+    assert "deep-leaf-sentinel" not in exc_info.value.message
+
+
 # --- jwk.py unit tests ----------------------------------------------------------
 
 

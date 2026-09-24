@@ -35,7 +35,7 @@ from .aid import parse_aid
 from .b64 import b64url_decode
 from .crypto import sha256
 from .errors import AitpError
-from .fields import reject_unknown_fields
+from .fields import describe_value, reject_unknown_fields
 from .jwk import IssuerKey, issuer_keys_from, thumbprint
 from .jws import parse_compact
 
@@ -97,7 +97,10 @@ def verify_identity(
     elif itype == "pinned_key":
         _verify_pinned_key(identity, envelope, self_aid, trust_store)
     else:
-        raise AitpError("IDENTITY_FAILED", f"unknown identity type {itype!r}")
+        # `describe_value`, not `{itype!r}`: nothing upstream has constrained
+        # `type`'s JSON type -- `reject_unknown_fields` above checks the member
+        # SET only -- so this is reached with an arbitrarily deep container.
+        raise AitpError("IDENTITY_FAILED", f"unknown identity type {describe_value(itype)}")
 
 
 def _verify_oidc(
@@ -170,7 +173,10 @@ def _verify_oidc(
         raise AitpError("IDENTITY_FAILED", f"OIDC JWT header carries forbidden parameter(s): {sorted(_FORBIDDEN_HEADER_PARAMS & header.keys())}")
     alg = header.get("alg")
     if not isinstance(alg, str) or alg not in _ALLOWED_OIDC_ALGS:
-        raise AitpError("IDENTITY_FAILED", f"OIDC JWT alg {alg!r} is not one of {sorted(_ALLOWED_OIDC_ALGS)}")
+        # `describe_value` again: this branch is entered PRECISELY when `alg` failed
+        # the `isinstance(alg, str)` test, so the value being reported is by
+        # construction unvalidated header JSON, container included.
+        raise AitpError("IDENTITY_FAILED", f"OIDC JWT alg {describe_value(alg)} is not one of {sorted(_ALLOWED_OIDC_ALGS)}")
 
     candidates = issuer_keys_from(issuer_keys.get(issuer))
     if not candidates:
@@ -218,11 +224,17 @@ def _verify_oidc(
 
 
 def _select_issuer_key(candidates: list[IssuerKey], kid: Any) -> IssuerKey:
-    """Pick the one candidate key a JWT header identifies (or the sole one)."""
+    """Pick the one candidate key a JWT header identifies (or the sole one).
+
+    *kid* is typed ``Any`` because it is raw header JSON: the caller reads it
+    with a bare ``header.get("kid")`` and no type check (a non-string ``kid``
+    simply matches no candidate), so it reaches the message below as a
+    container -- hence ``describe_value`` rather than ``{kid!r}``.
+    """
     if kid is not None:
         matches = [c for c in candidates if c.kid == kid]
         if len(matches) != 1:
-            raise AitpError("IDENTITY_FAILED", f"no issuer key candidate matches kid {kid!r}")
+            raise AitpError("IDENTITY_FAILED", f"no issuer key candidate matches kid {describe_value(kid)}")
         return matches[0]
     if len(candidates) != 1:
         raise AitpError("IDENTITY_FAILED", "OIDC JWT header has no kid and multiple issuer key candidates exist (ambiguous)")
