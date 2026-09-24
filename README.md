@@ -85,7 +85,8 @@ mypy            # --strict, clean
 ```
 
 Requires Python ≥ 3.11 and `cryptography`. Point the tests/runner at a spec
-checkout via `--spec-dir` or `$AITP_SPEC`.
+checkout via `--spec-dir` or `$AITP_SPEC` — `pytest` fails loudly if neither resolves one
+(set `AITP_SPEC=none` to deliberately run only the spec-independent subset instead).
 
 ## License
 

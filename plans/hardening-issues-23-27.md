@@ -1113,7 +1113,24 @@ the actual gap.
 
 ### Phase 9 — `conftest.py`: fail loudly, not silently, when the spec repo is missing (issue #26)
 
-**Status:** TODO
+**Status:** DONE (2026-09-24). Implemented per plan, including the load-bearing ordering
+correction from the review round (`AITP_SPEC == "none"` checked unconditionally as the
+fixture's first statement, before `_find_spec()` runs). `README.md` already mentions the
+`$AITP_SPEC`/`--spec-dir` dependency, so — per this phase's own Docs conditional — no doc
+edit was needed there; one advisory addition was made anyway (a clause naming the
+`AITP_SPEC=none` opt-out), since a missing spec repo is now a hard failure and the new
+opt-out is worth surfacing where a contributor would first look. One round of gaps: a
+fresh Opus verifier caught that the initial test suite (`tests/test_conftest_spec_
+resolution.py`) proved the fixture's *current* behavior correct but never actually
+exercised the ordering bug the review round's correction exists to prevent — both original
+tests build an isolated tree with no resolvable sibling spec repo, which is exactly the one
+condition under which the buggy (opt-out nested inside `found is None`) and fixed
+(opt-out unconditional and first) orderings behave identically. Closed by adding a third
+test, `test_explicit_no_spec_opt_out_wins_even_when_sibling_is_resolvable`, which plants a
+fake-but-resolvable sibling `agentidentitytrustprotocol` checkout and asserts
+`AITP_SPEC=none` still skips rather than silently running the full suite under it — hand-
+verified discriminating by reintroducing the exact nested-ordering bug and confirming this
+new test (and only this one) fails (`1 passed` instead of `1 skipped`), then restoring.
 
 **Delivers:** Running `pytest` locally without the sibling spec repo cloned now fails loudly
 (not a silent 73-test skip that still reports green), with an explicit, documented opt-out
