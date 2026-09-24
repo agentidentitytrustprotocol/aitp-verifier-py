@@ -1244,3 +1244,76 @@ green harness run for coverage.
 - **What's next:** Phase 2 (the single-hop present-snapshot revocation check — PR 2, ships
   on its own).
 pushed fix/jcs-depth-cap-31 a7c47dbd0de49451619f7699267d409720acef82
+
+## Phase 1 — CI-driven follow-up (2026-09-24): two more raw-`RecursionError` escapes, found and fixed before merge
+
+PR #39 (Phase 1) went red on `conformance + tests + types (3.11)` and `declared floors` —
+green locally on 3.13, because the underlying defect is stack-headroom-sensitive across
+interpreters, not a flake. Root cause: Phase 1's own new `("deep-nesting", _deep_dict(2000))`
+entry in `tests/test_boundary_contract.py::_MUTATIONS` is shared by
+`test_boundary_contract_identity_never_raises_a_bare_exception`, a `verify_identity`-specific
+sweep neither this plan nor its two prior verification rounds knew reused that list. It
+exposed a **different mechanism of the same bug class #31 targets**: an f-string calling
+Python's own uncapped `repr()`/`str()` (`{x!r}`) on a value that was never type-checked before
+being formatted into an error message. `jcs.py`'s `_MAX_DEPTH` guard cannot catch this — the
+value never reaches `canonicalize` at all.
+
+**Two real, live, previously-unknown instances found and fixed, same PR, before merge (not
+deferred):**
+
+1. **`identity.py:134`** (was `f"unknown identity type {itype!r}"`) — `itype = identity.get("type")`
+   at `:94` has zero type check before that line. A ~2000-deep container there raises
+   `RecursionError: maximum recursion depth exceeded while getting the repr of an object`
+   instead of `AitpError`. Two more sites in the same file (`:210` OIDC `alg` mismatch, `:268`
+   `kid` lookup) had the identical pattern and were fixed the same way; every other `!r}` site
+   in the file was individually confirmed provably-already-a-`str` by an earlier
+   `require_members`/`check_types`/`isinstance` gate, and left alone.
+2. **`jws.py:109,116`** (`typ`/`alg` mismatch messages) — the header shape check
+   (`jws.py:97-103`) validates only the member *set* (`{"alg","typ"}`), never either value's
+   type, so a deeply-nested `typ`/`alg` reaches the same unguarded `{x!r}` pattern.
+   **Confirmed reachable from public entry points**: `verify_tct` and `verify_grant_voucher`
+   both hit it end to end. Confirmed to **crash the process (SIGBUS)**, not merely raise, on a
+   1 MiB constrained thread stack at depth 5000-6000 on 3.13 — and, on a **default-sized**
+   stack, CPython 3.14 (already in this repo's CI matrix) parses JSON far deeper than `repr()`
+   survives (parser ceiling ~116k, `repr()` ceiling ~70k), so the same crash is reachable with
+   no constrained stack at all on that interpreter. Also unbounded log amplification even
+   where it doesn't crash: a few bytes of malicious JSON produced up to ~472 KB of
+   attacker-chosen text in the error message pre-fix (linear in depth, not super-linear —
+   an earlier "35 KB from a few bytes" framing during triage overstated this as amplification;
+   the real property is "unbounded and attacker-chosen," which is what matters).
+
+**Fix, shared:** a `describe_value(value)` helper — return `repr(value)` for a JSON scalar
+(`str`/`int`/`float`/`bool`/`None`), else `f"<{type(value).__name__}>"` — added to
+`fields.py` (not `identity.py`, where it was first written) once `jws.py` needed it too:
+`identity.py` imports `jws.py`, so a fields.py-level home was the only option without
+inverting the dependency or duplicating it. `identity.py`'s original local copy was deleted in
+favor of the shared one; a test (`test_fields.py`) pins that both modules resolve to the same
+object so a second copy can't silently reappear.
+
+**Verification, both fixes:** independently confirmed by a fresh verifier (not the
+implementer) for `identity.py`'s fix, which also independently re-ran the crash reproduction
+and corrected its methodology (the first attempt confounded a constrained-stack crash with
+dict deallocation on scope exit; re-run holding the deep value alive on the main thread
+confirmed the claim cleanly) and caught that the `jws.py` sibling instance had been flagged
+but not yet fixed — which is why item 2 above exists in this same round rather than being
+deferred. `jws.py`'s own fix was cross-checked against all four CI interpreters locally
+(3.11/3.12/3.13/3.14) via a parser-vs-`repr()`-ceiling measurement per interpreter, and the
+pre-fix/post-fix suite was run on all four, not just 3.13.
+
+**Filed, not fixed in this PR:** `agentidentitytrustprotocol/aitp-verifier-py#38` —
+`jwk.py::issuer_keys_from`'s own unbounded recursion (a structurally different defect, no
+`repr()`/`canonicalize` involved, predates this plan). Six sibling `{ver!r}`/`{version!r}`
+sites (`tct.py:102`, `voucher.py:65`, `handshake.py:168`, `manifest.py:176`,
+`sessionbundle.py:153`, `revocation.py:101`) were independently audited and confirmed safe
+(each is provably a `str` by an earlier shape/type check on every code path) by two separate
+verification rounds — no further action needed there.
+
+**Final gate after this round:** `pytest tests/ -q` → **331 passed** (was 300 pre-Phase-1, 311
+after the first gap-closing round, +20 more from this CI-driven round: identity.py describe
+tests, jws.py's new test file, fields.py's `describe_value` unit tests); `mypy` clean, 37
+source files; `run_conformance.py` unchanged at 68 passed/0 failed/1 skipped.
+`plans/hardening-issues-30-31.md`'s Phase 1 **Delivers** wording, already narrowed once for
+issue #38, was not further narrowed for this round — `identity.py`/`jws.py` are not
+`canonicalize` call sites, so the (already-narrowed) claim was never inaccurate with respect
+to them; this section is the record of the additional, adjacent hardening done in the same
+PR.

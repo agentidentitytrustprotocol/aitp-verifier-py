@@ -28,6 +28,7 @@ from .aid import parse_aid
 from .b64 import b64url_decode, b64url_encode
 from .crypto import PrivateKey
 from .errors import AitpError
+from .fields import describe_value
 from .jcs import canonicalize, loads
 
 __all__ = ["ParsedJws", "parse_compact", "verify_jws", "encode_jws"]
@@ -94,19 +95,25 @@ def verify_jws(
     """
     parsed = parse_compact(token, structural_code=sig_err)
 
-    # Header must be exactly {alg, typ}.
+    # Header must be exactly {alg, typ}. This constrains the member SET only --
+    # neither VALUE is type-checked here or anywhere upstream, so both are
+    # arbitrary JSON (a deeply nested container included) at the two comparison
+    # sites below. Hence `describe_value` rather than `{x!r}`: see its docstring
+    # in `fields.py`. Both sites are reachable from `verify_tct`,
+    # `verify_grant_voucher` and `verify_delegation_token` with nothing but a
+    # token string, and the values reach them straight off the wire.
     if set(parsed.header.keys()) != {"alg", "typ"}:
         raise AitpError(alg_err, f"JWS header must contain exactly alg and typ, got {sorted(parsed.header)}")
 
     if parsed.header.get("typ") != expected_typ:
-        raise AitpError(typ_err, f"typ {parsed.header.get('typ')!r} != {expected_typ!r}")
+        raise AitpError(typ_err, f"typ {describe_value(parsed.header.get('typ'))} != {expected_typ!r}")
 
     if after_typ_check is not None:
         after_typ_check(parsed.claims)
 
     aid = parse_aid(iss_aid)
     if parsed.header.get("alg") != aid.jose_alg:
-        raise AitpError(alg_err, f"alg {parsed.header.get('alg')!r} != AID-pinned {aid.jose_alg!r}")
+        raise AitpError(alg_err, f"alg {describe_value(parsed.header.get('alg'))} != AID-pinned {aid.jose_alg!r}")
 
     if not aid.public_key.verify_jose(parsed.signing_input, parsed.signature):
         raise AitpError(sig_err, "compact JWS signature verification failed")
