@@ -39,10 +39,13 @@ assert a shape the schema actually allows. Flagged here per the plan's
 explicit instruction so a downstream integrator reading this file sees the
 flip called out, not just buried in a test diff.
 
-**Status:** UNCONFIRMED (per the plan's own Open questions section: "Phase
-3's B1 behavior-flip [is a] 'record and proceed' (not escalate) item" — this
-entry exists so `/reconcile` can formally confirm it at the end of the whole
-plan, not because the fix itself is in doubt).
+**Status:** CONFIRMED (2026-09-24, via `/reconcile`). Fable's independent
+analysis confirmed the fix matches the spec schema exactly and matches
+`aitp-rs`'s existing behavior (Python was the outlier, not Rust), with no
+external-breakage risk (package has never been released). Follow-up filed:
+`agentidentitytrustprotocol/agentidentitytrustprotocol#59` (missing `man-007`
+conformance vector + a one-line RFC-AITP-0003 §3 prose gap). See
+`DECISIONS.md`.
 
 ## Phase 7 — Generic boundary-contract regression test
 
@@ -80,9 +83,12 @@ so, a direct-call unit test (mutate-after-minting, per every phase's established
 required to actually exercise the fix, the same way Phase 6's excluded guards are proven
 by unit tests rather than this harness.
 
-**Status:** UNCONFIRMED (a "consequential but decidable" finding recorded for `/reconcile`
-to review at end-of-plan — not a behavior change, a scope-limitation discovery worth
-surfacing so it isn't silently rediscovered by a future phase).
+**Status:** CONFIRMED (2026-09-24, via `/reconcile`). A fresh Opus analysis re-verified the
+claim live against current code (`test_boundary_contract.py:184`'s `_sweep` still wraps
+`mint_input` broadly; `minter.py`'s `_sign_envelope:131`, `_sign_manifest:152`,
+`_sign_revocation:169`, `_mint_bundle:327`, `_mint_pinned_proof:250` all still
+canonicalize/dereference the fields described) — no harness redesign has occurred since
+this was written, so the mitigation stands unchanged. See `DECISIONS.md`.
 
 **Second confirmed instance (round-1 gap-closing):** the same blind spot recurred for
 `envelope.payload.pop_nonce` — `minter.py::_mint_pinned_proof` dereferences that key
@@ -127,5 +133,28 @@ new `tests/test_unknown_fields.py` malformed-shape sweep (both `verify_tct` and
 `verify_delegation_token`), hand-verified via `git stash` fault injection to genuinely
 distinguish old (crash or silent-accept) from new (clean `AitpError`) behavior.
 
-**Status:** UNCONFIRMED (per the plan's own explicit instruction to log this behavior change
-here for `/reconcile` to review at end-of-plan — not because the fix itself is in doubt).
+**Status:** CONFIRMED (2026-09-24, via `/reconcile`). Fable's independent analysis confirmed
+fail-closed is the correct security default for a revocation-checking library, applied
+symmetrically across `tct.py` and `delegation.py`. The same pass also found a residual gap
+in this fix's own shipped code (see next entry) — fixed, tested, independently
+re-verified, and merged (`8f03366`) as part of closing out this entry. See `DECISIONS.md`.
+
+### Residual gap found and fixed during `/reconcile`: falsy-value bypass in `revocation_snapshots`
+
+**What was found:** `delegation.py::_revocation_index`'s original guard,
+`snaps = inp.get("revocation_snapshots") or []` followed by `isinstance(snaps, list)`,
+only caught *truthy* non-list scalars (int/bool/float). A falsy-but-present, non-list
+value (`""`, `0`, `False`, `{}`, `0.0`) was silently folded into `[]` by the `or` and
+never reached the type check at all — the exact fail-open outcome issue #24 exists to
+close, at values the original fix's own test sweep hadn't covered.
+
+**Fix:** check `snaps is None` explicitly instead of by truthiness — only genuine absence
+defaults to `[]`; every other non-list value, falsy or truthy, now raises
+`REVOCATION_SNAPSHOT_INVALID`. Shipped in PR #36 (`8f03366`), with a discriminating
+control test proving absence-vs-malformed are still correctly told apart, and a
+`CHANGELOG.md` entry recording it as a security-relevant behavior change. A related
+`or []` pattern was found in `minter.py:389` but confirmed to be test/fixture-minting
+code only (never reachable from untrusted verification input) — not fixed, no security
+impact.
+
+**Status:** CONFIRMED (2026-09-24, via `/reconcile`) — fixed and merged, not deferred.
