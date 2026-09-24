@@ -152,13 +152,20 @@ def _revocation_index(inp: dict[str, Any]) -> dict[str, set[str]]:
     own wrapper merely claims for it.
 
     ``revocation_snapshots`` itself is untrusted remote input, same as every
-    record inside it -- a scalar there (e.g. an int/bool/float) is truthy and
-    would otherwise survive `or []` and reach the ``for`` loop as a bare
-    ``TypeError: '...' object is not iterable``, escaping this module's own
-    ``AitpError``-or-verdict contract.
+    record inside it. Absent (``None``) is the one legitimate "no snapshots"
+    case and defaults to ``[]``; anything else that isn't a list -- truthy
+    (an int/bool/float, which would otherwise reach the ``for`` loop as a
+    bare ``TypeError: '...' object is not iterable``) or falsy (``""``,
+    ``0``, ``False``, ``{}``, ``0.0``, which would otherwise be silently
+    folded into "no snapshots" by a naive ``or []`` and never reach the type
+    check at all) -- is a malformed field, not an absent one, and must be
+    rejected the same way. Checking ``is None`` explicitly, rather than
+    truthiness, is what keeps the two cases apart.
     """
-    snaps = inp.get("revocation_snapshots") or []
-    if not isinstance(snaps, list):
+    snaps = inp.get("revocation_snapshots")
+    if snaps is None:
+        snaps = []
+    elif not isinstance(snaps, list):
         raise AitpError(
             "REVOCATION_SNAPSHOT_INVALID",
             f"revocation_snapshots must be an array, got {type(snaps).__name__}",
