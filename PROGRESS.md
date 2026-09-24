@@ -711,3 +711,146 @@ No gaps. Ready for `/ship`.
   open by design, tracked separately from this plan's own 10 phases. Next: Phases 9-10
   (PR 3 scope, issues #26/#27 — no dependency on Phase 8, both lightweight test/CI-
   infrastructure changes with no production-code overlap with either merged PR).
+
+### Phase 9 — `conftest.py`: fail loudly, not silently, when the spec repo is missing (issue #26) — DONE (2026-09-24)
+
+- **Branch:** `test-infra-26-27` (PR 3 scope), off `main` post-PR-2-merge.
+- **Files touched:** `tests/conftest.py` (`spec_dir` fixture: `AITP_SPEC == "none"` checked
+  unconditionally as the *first* statement, before `_find_spec()` runs — this ordering is
+  load-bearing per the plan's own review-round correction, since `_find_spec()` tries the
+  sibling-directory convention regardless of `$AITP_SPEC`'s value, so an opt-out gated on
+  "resolution already failed" would never trigger on a machine with the sibling repo
+  checked out; the not-found branch now calls `pytest.fail(...)` naming both resolution
+  paths and the opt-out, instead of the old `pytest.skip(...)`; module docstring gained a
+  paragraph explaining why the ordering matters), `tests/test_conftest_spec_resolution.py`
+  (new — 3 subprocess-invocation tests, decided over an in-process unit test because the
+  behavior under test is `pytest`'s own fixture-collection-time failure/skip machinery,
+  which only manifests by actually running a nested `pytest` process; each copies
+  `conftest.py` into an isolated `tmp_path` tree with no `agentidentitytrustprotocol`
+  ancestor, so the real in-repo `conftest.py` — which always has a resolvable sibling on
+  this machine — can't be used to exercise the "not found" path directly), `README.md` (one
+  clause added naming the `AITP_SPEC=none` opt-out, now that a missing spec repo is a hard
+  failure rather than a silent skip — not required by the plan's own Docs conditional, since
+  the README already flagged the `$AITP_SPEC`/`--spec-dir` dependency, but cheap and
+  genuinely useful now that the failure mode changed).
+- **Tests:** `pytest tests/ -q` (AITP_SPEC set, as `ci.yml` does) → 294 passed (baseline
+  291 after PR 2: +3 new tests in `test_conftest_spec_resolution.py`). Same command with
+  `$AITP_SPEC` unset (sibling-directory fallback) → byte-identical 294 passed, no skips —
+  confirming this phase's own acceptance criterion that a correctly-resolvable spec repo
+  produces unchanged pass counts either way. `mypy aitp_verifier tests` → clean, 35 source
+  files. `pyflakes` clean on both touched files.
+- **Hand-verification:** all 3 new tests confirmed non-vacuous by reverting `conftest.py`
+  to its pre-fix state (old `pytest.skip`, no opt-out) — all 3 fail as expected, on the
+  right assertions. The round-1 gap (below) additionally required reintroducing the plan's
+  *original, review-round-corrected-away* buggy design (opt-out nested inside
+  `found is None`, not unconditional-first) to prove the third test's own discriminating
+  power — confirmed it (and only it) fails against that specific bug (`1 passed` instead of
+  `1 skipped`, meaning the opt-out was silently ignored in favor of a resolvable sibling),
+  while the other two tests pass identically under both orderings (they can't tell the two
+  apart, since neither has a resolvable sibling present). Restored, re-confirmed 294 passed.
+- **ASSUMPTIONS.md:** none logged this phase — the fixture's exact ordering, wording, and
+  failure/skip semantics were fully specified by the plan (including its own review-round
+  correction), not a new judgment call made during implementation.
+- **Docs:** `README.md`'s Development section, per the reasoning above (advisory, not
+  triggered by the plan's own conditional, done anyway).
+- **Gap rounds:** 1. Round-1 fresh-Opus verifier (not critical per the Autonomy ladder —
+  test-infra-only, no production code, no public contract) returned `GAPS`: one substantive
+  item (the original 2 tests only ever exercised the no-resolvable-sibling case, which is
+  exactly the condition under which the buggy and fixed orderings behave identically — so
+  the regression protection covered everything *except* the one correction the review round
+  produced) plus two housekeeping items (this file and the plan's `Status` line not yet
+  updated) plus one advisory (README). All closed same round: added
+  `test_explicit_no_spec_opt_out_wins_even_when_sibling_is_resolvable` (plants a fake-but-
+  resolvable sibling, asserts the opt-out still wins), flipped the plan's Phase 9 `Status`,
+  wrote this entry, added the README clause, and (a second advisory the same verifier
+  raised) stripped `$PYTEST_ADDOPTS` from the subprocess tests' environment for robustness
+  against a future CI change, though nothing in this repo currently sets it.
+- **What's next:** Phase 10 (CI: a dedicated, visible signed-examples check — issue #27,
+  depends on Phase 1, already landed on `main`), then PR 3's finalization pass and `/ship`.
+
+### Phase 10 — CI: a dedicated, visible signed-examples check (issue #27) — DONE (2026-09-24)
+
+- **Files touched:** `.github/workflows/ci.yml` (one new step, "Signed examples (byte-exact
+  known-answer/signed-examples/ fixtures)", inside the existing `conformance` job — not a
+  new job, so no new required-status-check context is introduced — positioned after
+  `Install` and before `Conformance`/`Unit tests`/`Types` for fastest-useful-signal ordering;
+  runs `pytest tests/test_signed_examples.py -v` with the same `AITP_SPEC` env the adjacent
+  `Unit tests` step already sets; a 20-line comment explains the regression class, the
+  step-not-job naming rationale, why the ordering, why not duplicated into
+  `floors`/`cross-platform`, and why `aitp-rs` stays out of scope). No test/production files
+  touched — this phase is CI-config-only.
+- **Tests:** none in the traditional sense (the plan's own Tests field: "this phase's 'test'
+  is the CI workflow file itself"). Verified locally the way CI runs it:
+  `AITP_SPEC=... pytest tests/test_signed_examples.py -v` → 8 passed. Full suite unaffected
+  (this phase touches no test files): `pytest tests/ -q` → 294 passed, unchanged from Phase
+  9's count. `mypy aitp_verifier tests` → clean, 35 files. YAML validated via
+  `yaml.safe_load` — well-formed, new step lands at the claimed position with the claimed
+  `env` block, job `name:`/`matrix` fields byte-identical to before (confirmed no
+  required-check-context rename).
+- **Acceptance criteria confirmed:** `pytest --collect-only` from the repo root shows
+  `floors`'s and `cross-platform`'s existing bundled `pytest -q` steps already collect all 8
+  `test_signed_examples.py` items, confirming the "don't duplicate" call adds zero coverage
+  gap, only skips a redundant fast-fail-ordering step in those two jobs. Since
+  `test_signed_examples.py` was already inside the general `Unit tests` step's collection
+  before this phase, a regression there already reddened the job — this phase only changes
+  *when in the step sequence* that becomes visible, not *whether* CI goes red, satisfying
+  the plan's "adds visibility, does not change what causes CI to go red" criterion.
+- **ASSUMPTIONS.md:** none logged this phase — the step-vs-job choice, placement, and scope
+  (conformance job only) were fully specified/reasoned through in the plan itself, not a
+  new judgment call.
+- **Docs:** the workflow file's own inline comment, per the plan's Docs field (no separate
+  doc file to update).
+- **Gap rounds:** 0 — PASS on first verify. Fresh Opus verifier (not critical per the
+  Autonomy ladder — CI-visibility-only, no production code, no public contract) confirmed
+  the step position, the zero-new-check-context claim (byte-exact comparison of `name:`/
+  `matrix` fields), the non-duplication reasoning (independently re-ran
+  `pytest --collect-only`), ran the new step and the full suite itself, spot-checked that
+  `test_signed_examples.py`'s functions genuinely call real `aitp_verifier` entry points
+  (not vacuous inline crypto), and judged the new comment's density against the file's
+  existing established convention (found it consistent, not thin).
+- **What's next:** PR 3's finalization pass (`/implement` §4 — Phases 9-10 collectively
+  close #26 and #27) before handing off to `/ship`.
+
+## PR 3 finalization (2026-09-24)
+
+Phase 10 committed as `8945582` on top of Phase 9's `debd6cf`. Confirmed branch is current
+with `origin/main` (no rebase needed; `main` == `origin/main` == merge-base(`main`,
+`test-infra-26-27`) == `fbb0694`). Doc sweep: both phases' own `Docs` fields already applied
+inline (README clause in Phase 9, `ci.yml`'s own comment in Phase 10); no further doc update
+needed. No new integration-test boundary introduced by either phase (test-infra/CI-config
+only) beyond what each phase's own tests already cover.
+
+**Final whole-PR verification (fresh Opus, cumulative diff `main...HEAD`, both phases
+against the plan as a whole): PASS.** Confirmed the one seam between the two phases worth
+checking: Phase 10's new CI step sets the same `AITP_SPEC` env var the adjacent `Unit tests`
+step already does (byte-identical expression), so it cannot accidentally trip Phase 9's new
+hard-failure path in CI for the wrong reason — verified by reading every `pytest`-invoking
+step across the whole workflow file (4 total, all set `AITP_SPEC`), plus confirmed a second,
+independent safety net (the sibling-directory fallback resolves correctly in CI's checkout
+layout even if the env var were dropped). Test-count chain re-confirmed by running, not
+reading: 291 (Phase 8 baseline, on `main`) → 294 (Phase 9, both with `AITP_SPEC` set and
+unset) → 294 (Phase 10, CI-config-only, no new tests). Both phases' `Status` lines in
+`plans/hardening-issues-23-27.md` read `DONE`, mutually consistent with each other and with
+this file's own entries. Independently re-derived the non-vacuity of Phase 9's 3 tests a
+second time (against `main`'s pre-Phase-9 code: 3/3 fail; against the plan's rejected nested-
+ordering design: exactly 1/3 fails, on the discriminating test, as claimed). Confirmed issue
+closure for both #26 (hard `pytest.fail` naming both resolution paths + the opt-out,
+verified executing both the failure and opt-out paths) and #27 (own named,
+independently-attributable CI step). Three non-blocking advisories, none requiring action
+before ship: (1) `plans/hardening-issues-23-27.md`'s Phase 9 prose still says "a silent
+73-test skip," pre-existing plan-authoring-time text predating Phases 1-8 growing the suite,
+not touched by either phase's actual diff; (2) the plan's own Phase 10 "Delivers" wording
+("a distinct red status") reads in slight tension with its "Approach" section's deliberate
+step-not-job choice — the plan's own Acceptance Criteria are worded correctly
+("independently-attributable step") and are what was actually verified against; (3) this PR
+introduces the suite's first nested-`pytest`-subprocess tests, which the `cross-platform`
+job will run on Windows/macOS for the first time — code looks sound (full env passthrough,
+`sys.executable`, `pathlib`, a 60s timeout), but real CI is what actually confirms Windows
+behavior; `/ship`'s CI watch covers this directly.
+
+No gaps. Ready for `/ship`.
+
+## Ship checkpoints (PR 3)
+
+- pushed test-infra-26-27 26ea67d
+- PR #34 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/34

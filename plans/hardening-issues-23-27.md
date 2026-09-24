@@ -1113,7 +1113,24 @@ the actual gap.
 
 ### Phase 9 — `conftest.py`: fail loudly, not silently, when the spec repo is missing (issue #26)
 
-**Status:** TODO
+**Status:** DONE (2026-09-24). Implemented per plan, including the load-bearing ordering
+correction from the review round (`AITP_SPEC == "none"` checked unconditionally as the
+fixture's first statement, before `_find_spec()` runs). `README.md` already mentions the
+`$AITP_SPEC`/`--spec-dir` dependency, so — per this phase's own Docs conditional — no doc
+edit was needed there; one advisory addition was made anyway (a clause naming the
+`AITP_SPEC=none` opt-out), since a missing spec repo is now a hard failure and the new
+opt-out is worth surfacing where a contributor would first look. One round of gaps: a
+fresh Opus verifier caught that the initial test suite (`tests/test_conftest_spec_
+resolution.py`) proved the fixture's *current* behavior correct but never actually
+exercised the ordering bug the review round's correction exists to prevent — both original
+tests build an isolated tree with no resolvable sibling spec repo, which is exactly the one
+condition under which the buggy (opt-out nested inside `found is None`) and fixed
+(opt-out unconditional and first) orderings behave identically. Closed by adding a third
+test, `test_explicit_no_spec_opt_out_wins_even_when_sibling_is_resolvable`, which plants a
+fake-but-resolvable sibling `agentidentitytrustprotocol` checkout and asserts
+`AITP_SPEC=none` still skips rather than silently running the full suite under it — hand-
+verified discriminating by reintroducing the exact nested-ordering bug and confirming this
+new test (and only this one) fails (`1 passed` instead of `1 skipped`), then restoring.
 
 **Delivers:** Running `pytest` locally without the sibling spec repo cloned now fails loudly
 (not a silent 73-test skip that still reports green), with an explicit, documented opt-out
@@ -1188,7 +1205,21 @@ matching file with this kind of run instructions actually exists.
 
 ### Phase 10 — CI: a dedicated, visible signed-examples check (issue #27)
 
-**Status:** TODO
+**Status:** DONE (2026-09-24). Implemented per plan: a new step (not a new job) inside the
+existing `conformance` job, positioned after `Install` and before `Conformance`/`Unit
+tests`/`Types` for fastest-useful-signal ordering, running `pytest
+tests/test_signed_examples.py -v` with the same `AITP_SPEC` env the adjacent `Unit tests`
+step already sets. One refinement beyond the plan's literal prose: used a path argument
+(`tests/test_signed_examples.py`) rather than a `-k` expression, which the plan described
+as "fundamentally a `pytest -k` subset" — a path argument is strictly more precise (a `-k`
+substring match could collide with same-named tests in another file), not a divergence in
+intent. Deliberately not duplicated into `floors`/`cross-platform` — confirmed via
+`pytest --collect-only` that both jobs' existing bundled `pytest -q` steps already collect
+all 8 `test_signed_examples.py` items, so a dedicated step there would add zero coverage,
+only the same fast-fail-ordering benefit, not worth tripling the checkout/install overhead
+for. PASS, round 1, fresh Opus verifier (not critical per the Autonomy ladder — CI-
+visibility-only, no production code, no public contract, no new required-status-check
+context). No gaps.
 
 **Delivers:** `.github/workflows/ci.yml` gains a separately named CI step/job that runs the
 production verifiers over the committed spec `signed-examples/` fixtures — the same tests
