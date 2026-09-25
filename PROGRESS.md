@@ -2344,3 +2344,38 @@ PR #51 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pu
   watch (library package, no `vercel.json`/`railway.json`/`fly.toml` in this repo).
 
 merged #51
+
+## issue #50 — jwk.py member-decode length bound
+
+- **Plan written:** `plans/issue-50-jwk-member-decode-bound.md` (single phase — no PR-split
+  decision needed, one file's fix). Repo map reused from #47's entry above (same module).
+- **Plan review round 1: REVISE, applied directly** — 6 findings, all mechanical (two
+  factual restatements in Context, an unexplained exclusion, a missing rejected
+  alternative, two vacuous acceptance criteria tightened to assert on the pre-gate's own
+  message text). No second review round — no new design surface introduced by the fixes.
+- **PR strategy:** one PR (single phase, single file's fix — no natural seam to split).
+- Branch: `fix/jwk-member-decode-bound`.
+- **Phase 1: PASS (round 1).** Verifier: fresh Opus subagent (default tier — not critical
+  per the Autonomy ladder: additive input validation, no public contract/schema change).
+  Independently re-ran `pytest`/`mypy` and ran two live mutation experiments (deleting the
+  pre-gate; flipping `>` to `>=` at the boundary) against a scratch copy of `jwk.py`,
+  confirming the new tests fail loudly and specifically in both cases — the strongest form
+  of non-vacuity proof this repo's verification gates have used yet. Two non-blocking
+  observations, both explicitly "no fix required": (1) the plan's own prose overstated
+  where the `issuer_key_from_config` exclusion is noted (code only, not tests) — fixed
+  directly, one line, no re-verify needed; (2) EC's own downstream "must each decode to 32
+  bytes" message has no dedicated test anywhere in the repo — a pre-existing gap this phase
+  didn't create or widen (its own pre-gate is covered twice), left alone rather than
+  expanding this phase's scope to backfill unrelated pre-existing coverage.
+- **Finalization:** single-phase plan — Phase 1's own diff *is* the cumulative diff, and
+  there are no phase seams to re-check (that's what a multi-phase finalization pass exists
+  to catch). Decided directly (Autonomy ladder, not-critical/procedural tier) not to spawn
+  a second fresh-Opus whole-feature verification pass that would re-ask the same questions
+  Phase 1's gate already answered against the same diff — re-ran the full suite once more
+  from a clean state instead (528 passed). `ASSUMPTIONS.md` checked: no entries for this
+  plan (nothing ambiguous was left for a caller to reconcile — both design calls were
+  decided directly and recorded in the plan's own Open Questions).
+- 528 tests passed, mypy clean (37 files). Files touched: `aitp_verifier/jwk.py`,
+  `tests/test_identity_oidc.py`, `tests/test_unknown_fields.py`, `CHANGELOG.md`,
+  `plans/issue-50-jwk-member-decode-bound.md`.
+- **Next:** `/ship`.
