@@ -2056,3 +2056,27 @@ plan; issue #47 is a filed, correctly-scoped follow-up, not an open assumption).
 pushing/opening the PR, do not `git add -A`/`git add .` — stage tracked files explicitly, the
 same way each commit in this phase already did, so the untracked local `uv.lock` (finding 3
 above) isn't swept in.
+
+## `/ship` (2026-09-25)
+
+- **Synced with `origin/main`:** 0 behind, 4 ahead — no rebase needed.
+- **Pre-merge verification gate: fresh Opus subagent, independent — PASS.** Re-verified from
+  scratch (not trusting the two prior `/implement`-phase passes): re-ran the full suite (492
+  passed), `mypy` (clean), `run_conformance.py` (68/0/1); independently swept the depth-cap
+  boundary (0-24 levels, including a 200,000-deep and a self-referential list); confirmed
+  `describe_value`'s message-safety fix at all three sites; confirmed the non-`Mapping` guard
+  across 7 hostile shapes; **diffed pre/post against a real `origin/main` worktree** and
+  confirmed all five hazards escape raw on `main` (3× `RecursionError`, 1×`AttributeError`,
+  1×`ValueError`) and all five convert to `AitpError KEY_RESOLUTION_FAILED` on this branch —
+  one more hazard than the three the CHANGELOG originally named (the malformed-scalar
+  `ValueError`, which also escaped unconverted pre-fix); confirmed both defense layers (cap +
+  `except RecursionError`) are independently load-bearing by defeating each in turn; probed
+  ~25 additional hostile JWK shapes beyond any test, found no non-`ValueError` escape; and
+  confirmed `retryable=True` is spec-mandated (`registries/error-codes.md:80`), not a judgment
+  call. Verdict: PASS, with 4 non-blocking nits — two stale `identity.py:181` line references
+  in test comments (the call site moved to `:210` across this branch's commits) and the
+  CHANGELOG's "all three" undercount (fixed to "all four", closing the same gap the pre/post
+  diff found independently); a `resolved`-name-reuse readability nit (left as-is, confirmed no
+  mypy-coverage cost); and the already-flagged `uv.lock` hygiene note. Fixed the two
+  substantive nits in commit `d832e7e`.
+- **Pushed:** `fix/jwk-issuer-keys-depth-bound` @ `d832e7e3ac5c3d9eb7104e84306bc0e4c2197752`.
