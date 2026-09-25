@@ -2081,3 +2081,7 @@ above) isn't swept in.
   substantive nits in commit `d832e7e`.
 - **Pushed:** `fix/jwk-issuer-keys-depth-bound` @ `d832e7e3ac5c3d9eb7104e84306bc0e4c2197752`.
 - **PR #48 opened:** https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/48
+- **CI:** all 8 jobs green (wheel build/smoke-test, cross-platform macOS/Windows @ 3.13,
+  conformance+tests+types @ 3.11/3.12/3.13/3.14, declared-floors install) — squash-merged as
+  `13093ca`, branch deleted, issue #38 closed automatically via the PR title. No deploy to
+  watch (library package, no `vercel.json`/`railway.json` in this repo).
