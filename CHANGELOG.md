@@ -144,8 +144,11 @@ here, so a future integrator has one place to check before upgrading.
   cost-bounded, not O(1): a `kty`/`crv` that is itself a container can no longer blow the
   message budget or the stack, but an enormous *scalar* string there still renders in full,
   same as any other JSON scalar `describe_value` is asked to describe; and `resolved_issuer_keys`
-  itself not being a mapping raised a raw `AttributeError` from `.get()`. All three now raise
-  `AitpError("KEY_RESOLUTION_FAILED")`, the same code already used for "no usable
+  itself not being a mapping raised a raw `AttributeError` from `.get()`; and a merely
+  malformed (not deep) value — e.g. an `int` — already raised `ValueError` from
+  `issuer_keys_from`'s own pre-existing final-else branch, which previously escaped
+  unconverted too, since nothing at this call site caught `ValueError` before now. All four
+  now raise `AitpError("KEY_RESOLUTION_FAILED")`, the same code already used for "no usable
   candidates" — a resolver that hands back garbage has produced exactly as much usable key
   material as one that hands back nothing. `issuer_keys_from`'s list nesting is capped at
   16 levels (public signature unchanged; the cap lives in a private helper so it cannot be

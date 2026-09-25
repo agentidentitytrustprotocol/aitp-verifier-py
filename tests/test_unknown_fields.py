@@ -2317,7 +2317,7 @@ def test_verify_identity_pinned_key_missing_pop_nonce_is_identity_failed_not_a_c
 # builds a `pinned_key` identity that never reaches `jwk.py` at all): minting
 # it populates `resolved_issuer_keys[issuer]` with one genuine, resolvable
 # key, so mutating that one entry (or the container itself) after minting --
-# not before, per this file's own convention -- reaches `identity.py:181`'s
+# not before, per this file's own convention -- reaches `identity.py:210`'s
 # call into `jwk.issuer_keys_from` through the real handshake entry point,
 # with every other gate ahead of it (manifest, envelope, proof) still
 # genuinely satisfied.

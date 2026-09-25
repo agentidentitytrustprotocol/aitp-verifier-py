@@ -620,7 +620,7 @@ def test_container_valued_jwt_header_param_is_reported_by_type_not_rendered(head
 
 # --- resolved_issuer_keys depth bound + malformed-shape hazards (issue #38) -----
 #
-# `identity.py:181` calls `jwk.issuer_keys_from` on `resolved_issuer_keys`, a
+# `identity.py:210` calls `jwk.issuer_keys_from` on `resolved_issuer_keys`, a
 # caller/resolver-supplied value with no schema at all. Three distinct
 # hazards on that one call, none reachable via `canonicalize` and so none
 # caught by the issue #31 fixes above: (1) `issuer_keys_from`'s own list walk
