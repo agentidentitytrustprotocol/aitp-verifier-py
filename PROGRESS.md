@@ -2494,4 +2494,11 @@ merged #53
 - Ship-gate fixes committed: `787c91f` on `fix/jwk-node-visit-bound`.
 - pushed fix/jwk-node-visit-bound 787c91f69372ffe6f6b90790a640120dca705af4
 - PR #55 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/55
-- **Next:** watch CI, merge.
+- CI green on all 8 required jobs (build+smoke-test, conformance+tests+types on Python
+  3.11/3.12/3.13/3.14, declared-floors install, cross-platform macOS + Windows).
+  `mergeStateStatus: CLEAN`, `mergeable: MERGEABLE`.
+- **merged #55** (squash, `60aafd8`, branch `fix/jwk-node-visit-bound` deleted both
+  remote and local). Closes issue #49.
+- **Next:** none — this was the second and last of the two open issues (#50, #49) the
+  user asked to ship this session. Follow-ups #52 and #54 remain open, filed
+  deliberately as out-of-scope residuals, not part of this session's scope.
