@@ -21,7 +21,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 
 from aitp_verifier.aid import parse_aid
 from aitp_verifier.b64 import b64url_decode, b64url_encode
-from aitp_verifier.crypto import PrivateKey, sha256
+from aitp_verifier.crypto import _MAX_RSA_EXPONENT_BITS, _MAX_RSA_MODULUS_BITS, PrivateKey, sha256
 from aitp_verifier.errors import AitpError
 from aitp_verifier import identity
 from aitp_verifier.identity import verify_identity
@@ -932,6 +932,123 @@ def test_jwk_unsupported_curve_p384() -> None:
 def test_jwk_rsa_modulus_under_2048_bits_rejected() -> None:
     with pytest.raises(ValueError):
         issuer_key_from_jwk({"kty": "RSA", "n": _SMALL_N_B64U, "e": _SMALL_E_B64U})
+
+
+def test_jwk_rsa_modulus_at_2047_bits_rejected() -> None:
+    """The literal floor boundary, one bit under -- the test above pins the
+    floor's *general* behavior with a separately-pinned under-sized key
+    (1024 bits), not the exact `_MIN_RSA_MODULUS_BITS - 1` edge."""
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "RSA", "n": _rsa_n_b64u(2047), "e": _SMALL_E_B64U})
+    assert "2047" in str(exc_info.value)
+
+
+# --- RSA modulus/exponent ceiling (issue #47) ----------------------------------
+#
+# Adjacent to the pre-existing floor check above: `from_rsa_numbers` enforced
+# only `_MIN_RSA_MODULUS_BITS`, with no upper bound on either the modulus or
+# the public exponent, and checked the floor only after already constructing
+# the full `cryptography` key object. Both new bounds are grounded in the
+# companion Rust implementation's own `ring` algorithm choice
+# (`ring::signature::RSA_PKCS1_2048_8192_SHA256`,
+# `ring::rsa::PublicExponent::MAX`) and checked via a cheap integer
+# `bit_length()` probe before any key object is built.
+
+
+def _rsa_n_b64u(bits: int) -> str:
+    """A synthetic odd integer of exactly `bits` bits, encoded as JWK `n`.
+
+    `cryptography` validates only `n >= 3` for a *public* key -- never
+    primality -- so a real RSA modulus is not needed to pin this boundary."""
+    n_int = (1 << (bits - 1)) | 1
+    return b64url_encode(n_int.to_bytes((bits + 7) // 8, "big"))
+
+
+def _rsa_e_b64u(bits: int) -> str:
+    """A synthetic odd integer of exactly `bits` bits, encoded as JWK `e`."""
+    e_int = (1 << (bits - 1)) | 1
+    return b64url_encode(e_int.to_bytes((bits + 7) // 8, "big"))
+
+
+def test_max_rsa_modulus_and_exponent_bits_are_8192_and_33() -> None:
+    """Pins the exact constants so the boundary tests below keep meaning what
+    their names say if they're ever changed."""
+    assert _MAX_RSA_MODULUS_BITS == 8192
+    assert _MAX_RSA_EXPONENT_BITS == 33
+
+
+def test_jwk_rsa_modulus_at_8192_bits_accepted() -> None:
+    """The cap bounds rejection at the ceiling too, not only the floor."""
+    parsed = issuer_key_from_jwk({"kty": "RSA", "n": _rsa_n_b64u(8192), "e": _SMALL_E_B64U})
+    assert parsed.jose_alg == "RS256"
+
+
+def test_jwk_rsa_modulus_over_8192_bits_rejected() -> None:
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "RSA", "n": _rsa_n_b64u(8193), "e": _SMALL_E_B64U})
+    assert "8193" in str(exc_info.value)
+
+
+def test_jwk_rsa_modulus_over_ceiling_never_constructs_a_key_object(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Proves the bit-length check runs before `RSAPublicNumbers(...)` is ever
+    called for an over-ceiling modulus -- not merely that the final result is
+    rejected. The raiser must raise something `pytest.raises(ValueError)`
+    cannot absorb, or this test would be vacuous even if the reorder
+    regressed."""
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise AssertionError("RSAPublicNumbers should not be called")
+
+    monkeypatch.setattr(rsa, "RSAPublicNumbers", _boom)
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "RSA", "n": _rsa_n_b64u(8193), "e": _SMALL_E_B64U})
+    assert "8193" in str(exc_info.value)
+
+
+def test_identity_oidc_rsa_modulus_over_ceiling_is_key_resolution_failed_not_a_crash() -> None:
+    identity = _identity()
+    env = _envelope()
+    jwt = _mint(identity, env, self_aid=SENDER_AID)
+    identity["proof"] = jwt
+    jwk = {"kty": "RSA", "n": _rsa_n_b64u(8193), "e": _SMALL_E_B64U}
+    with pytest.raises(AitpError) as exc_info:
+        _verify(identity, env, self_aid=SENDER_AID, issuer_keys={ISSUER: jwk})
+    assert _err(exc_info) == "KEY_RESOLUTION_FAILED"
+
+
+def test_jwk_rsa_exponent_at_33_bits_accepted() -> None:
+    """A valid 2048-bit modulus (the pinned known-answer key material) paired
+    with a public exponent at exactly the 33-bit ceiling still resolves."""
+    parsed = issuer_key_from_jwk({"kty": "RSA", "n": b64url_encode(_N_BYTES), "e": _rsa_e_b64u(33)})
+    assert parsed.jose_alg == "RS256"
+
+
+def test_jwk_rsa_exponent_over_33_bits_rejected() -> None:
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "RSA", "n": b64url_encode(_N_BYTES), "e": _rsa_e_b64u(34)})
+    assert "public exponent" in str(exc_info.value)
+    assert "34" in str(exc_info.value)
+
+
+def test_jwk_rsa_exponent_over_ceiling_never_constructs_a_key_object(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise AssertionError("RSAPublicNumbers should not be called")
+
+    monkeypatch.setattr(rsa, "RSAPublicNumbers", _boom)
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "RSA", "n": b64url_encode(_N_BYTES), "e": _rsa_e_b64u(34)})
+    assert "public exponent" in str(exc_info.value)
+    assert "34" in str(exc_info.value)
+
+
+def test_identity_oidc_rsa_exponent_over_ceiling_is_key_resolution_failed_not_a_crash() -> None:
+    identity = _identity()
+    env = _envelope()
+    jwt = _mint(identity, env, self_aid=SENDER_AID)
+    identity["proof"] = jwt
+    jwk = {"kty": "RSA", "n": b64url_encode(_N_BYTES), "e": _rsa_e_b64u(34)}
+    with pytest.raises(AitpError) as exc_info:
+        _verify(identity, env, self_aid=SENDER_AID, issuer_keys={ISSUER: jwk})
+    assert _err(exc_info) == "KEY_RESOLUTION_FAILED"
 
 
 def test_config_key_45_chars_rejected() -> None:

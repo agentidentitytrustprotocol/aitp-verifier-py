@@ -368,7 +368,27 @@ the existing depth-bound line. `CHANGELOG.md` gets one new `### Security-relevan
 
 ### Phase 2 — bound RSA modulus size, checked before key construction
 
-**Status:** TODO
+**Status:** DONE (2026-09-25). Implemented exactly as planned (including the exponent-bound
+scope addition decided during the plan's own review pass), no further approach divergence. A
+fresh Opus verification gate returned **PASS** on the first round, having independently
+re-run the full suite (501→512 passed after this phase's 11 new tests), `mypy` (including
+`tests/`), and `run_conformance.py` (0 failed, both against a `git stash` of just this
+phase's diff and against the diff applied), performed both fault-injection acceptance
+criteria itself (modulus ceiling and exponent ceiling, one at a time, `Edit`-based, tree
+restored byte-identically each time), and additionally proved the two monkeypatch tests
+non-vacuous with a third, independent injection (a bare `RSAPublicNumbers(...)` call inserted
+before the bound checks, confirmed both monkeypatch tests catch it). Five non-blocking items
+from that gate were closed before commit: `identity.py`'s own docstring ("RSA, 2048+ bit
+modulus") updated to the full `[2048, 8192]` + 33-bit-exponent range (a doc-drift item the
+gate found in a file outside this phase's `Files` list, since Phase 1 and Phase 2 together
+made `jwk.py`'s equivalent line stale but `identity.py`'s was missed); `PROGRESS.md`'s Repo
+map updated to describe the post-implementation shape of `jwk.py` and `crypto.py`, not the
+pre-implementation one; `uv.lock` added to `.gitignore` (never tracked in this repo's
+history, flagged as a hygiene risk by three separate verification passes this session); two
+exponent-boundary test assertions tightened to check the `"public exponent"` message text,
+not only the bit count; and a literal `test_jwk_rsa_modulus_at_2047_bits_rejected` added
+(criterion 2 was previously pinned only by a separately-sized 1024-bit key, per the plan's own
+Tests section, not the exact `_MIN_RSA_MODULUS_BITS - 1` edge).
 
 **Delivers:** `PublicKey.from_rsa_numbers` rejects an RSA modulus outside `[2048, 8192]` bits
 *and* a public exponent wider than 33 bits, both checked *before* constructing a

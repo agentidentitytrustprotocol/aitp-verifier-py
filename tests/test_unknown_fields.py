@@ -2397,6 +2397,45 @@ def test_handshake_past_max_candidates_resolved_issuer_key_is_key_resolution_fai
     assert exc.value.code == "KEY_RESOLUTION_FAILED"
 
 
+def test_handshake_rsa_modulus_over_ceiling_resolved_issuer_key_is_key_resolution_failed_not_a_crash(
+    spec_dir: Path,
+) -> None:
+    """Sibling hazard, same issue #47: `from_rsa_numbers` had no upper bound
+    on the RSA modulus. An 8193-bit synthetic modulus, replacing the
+    fixture's single resolved key, must still resolve to
+    `KEY_RESOLUTION_FAILED`."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    issuer = minted["envelope"]["payload"]["identity"]["issuer"]
+    n_int = (1 << 8192) | 1  # exactly 8193 bits, odd
+    n_b64u = b64url_encode(n_int.to_bytes((n_int.bit_length() + 7) // 8, "big"))
+    minted["resolved_issuer_keys"][issuer] = {"kty": "RSA", "n": n_b64u, "e": "AQAB"}
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "KEY_RESOLUTION_FAILED"
+
+
+def test_handshake_rsa_exponent_over_ceiling_resolved_issuer_key_is_key_resolution_failed_not_a_crash(
+    spec_dir: Path,
+) -> None:
+    """Sibling hazard, same issue #47: `from_rsa_numbers` had no bound on the
+    RSA public exponent, unlike `ring`'s own 33-bit ceiling. A 34-bit
+    synthetic exponent against a valid 2048-bit modulus, replacing the
+    fixture's single resolved key, must still resolve to
+    `KEY_RESOLUTION_FAILED`."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    issuer = minted["envelope"]["payload"]["identity"]["issuer"]
+    n_int = (1 << 2047) | 1  # a valid, exactly-2048-bit synthetic modulus
+    e_int = (1 << 33) | 1  # exactly 34 bits, odd -- one past the 33-bit ceiling
+    n_b64u = b64url_encode(n_int.to_bytes((n_int.bit_length() + 7) // 8, "big"))
+    e_b64u = b64url_encode(e_int.to_bytes((e_int.bit_length() + 7) // 8, "big"))
+    minted["resolved_issuer_keys"][issuer] = {"kty": "RSA", "n": n_b64u, "e": e_b64u}
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "KEY_RESOLUTION_FAILED"
+
+
 @pytest.mark.parametrize("identity", ["not-an-object", ["a"], 5, None])
 def test_handshake_hello_mistyped_identity_reports_identity_failed(identity: Any, spec_dir: Path) -> None:
     """Unlike the checks above, this one runs AFTER `verify_manifest` (mh-002/

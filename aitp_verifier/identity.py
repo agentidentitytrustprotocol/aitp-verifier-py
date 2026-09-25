@@ -10,7 +10,8 @@ Two binding types feed the mutual handshake:
   checks (``iss``/``sub``/``exp``/``iat``/``aud``/``nonce``/``cnf.jkt``) run
   without a successful signature verification directly ahead of them. The
   issuer MUST be a trusted anchor. Supported algorithms are ``EdDSA``
-  (Ed25519), ``ES256`` (P-256) and ``RS256`` (RSA, 2048+ bit modulus); the
+  (Ed25519), ``ES256`` (P-256) and ``RS256`` (RSA, modulus between 2048 and
+  8192 bits, public exponent at most 33 bits — see ``crypto.py``); the
   issuer key may be supplied as a legacy 43/44-char raw base64url string, a
   single JWK, or a JWKS (``{"keys": [...]}"``) — see ``jwk.py``. The header's
   ``alg`` is pinned to the *resolved key's own structural algorithm* and

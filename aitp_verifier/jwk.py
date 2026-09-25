@@ -112,7 +112,8 @@ def issuer_key_from_jwk(value: dict[str, Any]) -> IssuerKey:
     * ``kty=OKP``, ``crv=Ed25519`` — a 32-byte ``x`` — ``jose_alg="EdDSA"``.
     * ``kty=EC``, ``crv=P-256`` — 32-byte ``x`` and ``y`` — ``jose_alg="ES256"``.
     * ``kty=RSA`` — base64url ``n``/``e`` — ``jose_alg="RS256"`` (modulus MUST
-      be at least 2048 bits; see ``crypto.PublicKey.from_rsa_numbers``).
+      be between 2048 and 8192 bits and the public exponent at most 33 bits;
+      see ``crypto.PublicKey.from_rsa_numbers``).
 
     Raises ``ValueError`` for any other/malformed shape.
     """

@@ -2090,14 +2090,18 @@ above) isn't swept in.
 
 ## Repo map
 
-- `aitp_verifier/jwk.py` — Phase 1's edit site. `_MAX_DEPTH = 16` (line 185, #38's precedent
-  for constant placement/style), `issuer_keys_from`/`_issuer_keys_from` (188-236, the walk to
-  restructure into an accumulator). `__all__` (51-58) does not export `_issuer_keys_from`.
-- `aitp_verifier/crypto.py` — Phase 2's edit site. `_MIN_RSA_MODULUS_BITS = 2048` (line 45),
-  `PublicKey.from_rsa_numbers` (91-101: `.public_key()` at 98, floor check at 99-100 —
-  construct-then-check today). Module docstring RSA paragraph (18-27) already cites
-  `ring::signature::RSA_PKCS1_2048_8192_SHA256` at 23-27 for the floor's own justification —
-  the ceiling half of that same citation is Phase 2's grounding.
+- `aitp_verifier/jwk.py` — Phase 1's edit site, **now implemented (2026-09-25)**:
+  `_MAX_DEPTH = 16` still at line 185; `_MAX_CANDIDATES = 64` added at 190-201;
+  `issuer_keys_from`/`_issuer_keys_from` (204-262) now thread a shared `out` accumulator
+  through every recursive call and candidate site, guarded by `_reserve` (266-276).
+  `__all__` (54-61) does not export `_issuer_keys_from`/`_reserve`.
+- `aitp_verifier/crypto.py` — Phase 2's edit site, **now implemented (2026-09-25)**:
+  `_MIN_RSA_MODULUS_BITS = 2048` still at line 49; `_MAX_RSA_MODULUS_BITS = 8192` added at 56,
+  `_MAX_RSA_EXPONENT_BITS = 33` at 63. `PublicKey.from_rsa_numbers` (109-134) now checks both
+  `n`'s and `e`'s `bit_length()` against all bounds *before* calling
+  `rsa.RSAPublicNumbers(...).public_key()` at 134 (previously: construct-then-check-floor-only).
+  Module docstring RSA paragraph (18-31) now cites both
+  `ring::signature::RSA_PKCS1_2048_8192_SHA256` and `ring::rsa::PublicExponent::MAX`.
 - `aitp_verifier/identity.py` — read-only for this plan. `issuer_keys.get(issuer)` at 208, the
   guarded `issuer_keys_from(resolved)` call at 210, and `_verify_oidc`'s `except ValueError`
   clause at **219-220** (not 207-208, as an earlier draft of this map said) already convert
@@ -2204,3 +2208,22 @@ finalization pass are complete.
   mypy still clean. The plan's own "KNOWN RESIDUAL" edge case (candidate-free-container walk
   cost, deliberately left open) filed as **issue #49** rather than left unfiled.
   **Next: Phase 2** (RSA modulus + exponent ceiling in `crypto.py`).
+- **Phase 2: DONE (2026-09-25).** `_MAX_RSA_MODULUS_BITS = 8192` and
+  `_MAX_RSA_EXPONENT_BITS = 33` added next to `_MIN_RSA_MODULUS_BITS` in
+  `aitp_verifier/crypto.py`; `PublicKey.from_rsa_numbers` reordered to check both `n`'s and
+  `e`'s `bit_length()` against all bounds before calling `RSAPublicNumbers(...).public_key()`.
+  No approach divergence — including the exponent-bound scope addition decided during the
+  plan's own review pass, implemented exactly as recorded there. Files touched:
+  `aitp_verifier/crypto.py`, `aitp_verifier/jwk.py` (one-line docstring), `tests/test_identity_oidc.py`
+  (11 new tests), `tests/test_unknown_fields.py` (2 new e2e tests), `CHANGELOG.md` (extended
+  Phase 1's existing entry in place, per this phase's `Depends on` note, not a second bullet).
+  **Verifier: fresh Opus, 1 round, PASS.** Independently re-ran the full suite (501→512),
+  `mypy` (including `tests/`), and `run_conformance.py` (0 failed against both a stashed
+  pre-Phase-2 baseline and the diff applied); performed both fault-injection acceptance
+  criteria itself, one bound at a time, via `Edit`; and additionally proved the two
+  monkeypatch tests non-vacuous with its own independent injection. Five non-blocking items
+  closed before commit (see the plan's own Phase 2 status note for detail): `identity.py`'s
+  stale RSA docstring line, `PROGRESS.md`'s Repo map updated to the post-implementation
+  shape, `uv.lock` added to `.gitignore`, two exponent-test assertions tightened to check
+  message text not only the bit count, and a literal 2047-bit floor-boundary test added.
+  Suite now 513 passed, mypy clean (36 files). **Next: finalization pass (§4), then `/ship`.**
