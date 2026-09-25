@@ -211,3 +211,24 @@ here, so a future integrator has one place to check before upgrading.
   decode work per verification call, an increase over a tighter per-member cap but still a
   strict improvement over the unbounded pre-fix cost — is tracked in issue #52, found
   during this fix's own pre-merge review)
+- **`issuer_keys_from`'s list walk now bounds the total number of nodes visited**
+  (`_MAX_NODES_VISITED = 4096`), independent of whether any candidate is ever produced.
+  Previously, a *candidate-free* value (e.g. a long list of `None`, or `{"keys": []}`
+  entries) never triggered `_MAX_CANDIDATES` (issue #47) at all, since that cap only bounds
+  candidates actually parsed — the walk stayed linear and completely unbounded in the size
+  of the caller-supplied structure (measured: `issuer_keys_from([None] * 5_000_000)` cost
+  ~117ms, 0 candidates, no cap fired). Worse, for an *aliased* Python value — the same list
+  object referenced more than once inside its own containing structure, unreachable via
+  JSON but reachable from a direct Python caller constructing `resolved_issuer_keys`
+  directly — the walk was not merely unbounded but **exponential**: `_MAX_DEPTH` (16)
+  nested lists each holding `F` references to the same next-level list produced
+  `sum(F**i for i in range(17))` node visits (order `F^16`) from only `O(16·F)` actual
+  allocated memory (measured: 16 levels, fanout 3, ~384 bytes of allocated objects, cost
+  ~2.75s CPU, 0 candidates, neither existing cap ever fired). A new counter, checked at the top of every walk step before any further
+  recursion, closes both cases in one fix: an oversized or aliased value is rejected after
+  at most 4096 total walk steps (a few hundred microseconds), regardless of the caller-
+  supplied structure's true size or branching factor. Every legitimate value (a genuine
+  value nests at most 1 level deep and spreads at most 64 candidates across its
+  containers) needs on the order of tens of nodes — ~40-60x headroom under the new cap.
+  Converges on the same `AitpError("KEY_RESOLUTION_FAILED")` as every other malformed-
+  `resolved_issuer_keys` hazard, through the same unmodified call site. (issue #49)

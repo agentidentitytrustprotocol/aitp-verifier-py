@@ -42,7 +42,8 @@ from aitp_verifier.errors import AitpError
 from aitp_verifier.fields import reject_unknown_fields
 from aitp_verifier.handshake import verify_handshake_payload
 from aitp_verifier.identity import verify_identity
-from aitp_verifier.jwk import _MAX_B64_MEMBER_CHARS, _MAX_CANDIDATES, thumbprint_for_aid
+import aitp_verifier.jwk as jwk
+from aitp_verifier.jwk import _MAX_B64_MEMBER_CHARS, _MAX_CANDIDATES, _MAX_NODES_VISITED, thumbprint_for_aid
 from aitp_verifier.jws import encode_jws
 from aitp_verifier.keys import load_kat_keys
 from aitp_verifier.manifest import verify_manifest
@@ -2479,6 +2480,53 @@ def test_handshake_oversized_jwk_member_resolved_issuer_key_is_key_resolution_fa
         verify_handshake_payload(minted)
     assert exc.value.code == "KEY_RESOLUTION_FAILED"
     assert "exceeds the maximum encoded length" in str(exc.value)
+
+
+def test_handshake_aliased_resolved_issuer_key_is_key_resolution_failed_via_node_visit_cap(
+    spec_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sibling hazard, issue #49 (a follow-up to #47): `_issuer_keys_from`'s
+    walk had no bound on total nodes visited, so a *candidate-free* value
+    (`_MAX_CANDIDATES` never fires) was linear-and-unbounded for ordinary
+    input, and genuinely exponential for an *aliased* Python object graph --
+    16 nested lists each holding 3 references to the same next-level list
+    object (~384 bytes of actual allocated memory), which the fixture's
+    single resolved key is replaced with here. Without this cap:
+    sum(3**i for i in range(17)) (~64.5 million) node visits, multiple
+    seconds of CPU, before eventually
+    still resolving to `KEY_RESOLUTION_FAILED` -- so an assertion on the
+    error code alone would already have passed before this fix and would
+    prove nothing about whether the new cap fired. Proven instead via the
+    same non-vacuous monkeypatch-proof technique issue #50's tests already
+    established (`tests/test_identity_oidc.py`'s `_guarded_b64url_decode`),
+    here wrapping `_issuer_keys_from` itself to count every recursive call:
+    the wrapper is installed as the module's own `_issuer_keys_from`
+    binding, so both the initial call from `issuer_keys_from` and every one
+    of its own internal recursive calls (which resolve the name against the
+    same module namespace at call time) route through it, giving an exact
+    count of every node visited -- not merely that some `ValueError`
+    eventually surfaced."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    issuer = minted["envelope"]["payload"]["identity"]["issuer"]
+    aliased: Any = None
+    for _ in range(16):
+        aliased = [aliased, aliased, aliased]
+    minted["resolved_issuer_keys"][issuer] = aliased
+
+    real_issuer_keys_from = jwk._issuer_keys_from
+    calls = [0]
+
+    def _counting_issuer_keys_from(*args: Any, **kwargs: Any) -> None:
+        calls[0] += 1
+        return real_issuer_keys_from(*args, **kwargs)
+
+    monkeypatch.setattr(jwk, "_issuer_keys_from", _counting_issuer_keys_from)
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "KEY_RESOLUTION_FAILED"
+    assert "visits more than" in str(exc.value)
+    assert calls[0] == _MAX_NODES_VISITED + 1
 
 
 @pytest.mark.parametrize("identity", ["not-an-object", ["a"], 5, None])

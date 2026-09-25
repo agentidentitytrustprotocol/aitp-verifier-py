@@ -29,6 +29,8 @@ from aitp_verifier.jwk import (
     _MAX_B64_MEMBER_CHARS,
     _MAX_CANDIDATES,
     _MAX_DEPTH,
+    _MAX_NODES_VISITED,
+    _issuer_keys_from,
     issuer_key_from_config,
     issuer_key_from_jwk,
     issuer_keys_from,
@@ -910,6 +912,79 @@ def test_identity_oidc_past_max_candidates_is_key_resolution_failed_not_a_crash(
     with pytest.raises(AitpError) as exc_info:
         _verify(identity, env, self_aid=SENDER_AID, issuer_keys={ISSUER: _jwks(_MAX_CANDIDATES + 1)})
     assert _err(exc_info) == "KEY_RESOLUTION_FAILED"
+
+
+# --- resolved_issuer_keys node-visit bound (issue #49) -------------------------
+#
+# Neither bound above catches a *candidate-free* value: `_MAX_DEPTH` bounds
+# nesting, `_MAX_CANDIDATES` bounds candidates actually appended to `out` via
+# `_reserve` -- but a value made entirely of `None`/`{"keys": []}` entries
+# never calls `_reserve` at all, so the walk stays linear and unbounded in
+# the caller-supplied structure's size. Worse, for an *aliased* Python value
+# (the same list object referenced more than once inside its own containing
+# structure -- unreachable via JSON, only via a direct Python caller), the
+# walk is exponential, not merely unbounded: `_MAX_DEPTH` (16) nested lists
+# each holding F references to the same next-level list produce
+# sum(F**i for i in range(17)) node visits (order F^16) from O(16*F)
+# actual allocated memory. `_MAX_NODES_VISITED` bounds total
+# `_issuer_keys_from` calls regardless of shape or aliasing.
+
+
+def test_max_nodes_visited_is_4096() -> None:
+    """Pins the exact constant so the boundary tests below keep meaning what
+    their names say if it's ever changed."""
+    assert _MAX_NODES_VISITED == 4096
+
+
+def test_issuer_keys_from_at_max_nodes_visited_resolves() -> None:
+    """A candidate-free value at exactly the cap resolves to `[]`, not an
+    error -- the cap bounds rejection, not legitimate (if pointless) width.
+    The root list itself consumes the first visit, so
+    `_MAX_NODES_VISITED - 1` list items land exactly on 4096 total visits."""
+    candidates = issuer_keys_from([None] * (_MAX_NODES_VISITED - 1))
+    assert candidates == []
+
+
+def test_issuer_keys_from_large_candidate_free_flat_list_raises_node_visit_error() -> None:
+    """One node past the cap -- proving the new cap fires, not `_MAX_DEPTH`
+    (depth stays at 1 for every item in a flat list) or `_MAX_CANDIDATES`
+    (0 candidates are ever produced by a list of `None`)."""
+    with pytest.raises(ValueError) as exc_info:
+        issuer_keys_from([None] * _MAX_NODES_VISITED)
+    assert f"visits more than {_MAX_NODES_VISITED} nodes" in str(exc_info.value)
+
+
+def test_issuer_keys_from_large_candidate_free_jwks_list_raises_node_visit_error() -> None:
+    """The other candidate-free shape the module docstring names alongside
+    `None`: a long list of empty JWKS objects. Each `{"keys": []}` dict is a
+    terminal leaf (dicts never recurse), so `_MAX_CANDIDATES`/`_reserve`
+    never fires either -- only the node-visit cap catches this shape."""
+    with pytest.raises(ValueError) as exc_info:
+        issuer_keys_from([{"keys": []}] * _MAX_NODES_VISITED)
+    assert f"visits more than {_MAX_NODES_VISITED} nodes" in str(exc_info.value)
+
+
+def test_issuer_keys_from_aliased_structure_raises_node_visit_error_exact_count() -> None:
+    """The issue's own reproduction: 16 nested lists, each holding 3
+    references to the *same* next-level list object (~384 bytes of actual
+    allocated memory) -- without this cap, sum(3**i for i in range(17))
+    (~64.5 million) node visits, measured at multiple seconds of CPU.
+    Calls `_issuer_keys_from` directly (not the public `issuer_keys_from`)
+    to assert on `visits[0]` itself --
+    a deterministic, non-timing proof that the cap fired after exactly
+    `_MAX_NODES_VISITED + 1` calls, not merely that some `ValueError`
+    eventually surfaced. `pytest.raises(ValueError)` alone cannot
+    distinguish a fast rejection from one that still took seconds to reach;
+    the exact count can."""
+    value: Any = None
+    for _ in range(16):
+        value = [value, value, value]
+    out: list[Any] = []
+    visits = [0]
+    with pytest.raises(ValueError) as exc_info:
+        _issuer_keys_from(value, 0, out, visits)
+    assert f"visits more than {_MAX_NODES_VISITED} nodes" in str(exc_info.value)
+    assert visits[0] == _MAX_NODES_VISITED + 1
 
 
 # --- jwk.py unit tests ----------------------------------------------------------

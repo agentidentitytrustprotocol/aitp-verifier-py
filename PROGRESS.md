@@ -2421,3 +2421,77 @@ PR #53 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pu
   watch (library package, no `vercel.json`/`railway.json`/`fly.toml` in this repo).
 
 merged #53
+
+## issue #49 — jwk.py node-visit bound (candidate-free / aliased containers)
+
+- **Plan written:** `plans/issue-49-issuer-keys-node-visit-bound.md` (single phase —
+  `_MAX_NODES_VISITED = 4096`, threaded via a `visits: list[int]` counter box alongside
+  `depth`/`out` in `_issuer_keys_from`). Repo map reused from #47/#50's entries above (same
+  module).
+- **Plan review round 1: REVISE, applied directly** — 4 findings, all verified live by the
+  reviewer (not just reasoned about): a missing three-cap-composition note in Approach; two
+  factual errors in Edge cases (RecursionError threshold understated ~4x; wrong test cited
+  for a node-visit-count example); criteria 3/5's wall-clock timing assertions replaced
+  with deterministic exact-count assertions (internally inconsistent with the plan's own
+  rejection of timers as a *bounding mechanism* — same inconsistency was creeping into the
+  *test evidence*); one false sub-clause deleted from a rejected alternative. No second
+  round — every fix was a direct, cited, already-verified-live application.
+- **Follow-up filed:** issue #54 — `jcs.py::_serialize` has the identical aliasing-
+  amplification shape (recurses into dicts too, allocates output per node — worse than
+  #49, an OOM risk not only CPU) — found during this plan's own review, out of scope here
+  (different module/function), tracked separately.
+- **PR strategy:** one PR (single phase, single file's fix — no natural seam to split).
+- Branch: `fix/jwk-node-visit-bound`.
+- **Phase 1: DONE.** `_MAX_NODES_VISITED = 4096` + `_visit(visits)` (called as the first
+  statement in `_issuer_keys_from`, ahead of the depth check) in `aitp_verifier/jwk.py`;
+  `visits: list[int]` threaded from `issuer_keys_from` through the sole recursive call
+  site. 5 new tests (4 unit in `tests/test_identity_oidc.py` incl. a direct-call exact-
+  count proof on the aliased fanout-3/depth-16 reproduction; 1 e2e in
+  `tests/test_unknown_fields.py` using a monkeypatched recursive-call-counting wrapper on
+  `jwk._issuer_keys_from`) — both non-vacuous by deterministic exact-count assertion
+  (`visits[0] == _MAX_NODES_VISITED + 1`), not timing. 534 passed (up from 529), mypy
+  clean (37 files).
+  - **Verifier: fresh Opus, round 1 — PASS.** Not a cold diff read: independently re-ran
+    the exact-count tests, measured the pre-fix code directly (confirmed `[None]*5M` ->
+    0.116s / aliased depth-16 -> 2.651s CPU, matching the CHANGELOG's cited figures),
+    proved the monkeypatch-wrapper interception three ways (positive control, aliased-
+    case count, and a negative-control clone over a frozen-globals snapshot to show the
+    assertion is genuinely load-bearing), and ran break-the-fix mutation testing
+    (`_visit` commented out -> all 3 new non-vacuous assertions fail loudly, confirming
+    no vacuity). Also probed unplanned adversarial shapes live: a `list` subclass with an
+    infinite `__iter__` (hung forever pre-fix, now capped — an unplanned bonus this fix
+    delivers), cross-call budget isolation (3 consecutive at-cap calls each resolve
+    independently, no state leaks across calls), and the `{"keys": []}` candidate-free
+    shape (also capped, just untested — noted as a nit).
+  - **4 non-blocking nits — 2 applied directly** (stale "loop above" -> "below" comment in
+    `jwk.py`; two test docstrings' inexact "3**16 (~43 million)" node-count corrected to
+    "sum(3**i for i in range(17)) (~64.5 million)"), re-verified green without a second
+    fresh-agent round (mechanical, cited-source corrections). 2 accepted as-is: a harmless
+    module-vs-local `jwk` name reuse in `test_unknown_fields.py`; a cosmetic docstring-
+    clause ordering in `jwk.py`'s module docstring.
+  - Files touched: `aitp_verifier/jwk.py`, `tests/test_identity_oidc.py`,
+    `tests/test_unknown_fields.py`, `CHANGELOG.md`,
+    `plans/issue-49-issuer-keys-node-visit-bound.md`, `PROGRESS.md` (this entry).
+  - No `ASSUMPTIONS.md` entries logged for this plan (every design decision was resolved
+    directly per the Autonomy ladder, recorded in the plan's own Open questions instead).
+  - Single-phase plan — Phase 1's own gate covers the whole feature; no separate
+    finalization-verify pass needed (same precedent as #50).
+- Phase 1 committed: `4b933e8` on `fix/jwk-node-visit-bound`.
+- **`/ship` pre-merge gate: PASS** (fresh Opus verifier, round 1). Independently
+  re-derived the node counts, headroom claim, and cap-composition reasoning rather than
+  trusting the Phase 1 gate's numbers on sight; ran its own break-the-fix mutation
+  (via a pytest plugin, no repo file touched) confirming the e2e test's extra
+  assertions are load-bearing, not just the error code. Confirmed zero
+  `ASSUMPTIONS.md` entries for this plan and zero doc drift. 4 non-blocking
+  documentation nits, all applied directly (no re-verify round — comment/doc/test-
+  coverage only, no executable-code change): the `F^16` leaf-count figure corrected
+  to the exact `sum(F**i for i in range(17))` total-visit figure in the remaining
+  spots (`jwk.py`, `CHANGELOG.md`, the plan's Context, `test_identity_oidc.py`); the
+  CHANGELOG's "60x+ headroom" over-claim corrected to "~40-60x"; a new test added
+  (`test_issuer_keys_from_large_candidate_free_jwks_list_raises_node_visit_error`)
+  for the `{"keys": []}` candidate-free shape the docs already claimed was covered.
+  Re-verified green: 535 passed (534 + 1 new test), mypy clean (37 files).
+- Ship-gate fixes committed: `787c91f` on `fix/jwk-node-visit-bound`.
+- pushed fix/jwk-node-visit-bound 787c91f69372ffe6f6b90790a640120dca705af4
+- PR #55 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/55
+- **Next:** watch CI, merge.
