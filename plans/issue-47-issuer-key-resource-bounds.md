@@ -465,13 +465,26 @@ wording the phase is genuinely independently shippable in either order.
    | 1 MB (8,388,608 bits) | **23.2 ms** | 0.47 ms | 3.1 ms |
    | 8 MB (67,108,864 bits) | **188 ms** | 3.6 ms | ~24 ms |
 
-   So the reorder removes ~3.1ms of ~27ms (~11%) at 1 MB. With Phase 1's 64-candidate cap in
-   place, a 64-entry JWKS of 8 MB moduli still costs ~12 s per `verify_handshake_payload` call,
-   essentially all of it in `b64url_decode` at `jwk.py:146-147`, which **neither phase bounds**.
-   A cheap O(1) pre-gate on the *encoded* length of `n` (reject before decoding when
-   `len(value["n"])` exceeds the ~1366 base64url chars an 8192-bit modulus needs, plus slack)
-   would close that, but it lives in `jwk.py::issuer_key_from_jwk`, not `crypto.py`, so adopting
-   it here would break this phase's "touches only `crypto.py`" boundary. It is therefore left
+   So the reorder removes ~3.1ms of ~27ms (~11%) at 1 MB. **Corrected during this plan's
+   finalization pass** (an earlier draft of this paragraph claimed "~12s for a 64-entry JWKS
+   of 8 MB moduli," extrapolating the per-candidate decode cost across all 64 candidates —
+   that does not happen): `issuer_keys_from` fails fast on the first malformed/rejected
+   candidate (Phase 1's own `_issuer_keys_from`, and `issuer_key_from_jwk`'s own
+   final-else/`ValueError` branches, both existed before #47), so an 8 MB modulus — itself
+   already over `_MAX_RSA_MODULUS_BITS` — is decoded and rejected on the *first* such entry a
+   JWKS carries; the walk never reaches a second one. Measured live during finalization: a
+   64-entry JWKS of 8 MB moduli costs **~194ms**, not ~12s — indistinguishable from the
+   1-candidate case (~180ms), because only one decode ever happens. The true residual is
+   bounded by a small constant number of oversized decodes per call (worst case measured
+   ~410ms, from the EC `x`+`y` path, which decodes both coordinates before checking either's
+   length), genuinely O(what the caller already materialized) with no amplification — the
+   same acceptability argument this plan already makes for the KNOWN RESIDUAL in Phase 1's
+   own edge cases. Still worth closing eventually (see issue #49's sibling below), but at a
+   far smaller magnitude than originally stated here. A cheap O(1) pre-gate on the *encoded*
+   length of `n` (reject before decoding when `len(value["n"])` exceeds the ~1366 base64url
+   chars an 8192-bit modulus needs, plus slack) would close that, but it lives in
+   `jwk.py::issuer_key_from_jwk`, not `crypto.py`, so adopting it here would break this
+   phase's "touches only `crypto.py`" boundary. It is therefore left
    out and recorded as a follow-up candidate (see Long-term posture). **This phase's real
    justification is the security/parity one in step 1 — an accepted modulus the companion
    implementation refuses to verify against — with the reorder as a cheap, correct bonus.**
@@ -691,8 +704,13 @@ why that one, specifically, didn't stay on this list.)
    `issuer_keys_from([None] * 5_000_000)` → 159ms, 0 candidates, `_MAX_CANDIDATES` never fires.
    Closing it needs a nodes-visited counter threaded alongside `out`. **Filed as issue #49.**
 2. **Unbounded `b64url_decode` of `n`/`e`** (Phase 2's Approach step 2): 188ms for one 8 MB
-   modulus, upstream of `from_rsa_numbers` at `jwk.py:146-147` and untouched by either phase.
-   Closing it needs an O(1) encoded-length pre-gate in `jwk.py::issuer_key_from_jwk`.
+   modulus, upstream of `from_rsa_numbers` at `jwk.py:150-151` and untouched by either phase.
+   Bounded in practice to a small constant number of such decodes per call (~194ms measured
+   for a full 64-entry hostile JWKS, not a per-candidate multiple — `issuer_keys_from` fails
+   fast on the first rejected candidate; worst variant measured ~410ms, via the EC `x`+`y`
+   path) — corrected during this plan's finalization pass, which found an earlier draft of
+   Phase 2's own Approach section overstated this residual by roughly 60x. Closing it needs an
+   O(1) encoded-length pre-gate in `jwk.py::issuer_key_from_jwk`. **Filed as issue #50.**
 
 Both remaining dimensions are pure resource-cost gaps, not security/parity ones — the one
 security/interop-flavored gap this review pass found (the RSA exponent) is the one that got

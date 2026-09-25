@@ -2436,6 +2436,28 @@ def test_handshake_rsa_exponent_over_ceiling_resolved_issuer_key_is_key_resoluti
     assert exc.value.code == "KEY_RESOLUTION_FAILED"
 
 
+def test_handshake_jwks_within_candidate_cap_with_over_ceiling_rsa_candidate_is_key_resolution_failed(
+    spec_dir: Path,
+) -> None:
+    """Phase 1 x Phase 2 seam, end to end: a JWKS well within the
+    candidate-count cap (5 entries, not 65) whose one RSA entry exceeds the
+    modulus ceiling must still resolve to `KEY_RESOLUTION_FAILED`, proving
+    the RSA bound is reached and enforced for a JWKS-embedded candidate
+    through the full handshake path, not only for a bare top-level JWK
+    (every other Phase 2 e2e test above replaces the whole resolved value
+    with a single JWK, never a JWKS containing one)."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    issuer = minted["envelope"]["payload"]["identity"]["issuer"]
+    ed_jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(b"\x01" * 32)}
+    n_int = (1 << 8192) | 1  # exactly 8193 bits, odd -- one past the modulus ceiling
+    bad_rsa_jwk = {"kty": "RSA", "n": b64url_encode(n_int.to_bytes((n_int.bit_length() + 7) // 8, "big")), "e": "AQAB"}
+    minted["resolved_issuer_keys"][issuer] = {"keys": [ed_jwk, ed_jwk, bad_rsa_jwk, ed_jwk, ed_jwk]}
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "KEY_RESOLUTION_FAILED"
+
+
 @pytest.mark.parametrize("identity", ["not-an-object", ["a"], 5, None])
 def test_handshake_hello_mistyped_identity_reports_identity_failed(identity: Any, spec_dir: Path) -> None:
     """Unlike the checks above, this one runs AFTER `verify_manifest` (mh-002/

@@ -2090,11 +2090,12 @@ above) isn't swept in.
 
 ## Repo map
 
-- `aitp_verifier/jwk.py` — Phase 1's edit site, **now implemented (2026-09-25)**:
-  `_MAX_DEPTH = 16` still at line 185; `_MAX_CANDIDATES = 64` added at 190-201;
-  `issuer_keys_from`/`_issuer_keys_from` (204-262) now thread a shared `out` accumulator
-  through every recursive call and candidate site, guarded by `_reserve` (266-276).
-  `__all__` (54-61) does not export `_issuer_keys_from`/`_reserve`.
+- `aitp_verifier/jwk.py` — Phase 1's edit site, **now implemented (2026-09-25); line numbers
+  corrected during the finalization pass, which found this map still carried
+  pre-implementation numbers despite claiming otherwise**: `_MAX_DEPTH = 16` at line 189;
+  `_MAX_CANDIDATES = 64` at 202; `issuer_keys_from`/`_issuer_keys_from` (205-264) thread a
+  shared `out` accumulator through every recursive call and candidate site, guarded by
+  `_reserve` (267-277). `__all__` (54-61) does not export `_issuer_keys_from`/`_reserve`.
 - `aitp_verifier/crypto.py` — Phase 2's edit site, **now implemented (2026-09-25)**:
   `_MIN_RSA_MODULUS_BITS = 2048` still at line 49; `_MAX_RSA_MODULUS_BITS = 8192` added at 56,
   `_MAX_RSA_EXPONENT_BITS = 33` at 63. `PublicKey.from_rsa_numbers` (109-134) now checks both
@@ -2102,9 +2103,12 @@ above) isn't swept in.
   `rsa.RSAPublicNumbers(...).public_key()` at 134 (previously: construct-then-check-floor-only).
   Module docstring RSA paragraph (18-31) now cites both
   `ring::signature::RSA_PKCS1_2048_8192_SHA256` and `ring::rsa::PublicExponent::MAX`.
-- `aitp_verifier/identity.py` — read-only for this plan. `issuer_keys.get(issuer)` at 208, the
-  guarded `issuer_keys_from(resolved)` call at 210, and `_verify_oidc`'s `except ValueError`
-  clause at **219-220** (not 207-208, as an earlier draft of this map said) already convert
+- `aitp_verifier/identity.py` — no code edits for either phase, but its own summary docstring
+  (three places) needed updating during the finalization pass to mention issue #47's
+  candidate-count/RSA-range hazards alongside #38's depth hazard, the same class of drift the
+  Phase 2 gate had already fixed for the RSA half only. `issuer_keys.get(issuer)` at 214, the
+  guarded `issuer_keys_from(resolved)` call at 216, and `_verify_oidc`'s `except ValueError`
+  clause at **225** already convert
   anything either phase raises to `AitpError("KEY_RESOLUTION_FAILED", retryable=True)` —
   neither phase edits this file.
 - `tests/test_identity_oidc.py` — both phases' direct-unit and through-`verify_identity` test
@@ -2190,7 +2194,7 @@ finalization pass are complete.
   accumulator through all three candidate-producing sites (config string, JWKS `keys` loop,
   bare JWK), each guarded by a new `_reserve(out)` helper checked before parsing. No approach
   divergence from the plan. Files touched: `aitp_verifier/jwk.py`, `tests/test_identity_oidc.py`
-  (9 new tests), `tests/test_unknown_fields.py` (1 new e2e test), `CHANGELOG.md`
+  (8 new tests), `tests/test_unknown_fields.py` (1 new e2e test), `CHANGELOG.md`
   (`### Security-relevant` entry extending #38's own). `identity.py` and
   `test_boundary_contract.py` untouched, as planned.
   **Verifier: fresh Opus, 1 round, PASS.** It independently re-ran the full suite (492→499),
@@ -2215,9 +2219,10 @@ finalization pass are complete.
   No approach divergence — including the exponent-bound scope addition decided during the
   plan's own review pass, implemented exactly as recorded there. Files touched:
   `aitp_verifier/crypto.py`, `aitp_verifier/jwk.py` (one-line docstring), `tests/test_identity_oidc.py`
-  (11 new tests), `tests/test_unknown_fields.py` (2 new e2e tests), `CHANGELOG.md` (extended
+  (10 new tests), `tests/test_unknown_fields.py` (2 new e2e tests), `CHANGELOG.md` (extended
   Phase 1's existing entry in place, per this phase's `Depends on` note, not a second bullet).
-  **Verifier: fresh Opus, 1 round, PASS.** Independently re-ran the full suite (501→512),
+  **Verifier: fresh Opus, 1 round, PASS.** Independently re-ran the full suite (501→512, then
+  →513 once the 2047-bit boundary test below was added, before commit),
   `mypy` (including `tests/`), and `run_conformance.py` (0 failed against both a stashed
   pre-Phase-2 baseline and the diff applied); performed both fault-injection acceptance
   criteria itself, one bound at a time, via `Edit`; and additionally proved the two
@@ -2227,3 +2232,71 @@ finalization pass are complete.
   shape, `uv.lock` added to `.gitignore`, two exponent-test assertions tightened to check
   message text not only the bit count, and a literal 2047-bit floor-boundary test added.
   Suite now 513 passed, mypy clean (36 files). **Next: finalization pass (§4), then `/ship`.**
+- **Finalization pass (§4), 2026-09-25.** Both phases landed independently with green gates,
+  but neither phase's own tests exercised a value engaging *both* new bounds at once — the
+  seam between them. Added 4 integration tests: `tests/test_identity_oidc.py`
+  (`test_issuer_keys_from_jwks_within_cap_with_valid_rsa_candidate_resolves` — a
+  fully-legitimate mixed-algorithm JWKS at exactly the candidate cap, including an RSA entry
+  at its own ceiling, still resolves;
+  `test_issuer_keys_from_over_ceiling_rsa_candidate_within_cap_is_rejected_by_rsa_check` — an
+  over-ceiling RSA candidate well inside the candidate cap is caught by Phase 2's own check,
+  proving Phase 1's cap neither needs to fire nor masks an in-budget RSA violation;
+  `test_issuer_keys_from_stops_at_candidate_cap_before_reaching_an_over_ceiling_rsa_entry` —
+  sibling of Phase 1's own early-exit test, using an over-ceiling RSA JWK as the entry just
+  past the cap instead of a malformed `kty`, proving early-exit holds across the seam too)
+  and one end-to-end test in `tests/test_unknown_fields.py`
+  (`test_handshake_jwks_within_candidate_cap_with_over_ceiling_rsa_candidate_is_key_resolution_failed`
+  — the first Phase 2 e2e test to embed the over-ceiling RSA key inside a JWKS rather than
+  replace the whole resolved value with a bare JWK). Full suite: 513 → 517 passed. `mypy
+  aitp_verifier tests`: clean, 36 files. `run_conformance.py`: 71 passed, 0 failed, 1 skipped
+  (unchanged). No local `docs/`/`CLAUDE.md` exists in this repo to sweep (confirmed: neither
+  file/dir present). `ASSUMPTIONS.md` has no entries tagged `Plan: plans/issue-47-...` — every
+  consequential call this plan made (both bound values, the exponent-bound scope addition, PR
+  strategy) was decided directly with concrete grounding and recorded in this file and the
+  plan itself, not left as an open/ambiguous assumption, so no `/reconcile` pass is needed for
+  this plan.
+- **Final whole-feature verification (§4), fresh Opus, round 1: GAPS (6 items, all
+  documentation/bookkeeping — zero code/correctness/security defects found).** The gate
+  independently re-ran the full suite (517 passed), `mypy` (clean, 36 files), and
+  `run_conformance.py` (71/0/1); ran 4 independent fault injections (one per bound, plus a
+  tightened exponent variant) all attributable to the correct new test; ran a 41-case
+  adversarial exception-leak probe over both phases' combined surface (zero leaks — the
+  "zero `identity.py` code edits needed" claim holds); and verified `ASSUMPTIONS.md` has zero
+  `#47`-tagged entries rather than trusting the plan's own claim. Findings, all closed before
+  the finalization commit: **(G1)** `identity.py`'s own summary docstring, in three places,
+  named only issue #38's depth hazard in its "what becomes `KEY_RESOLUTION_FAILED`"
+  enumeration, having never picked up #47's candidate-count/RSA-range hazards — the same class
+  of drift the Phase 2 gate had already fixed for the RSA half only; all three now name both
+  issues. **(G2)** The plan's Phase 2 Approach step 2 overstated the `b64url_decode` residual
+  by ~60x ("~12s for a 64-entry JWKS of 8MB moduli") — `issuer_keys_from` fails fast on the
+  first rejected candidate, so the true measured cost is ~194ms, not ~12s; corrected in the
+  plan with the gate's own measurements. **(G3)** That same residual (Long-term posture item
+  2) had been recorded as deliberately left open but never filed, breaking the precedent
+  issue #49 set for residual 1 — filed as **issue #50**, plan updated to reference it.
+  **(G4)** `PROGRESS.md`'s own Repo map (above) still carried pre-implementation line numbers
+  for `jwk.py` and `identity.py` despite claiming to describe the post-implementation shape —
+  corrected against the actual current files. **(G5)** This file's Phase 1/Phase 2 status
+  entries overcounted new `test_identity_oidc.py` tests by exactly one each (claimed 9/11,
+  actual 8/10) — corrected; aggregate suite counts (501/513/517) were already accurate.
+  **(G6)** The finalization pass's own 4 new seam tests all used an over-ceiling *modulus*;
+  none exercised an over-ceiling *exponent* embedded in a JWKS (coverage gap only — the gate
+  probed this live and confirmed correct behavior) — closed with two more seam tests
+  (`test_issuer_keys_from_over_ceiling_rsa_exponent_within_cap_is_rejected_by_rsa_check`,
+  `..._stops_at_candidate_cap_before_reaching_an_over_ceiling_rsa_exponent_entry`). Suite now
+  **519 passed**, mypy clean, conformance 71/0/1 unchanged after all six closures.
+- **Final whole-feature verification (§4), fresh Opus, round 2 (re-verify given round 1's gap
+  list): GAPS — 1 new item (N1, documentation-only), all 6 of round 1's items independently
+  confirmed genuinely closed (not taken on trust — re-read the code/plan/issue directly,
+  independently recounted the test deltas via git, independently re-measured the ~194ms
+  fail-fast claim, re-ran the full suite/mypy/conformance, ran the two new exponent-seam
+  tests).** **N1:** issue #50's body and the plan's Long-term posture item 2 both cited the
+  RSA `n`/`e` decode at `jwk.py:146-147` — correct pre-implementation, but stale after both
+  phases' commits shifted it to **`jwk.py:150-151`** (the same drift class as round 1's G4,
+  re-introduced into a live follow-up artifact by the G3 closure itself). Closed directly
+  (a one-line citation fix, no code/test implications) rather than spinning a third full
+  verification round: corrected `plans/issue-47-issuer-key-resource-bounds.md:707` and issue
+  #50's body via `gh issue edit`; re-ran `pytest`/`mypy` to confirm nothing else moved — still
+  **519 passed**, mypy clean. Two rounds is this plan's cap (matching `/implement`'s §4 round
+  cap); round 2's only finding was a trivial citation drift, not a repeat of any round-1 item
+  or a new substantive gap, so proceeding to commit and `/ship` rather than spawning a round 3.
+  **Next: commit the finalization work, then `/ship`.**

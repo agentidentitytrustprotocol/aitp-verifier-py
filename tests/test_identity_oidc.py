@@ -1051,6 +1051,79 @@ def test_identity_oidc_rsa_exponent_over_ceiling_is_key_resolution_failed_not_a_
     assert _err(exc_info) == "KEY_RESOLUTION_FAILED"
 
 
+# --- Phase 1 x Phase 2 seam: a JWKS mixing both bounds (issue #47, finalization) --
+#
+# Neither phase's own tests exercise a value that engages *both* new bounds at
+# once. These prove the two caps compose correctly: the candidate-count cap
+# does not shadow the RSA cap for an in-budget candidate, and does not need
+# to reach an RSA candidate past the cap to reject the value.
+
+
+def test_issuer_keys_from_jwks_within_cap_with_valid_rsa_candidate_resolves() -> None:
+    """A JWKS at exactly `_MAX_CANDIDATES`, mixing Ed25519 entries with one
+    RSA entry at the modulus/exponent ceiling, resolves normally -- both caps
+    bound rejection only, and neither interferes with a fully legitimate
+    mixed-algorithm JWKS."""
+    ed_jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    rsa_jwk = {"kty": "RSA", "n": _rsa_n_b64u(8192), "e": _rsa_e_b64u(33)}
+    candidates = issuer_keys_from({"keys": [ed_jwk] * (_MAX_CANDIDATES - 1) + [rsa_jwk]})
+    assert len(candidates) == _MAX_CANDIDATES
+    assert candidates[-1].jose_alg == "RS256"
+
+
+def test_issuer_keys_from_over_ceiling_rsa_candidate_within_cap_is_rejected_by_rsa_check() -> None:
+    """An over-ceiling RSA candidate well *within* the candidate-count cap
+    (position 5 of 10) is rejected by Phase 2's own check, proving Phase 1's
+    cap does not need to fire, and does not mask, an in-budget RSA
+    violation."""
+    ed_jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    bad_rsa_jwk = {"kty": "RSA", "n": _rsa_n_b64u(8193), "e": _SMALL_E_B64U}
+    value = {"keys": [ed_jwk] * 4 + [bad_rsa_jwk] + [ed_jwk] * 5}
+    with pytest.raises(ValueError) as exc_info:
+        issuer_keys_from(value)
+    assert "8193" in str(exc_info.value)
+    assert "candidate keys" not in str(exc_info.value)
+
+
+def test_issuer_keys_from_stops_at_candidate_cap_before_reaching_an_over_ceiling_rsa_entry() -> None:
+    """Sibling of Phase 1's own `..._stops_parsing_at_the_cap` test, using an
+    over-ceiling RSA JWK as the entry just past the cap instead of a
+    malformed `kty` -- proving the early-exit property holds across the seam
+    with Phase 2 too, not only for the kty-rejection case Phase 1's own test
+    used."""
+    ed_jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    bad_rsa_jwk = {"kty": "RSA", "n": _rsa_n_b64u(8193), "e": _SMALL_E_B64U}
+    value = [ed_jwk] * _MAX_CANDIDATES + [bad_rsa_jwk]
+    with pytest.raises(ValueError) as exc_info:
+        issuer_keys_from(value)
+    assert f"more than {_MAX_CANDIDATES} candidate keys" in str(exc_info.value)
+    assert "8193" not in str(exc_info.value)
+
+
+def test_issuer_keys_from_over_ceiling_rsa_exponent_within_cap_is_rejected_by_rsa_check() -> None:
+    """Exponent-focused sibling of the modulus seam test above -- an
+    over-ceiling RSA public exponent, not modulus, well within the
+    candidate-count cap is rejected by Phase 2's own exponent check."""
+    ed_jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    bad_rsa_jwk = {"kty": "RSA", "n": b64url_encode(_N_BYTES), "e": _rsa_e_b64u(34)}
+    value = {"keys": [ed_jwk] * 4 + [bad_rsa_jwk] + [ed_jwk] * 5}
+    with pytest.raises(ValueError) as exc_info:
+        issuer_keys_from(value)
+    assert "public exponent" in str(exc_info.value)
+    assert "candidate keys" not in str(exc_info.value)
+
+
+def test_issuer_keys_from_stops_at_candidate_cap_before_reaching_an_over_ceiling_rsa_exponent_entry() -> None:
+    """Exponent-focused sibling of the early-exit seam test above."""
+    ed_jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    bad_rsa_jwk = {"kty": "RSA", "n": b64url_encode(_N_BYTES), "e": _rsa_e_b64u(34)}
+    value = [ed_jwk] * _MAX_CANDIDATES + [bad_rsa_jwk]
+    with pytest.raises(ValueError) as exc_info:
+        issuer_keys_from(value)
+    assert f"more than {_MAX_CANDIDATES} candidate keys" in str(exc_info.value)
+    assert "public exponent" not in str(exc_info.value)
+
+
 def test_config_key_45_chars_rejected() -> None:
     with pytest.raises(ValueError):
         issuer_key_from_config("A" * 45)
