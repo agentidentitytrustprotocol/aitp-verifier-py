@@ -1895,7 +1895,7 @@ independently a complete fix). Branch: `fix/jwk-issuer-keys-depth-bound`.
 `except RecursionError`/`except ValueError` conversion to `AitpError("KEY_RESOLUTION_FAILED")`
 at `_verify_oidc`'s one call site, module + `_verify_oidc` docstring updates),
 `aitp_verifier/fields.py` (`describe_value` docstring: `jwk.py` added as a third
-consumer/importer), `tests/test_identity_oidc.py` (+14 tests: 6 direct `jwk.py`-level, 6
+consumer/importer), `tests/test_identity_oidc.py` (+12 tests: 6 direct `jwk.py`-level, 6
 through-`verify_identity`, matching the plan's Tests section), `tests/test_unknown_fields.py`
 (+4 end-to-end tests through `verify_handshake_payload` against the `id-009` `mutual_hello`
 fixture), `tests/test_boundary_contract.py` (second leaf-sweep loop over `issuer_keys` inside
@@ -1908,7 +1908,7 @@ uses a well-formed JWK leaf rather than the section's usual sentinel string, fou
 during fault-injection (see below).
 
 **Verification:**
-- Full suite: 491 passed (baseline 475 + 16 new: `test_identity_oidc.py` 55→69,
+- Full suite: 491 passed (baseline 475 + 16 new: `test_identity_oidc.py` 57→69,
   `test_unknown_fields.py` 285→289; `test_boundary_contract.py` stays at 9 test functions —
   the new sweep is a second loop inside an existing one, not a new test).
 - `mypy`: clean, "Success: no issues found in 37 source files".
@@ -1960,9 +1960,48 @@ during fault-injection (see below).
   `CLAUDE.md`/`docs/` directory exists at this repo's root beyond `README.md`), so nothing
   else needed updating beyond the module docstrings already in the diff.
 
-**What's next:** this is a single-phase plan, so Phase 1 completing means the plan is
-feature-complete pending the `/implement` finalization pass (§4: whole-suite re-run —
-already green above — integration-test-gap check, docs sweep, final cumulative Opus
-verification) and the mandatory fresh-Opus per-phase verification gate (§2), neither of which
-has run yet. Then hand off to `/ship` (no `/reconcile` needed — no `ASSUMPTIONS.md` entries
-this plan).
+**Verification gate (§2): fresh Opus subagent, independent — PASS (2026-09-24).** Read the
+plan and the diff cold, then independently ran the full suite (491 passed), `mypy` (clean),
+`run_conformance.py` (68/0/1), and 8 of the 11 acceptance criteria by direct experimentation
+(throwaway probe scripts, not by trusting the tests) — including sweeping depths 13-19 live to
+confirm the cap fires at exactly `_MAX_DEPTH + 1`, confirming all three `describe_value` sites
+live on 20000-deep containers, and independently re-running every fault-injection from
+acceptance criterion 11 (cap defeated, `except RecursionError` removed, `identity.py` reverted
+to pre-fix, all three `describe_value` calls reverted to `!r`) with matching results. Verdict:
+`PASS`. Four non-blocking follow-ups, all closed same-session rather than deferred (all were
+"not critical" per the Autonomy ladder — reversible, cheap, no re-verify round needed):
+- **(a) Duck-typed-`Mapping` silent downgrade** — `isinstance(issuer_keys, Mapping)` only
+  recognizes types registered with/subclassing `collections.abc.Mapping` (unlike
+  `Hashable`/`Iterable`/`Sized`, `Mapping` defines no `__subclasshook__`), so a caller's own
+  duck-typed resolver wrapper exposing only `.get()` would silently read as "no issuer key
+  resolvable", indistinguishable from a genuinely absent issuer. Documented in place
+  (`identity.py`, the guard's own comment) rather than changed — `dict` and every stdlib
+  mapping type are registered, so this only affects a caller's own unregistered mapping-like
+  class, and registering it is the caller's own cheaper fix.
+- **(b) AC7 test-coverage gap** — the plan's Tests section specified only an OKP-branch `crv`
+  message-safety sibling test, but AC7 itself names `kty in {"OKP","EC"}`; added
+  `test_issuer_key_from_jwk_deeply_nested_crv_under_ec_does_not_crash_the_message` to close it
+  (`jwk.py:135`'s own `crv` guard was already correctly implemented — only the test was
+  missing).
+- **(c) `PROGRESS.md` count error** — this file's own Verification section said "+14 tests:
+  6 direct + 6 through" (14 ≠ 6+6=12) and "`test_identity_oidc.py` 55→69" (should be 57→69);
+  both corrected above.
+- **(d) Breadth/key-size follow-up filed as a separate issue**, not folded into this phase:
+  `issuer_keys_from` has no cap on JWKS candidate count (200,000 entries parsed in ~0.6s in the
+  verifier's own probe) and `PublicKey.from_rsa_numbers` has no RSA-modulus upper bound —
+  genuinely orthogonal to issue #38's own depth-recursion/bare-exception scope (neither is a
+  crash — both simply cost more than they should on hostile resolver input) —
+  [issue #47](https://github.com/agentidentitytrustprotocol/aitp-verifier-py/issues/47).
+
+Also tightened the `CHANGELOG.md` entry's wording per the verifier's finding that
+"unbounded-message ... hazard already closed" read as claiming more than `describe_value`
+actually guarantees — a `kty`/`crv` that is itself a huge *scalar* string still renders in
+full (matching `fields.py`'s own "cost-bounded, not O(1)" framing); only the container/
+RecursionError dimensions are closed. Re-ran full suite (492 passed, +1 for item (b)) and
+`mypy` (clean) after applying (a)-(d) and the wording fix.
+
+**What's next:** this is a single-phase plan, so Phase 1 completing (with its verification
+gate now PASS) means the plan is feature-complete pending the `/implement` finalization pass
+(§4: whole-suite re-run, integration-test-gap check, docs sweep, final cumulative Opus
+verification), which has not run yet. Then hand off to `/ship` (no `/reconcile` needed — no
+`ASSUMPTIONS.md` entries this plan; issue #47 is a filed follow-up, not an open assumption).

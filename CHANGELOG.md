@@ -139,9 +139,12 @@ here, so a future integrator has one place to check before upgrading.
   at all, unlike this entry point's other arguments. `jwk.issuer_keys_from`'s list walk was
   unbounded and could drive a raw `RecursionError` on a deeply nested value; its own
   `issuer_key_from_jwk` rendered an unrecognized `kty`/`crv` with `repr()`, the same
-  unbounded-message/RecursionError-during-formatting hazard `describe_value` (issue #31)
-  already closed elsewhere, just never swept here; and `resolved_issuer_keys` itself not
-  being a mapping raised a raw `AttributeError` from `.get()`. All three now raise
+  RecursionError-during-formatting and unbounded-*container*-message hazard `describe_value`
+  (issue #31) already closed elsewhere, just never swept here — `describe_value` is
+  cost-bounded, not O(1): a `kty`/`crv` that is itself a container can no longer blow the
+  message budget or the stack, but an enormous *scalar* string there still renders in full,
+  same as any other JSON scalar `describe_value` is asked to describe; and `resolved_issuer_keys`
+  itself not being a mapping raised a raw `AttributeError` from `.get()`. All three now raise
   `AitpError("KEY_RESOLUTION_FAILED")`, the same code already used for "no usable
   candidates" — a resolver that hands back garbage has produced exactly as much usable key
   material as one that hands back nothing. `issuer_keys_from`'s list nesting is capped at

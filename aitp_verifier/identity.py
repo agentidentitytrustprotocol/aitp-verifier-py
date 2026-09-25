@@ -193,6 +193,18 @@ def _verify_oidc(
     # the existing zero-candidates case immediately below -- a resolver
     # that hands back garbage has produced exactly as much usable key
     # material as one that hands back nothing.
+    #
+    # `isinstance(..., Mapping)` is structural only for the caller's own type
+    # already being registered with (or subclassing) `collections.abc.Mapping`
+    # -- unlike `Hashable`/`Iterable`/`Sized`, `Mapping` defines no
+    # `__subclasshook__`, so a plain duck-typed object exposing only `.get()`
+    # (e.g. a lazy resolver wrapper) fails this check and is silently treated
+    # as "no issuer key resolvable", the same as a genuinely absent issuer,
+    # rather than consulted. `dict` and every stdlib mapping type are
+    # registered, so this only affects a caller's own custom, unregistered
+    # mapping-like class -- a real but narrow edge, not fixed here since
+    # registering with `Mapping.register(...)` (or subclassing it) is the
+    # caller's own, cheaper fix on their side.
     resolved = issuer_keys.get(issuer) if isinstance(issuer_keys, Mapping) else None
     try:
         candidates = issuer_keys_from(resolved)

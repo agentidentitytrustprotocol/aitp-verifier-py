@@ -161,7 +161,10 @@ completed review rounds, rather than invented fresh or left for `/implement` to 
 
 ### Phase 1 — depth-cap `issuer_keys_from`, bound its sibling's message construction, guard the one call site against every reachable shape, and close the class-level test-harness gap
 
-**Status:** DONE
+**Status:** DONE (fresh-Opus verification gate: PASS — see `PROGRESS.md` for the full
+verdict and the four non-blocking follow-ups closed same-session, including
+[issue #47](https://github.com/agentidentitytrustprotocol/aitp-verifier-py/issues/47) filed
+for the one genuinely out-of-scope finding)
 
 **Divergence notes:**
 - The four end-to-end tests in `tests/test_unknown_fields.py` are named without the

@@ -701,6 +701,17 @@ def test_issuer_key_from_jwk_deeply_nested_crv_under_okp_does_not_crash_the_mess
     assert "deep-leaf-sentinel" not in str(exc_info.value)
 
 
+def test_issuer_key_from_jwk_deeply_nested_crv_under_ec_does_not_crash_the_message() -> None:
+    """Sibling of the OKP case above for the other branch acceptance criterion
+    7 names (`kty in {"OKP","EC"}`) -- `jwk.py:132-135`'s own `crv` guard, not
+    exercised by the OKP-only case since it's a separate `if kty == "EC":`
+    branch reached only through this specific `kty` value."""
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "EC", "crv": _deep_dict(20000)})
+    assert "<dict>" in str(exc_info.value)
+    assert "deep-leaf-sentinel" not in str(exc_info.value)
+
+
 def test_identity_oidc_deeply_nested_issuer_key_is_key_resolution_failed_not_a_crash() -> None:
     identity = _identity()
     env = _envelope()
