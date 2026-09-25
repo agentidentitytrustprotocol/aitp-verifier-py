@@ -2412,3 +2412,6 @@ merged #51
   change is a direct, cited application of the one finding (matches how #47's own ship gate
   closed its analogous #49 finding directly, without a second round).
 - **Next: commit this correction, push, open PR, watch CI, merge.**
+
+pushed fix/jwk-member-decode-bound 506799b2b2c058b94da9e01465b3bbf35df31e85
+PR #53 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/53
