@@ -2491,4 +2491,7 @@ merged #53
   (`test_issuer_keys_from_large_candidate_free_jwks_list_raises_node_visit_error`)
   for the `{"keys": []}` candidate-free shape the docs already claimed was covered.
   Re-verified green: 535 passed (534 + 1 new test), mypy clean (37 files).
-- **Next:** commit the ship-gate fixes, sync with `main`, open PR, watch CI, merge.
+- Ship-gate fixes committed: `787c91f` on `fix/jwk-node-visit-bound`.
+- pushed fix/jwk-node-visit-bound 787c91f69372ffe6f6b90790a640120dca705af4
+- PR #55 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/55
+- **Next:** watch CI, merge.
