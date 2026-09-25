@@ -1895,8 +1895,9 @@ independently a complete fix). Branch: `fix/jwk-issuer-keys-depth-bound`.
 `except RecursionError`/`except ValueError` conversion to `AitpError("KEY_RESOLUTION_FAILED")`
 at `_verify_oidc`'s one call site, module + `_verify_oidc` docstring updates),
 `aitp_verifier/fields.py` (`describe_value` docstring: `jwk.py` added as a third
-consumer/importer), `tests/test_identity_oidc.py` (+12 tests: 6 direct `jwk.py`-level, 6
-through-`verify_identity`, matching the plan's Tests section), `tests/test_unknown_fields.py`
+consumer/importer), `tests/test_identity_oidc.py` (+13 tests, final count including the
+follow-up commit below: 7 direct `jwk.py`-level, 6 through-`verify_identity`, matching the
+plan's Tests section), `tests/test_unknown_fields.py`
 (+4 end-to-end tests through `verify_handshake_payload` against the `id-009` `mutual_hello`
 fixture), `tests/test_boundary_contract.py` (second leaf-sweep loop over `issuer_keys` inside
 `test_boundary_contract_identity_never_raises_a_bare_exception`), `CHANGELOG.md` (one
@@ -1908,9 +1909,11 @@ uses a well-formed JWK leaf rather than the section's usual sentinel string, fou
 during fault-injection (see below).
 
 **Verification:**
-- Full suite: 491 passed (baseline 475 + 16 new: `test_identity_oidc.py` 57→69,
-  `test_unknown_fields.py` 285→289; `test_boundary_contract.py` stays at 9 test functions —
-  the new sweep is a second loop inside an existing one, not a new test).
+- Full suite as of this commit (`6781415`, before the follow-up commit below): 491 passed
+  (baseline 475 + 16 new: `test_identity_oidc.py` 57→69, `test_unknown_fields.py` 285→289).
+  Final count after the follow-up commit's added test: 492 (`test_identity_oidc.py` 57→70,
+  +13). `test_boundary_contract.py` stays at 9 test functions throughout — the new sweep is a
+  second loop inside an existing one, not a new test.
 - `mypy`: clean, "Success: no issues found in 37 source files".
 - `run_conformance.py --spec-dir ../agentidentitytrustprotocol`: 68 passed, 0 failed, 1 skipped
   — unchanged from baseline, as the plan's acceptance criterion 10 predicted (no fixture
@@ -2000,8 +2003,56 @@ full (matching `fields.py`'s own "cost-bounded, not O(1)" framing); only the con
 RecursionError dimensions are closed. Re-ran full suite (492 passed, +1 for item (b)) and
 `mypy` (clean) after applying (a)-(d) and the wording fix.
 
-**What's next:** this is a single-phase plan, so Phase 1 completing (with its verification
-gate now PASS) means the plan is feature-complete pending the `/implement` finalization pass
-(§4: whole-suite re-run, integration-test-gap check, docs sweep, final cumulative Opus
-verification), which has not run yet. Then hand off to `/ship` (no `/reconcile` needed — no
-`ASSUMPTIONS.md` entries this plan; issue #47 is a filed follow-up, not an open assumption).
+## Finalization pass (`/implement` §4, whole-feature) — 2026-09-24
+
+Cumulative diff `ff601ce..HEAD` (commits `6781415` + `4371150`), reviewed as one feature by a
+fresh Opus subagent, independent of both prior verification passes:
+
+- **Full suite / mypy / conformance:** re-run independently — 492 passed, `mypy` clean,
+  `run_conformance.py` 68/0/1 — and cross-checked on CI's floor (3.11.15) and ceiling (3.14.6)
+  Pythons in throwaway envs, all clean.
+- **Integration-test-gap check (§4's own explicit ask):** confirmed by *positive control* — the
+  agent minted the unmutated `id-009` fixture itself and confirmed it verifies successfully
+  through the real `verify_handshake_payload` first, establishing every gate ahead of
+  `_verify_oidc` (manifest, envelope, OIDC proof) is genuinely satisfied before any hostile
+  mutation is applied, then confirmed all three seams this feature touches are covered
+  together: `handshake.py` → `identity.py` → `jwk.py` (4 e2e tests, each independently
+  fault-injected), `identity.py` → `jwk.py` (6 through-`verify_identity` tests + the 108-call
+  boundary sweep), and `jwk.py` alone (7 direct unit tests).
+- **Docs check:** independently confirmed no `docs/`/`CLAUDE.md` exists and `README.md`'s only
+  `jwk` reference (line 32, the thumbprint role) says nothing about issuer-key resolution —
+  nothing left stale.
+- **Follow-up commit `4371150` re-audited on its own:** confirmed the `identity.py` change is
+  comment-only (zero behavior change), the one new test is genuinely non-vacuous (fault-injected
+  independently), and nothing new was added unverified.
+- **Whole-feature Delivers claim:** independently probed ~40 additional hostile shapes beyond
+  what any test covers (the JWKS branch's `keys: [<non-dict>]` case specifically hunted for and
+  confirmed closed by `issuer_key_from_jwk`'s pre-existing `isinstance` guard at `jwk.py:116`;
+  containers on every JWK member across all three key-type branches; malformed config strings;
+  an integer mapping key) — all converge on `AitpError("KEY_RESOLUTION_FAILED")`. Confirmed both
+  defense layers (the depth cap and the `except RecursionError` clause) are independently
+  load-bearing, not redundant: a cap-only fault-injection leaves the ~3000-level e2e test green
+  via the exception clause, and a clause-only fault-injection leaves it failing via the cap.
+- **`ASSUMPTIONS.md`/issue #47 re-confirmed:** `git diff ff601ce..HEAD -- ASSUMPTIONS.md` is
+  empty; issue #47 confirmed open and correctly self-scoped as non-blocking follow-up work, not
+  a gap in this feature.
+
+**Findings, none blocking:** (1) a `Mapping`-subclass whose own `.get()` raises a non-`ValueError`/
+`RecursionError` propagates raw — explicitly *not* filed as a gap: this is hostile caller code
+executing inside a caller-supplied object, the same property every argument in this library
+shares (a `trust_anchors` whose `__iter__` raises, etc.), and closing it would need a blanket
+`except Exception` this repo deliberately avoids; the real path always hands a JSON-deserialized
+dict, so the actual data-shape threat surface is fully closed. (2) `PROGRESS.md`'s own test
+counts had drifted by one after the follow-up commit's 13th test (the very sentence a prior
+fix corrected was made stale again by the next fix) — corrected above (see the Files list and
+Verification bullet earlier in this section). (3) `uv.lock` is untracked and un-gitignored, a
+local `uv run` artifact from this session, not a feature change — flagged as a hygiene note for
+`/ship` so a broad `git add` doesn't sweep it in accidentally; not part of this diff.
+
+**VERDICT: PASS.** Ready to ship as-is.
+
+**What's next:** hand off to `/ship`. No `/reconcile` needed (no `ASSUMPTIONS.md` entries this
+plan; issue #47 is a filed, correctly-scoped follow-up, not an open assumption). Before
+pushing/opening the PR, do not `git add -A`/`git add .` — stage tracked files explicitly, the
+same way each commit in this phase already did, so the untracked local `uv.lock` (finding 3
+above) isn't swept in.
