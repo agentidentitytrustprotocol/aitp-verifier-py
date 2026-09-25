@@ -42,7 +42,7 @@ from aitp_verifier.errors import AitpError
 from aitp_verifier.fields import reject_unknown_fields
 from aitp_verifier.handshake import verify_handshake_payload
 from aitp_verifier.identity import verify_identity
-from aitp_verifier.jwk import thumbprint_for_aid
+from aitp_verifier.jwk import _MAX_CANDIDATES, thumbprint_for_aid
 from aitp_verifier.jws import encode_jws
 from aitp_verifier.keys import load_kat_keys
 from aitp_verifier.manifest import verify_manifest
@@ -2374,6 +2374,85 @@ def test_handshake_non_mapping_resolved_issuer_keys_is_key_resolution_failed_not
     keys = load_kat_keys(spec_dir)
     minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
     minted["resolved_issuer_keys"] = "not-a-mapping"
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "KEY_RESOLUTION_FAILED"
+
+
+def test_handshake_past_max_candidates_resolved_issuer_key_is_key_resolution_failed_not_a_crash(
+    spec_dir: Path,
+) -> None:
+    """Adjacent hazard to the depth bound above, found by #38's own
+    verification pass and filed as issue #47: `issuer_keys_from`'s candidate
+    count had no cap. `_MAX_CANDIDATES + 1` well-formed entries in a JWKS
+    replacing the fixture's single resolved key must still resolve to
+    `KEY_RESOLUTION_FAILED`, not a slow-but-successful parse."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    issuer = minted["envelope"]["payload"]["identity"]["issuer"]
+    jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(b"\x01" * 32)}
+    minted["resolved_issuer_keys"][issuer] = {"keys": [jwk] * (_MAX_CANDIDATES + 1)}
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "KEY_RESOLUTION_FAILED"
+
+
+def test_handshake_rsa_modulus_over_ceiling_resolved_issuer_key_is_key_resolution_failed_not_a_crash(
+    spec_dir: Path,
+) -> None:
+    """Sibling hazard, same issue #47: `from_rsa_numbers` had no upper bound
+    on the RSA modulus. An 8193-bit synthetic modulus, replacing the
+    fixture's single resolved key, must still resolve to
+    `KEY_RESOLUTION_FAILED`."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    issuer = minted["envelope"]["payload"]["identity"]["issuer"]
+    n_int = (1 << 8192) | 1  # exactly 8193 bits, odd
+    n_b64u = b64url_encode(n_int.to_bytes((n_int.bit_length() + 7) // 8, "big"))
+    minted["resolved_issuer_keys"][issuer] = {"kty": "RSA", "n": n_b64u, "e": "AQAB"}
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "KEY_RESOLUTION_FAILED"
+
+
+def test_handshake_rsa_exponent_over_ceiling_resolved_issuer_key_is_key_resolution_failed_not_a_crash(
+    spec_dir: Path,
+) -> None:
+    """Sibling hazard, same issue #47: `from_rsa_numbers` had no bound on the
+    RSA public exponent, unlike `ring`'s own 33-bit ceiling. A 34-bit
+    synthetic exponent against a valid 2048-bit modulus, replacing the
+    fixture's single resolved key, must still resolve to
+    `KEY_RESOLUTION_FAILED`."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    issuer = minted["envelope"]["payload"]["identity"]["issuer"]
+    n_int = (1 << 2047) | 1  # a valid, exactly-2048-bit synthetic modulus
+    e_int = (1 << 33) | 1  # exactly 34 bits, odd -- one past the 33-bit ceiling
+    n_b64u = b64url_encode(n_int.to_bytes((n_int.bit_length() + 7) // 8, "big"))
+    e_b64u = b64url_encode(e_int.to_bytes((e_int.bit_length() + 7) // 8, "big"))
+    minted["resolved_issuer_keys"][issuer] = {"kty": "RSA", "n": n_b64u, "e": e_b64u}
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "KEY_RESOLUTION_FAILED"
+
+
+def test_handshake_jwks_within_candidate_cap_with_over_ceiling_rsa_candidate_is_key_resolution_failed(
+    spec_dir: Path,
+) -> None:
+    """Phase 1 x Phase 2 seam, end to end: a JWKS well within the
+    candidate-count cap (5 entries, not 65) whose one RSA entry exceeds the
+    modulus ceiling must still resolve to `KEY_RESOLUTION_FAILED`, proving
+    the RSA bound is reached and enforced for a JWKS-embedded candidate
+    through the full handshake path, not only for a bare top-level JWK
+    (every other Phase 2 e2e test above replaces the whole resolved value
+    with a single JWK, never a JWKS containing one)."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    issuer = minted["envelope"]["payload"]["identity"]["issuer"]
+    ed_jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(b"\x01" * 32)}
+    n_int = (1 << 8192) | 1  # exactly 8193 bits, odd -- one past the modulus ceiling
+    bad_rsa_jwk = {"kty": "RSA", "n": b64url_encode(n_int.to_bytes((n_int.bit_length() + 7) // 8, "big")), "e": "AQAB"}
+    minted["resolved_issuer_keys"][issuer] = {"keys": [ed_jwk, ed_jwk, bad_rsa_jwk, ed_jwk, ed_jwk]}
     with pytest.raises(AitpError) as exc:
         verify_handshake_payload(minted)
     assert exc.value.code == "KEY_RESOLUTION_FAILED"

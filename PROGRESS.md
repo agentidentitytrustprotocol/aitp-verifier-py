@@ -2085,3 +2085,256 @@ above) isn't swept in.
   conformance+tests+types @ 3.11/3.12/3.13/3.14, declared-floors install) — squash-merged as
   `13093ca`, branch deleted, issue #38 closed automatically via the PR title. No deploy to
   watch (library package, no `vercel.json`/`railway.json` in this repo).
+
+# PROGRESS (plans/issue-47-issuer-key-resource-bounds.md)
+
+## Repo map
+
+- `aitp_verifier/jwk.py` — Phase 1's edit site, **now implemented (2026-09-25); line numbers
+  corrected during the finalization pass, which found this map still carried
+  pre-implementation numbers despite claiming otherwise**: `_MAX_DEPTH = 16` at line 189;
+  `_MAX_CANDIDATES = 64` at 202; `issuer_keys_from`/`_issuer_keys_from` (205-264) thread a
+  shared `out` accumulator through every recursive call and candidate site, guarded by
+  `_reserve` (267-277). `__all__` (54-61) does not export `_issuer_keys_from`/`_reserve`.
+- `aitp_verifier/crypto.py` — Phase 2's edit site, **now implemented (2026-09-25)**:
+  `_MIN_RSA_MODULUS_BITS = 2048` still at line 49; `_MAX_RSA_MODULUS_BITS = 8192` added at 56,
+  `_MAX_RSA_EXPONENT_BITS = 33` at 63. `PublicKey.from_rsa_numbers` (109-134) now checks both
+  `n`'s and `e`'s `bit_length()` against all bounds *before* calling
+  `rsa.RSAPublicNumbers(...).public_key()` at 134 (previously: construct-then-check-floor-only).
+  Module docstring RSA paragraph (18-31) now cites both
+  `ring::signature::RSA_PKCS1_2048_8192_SHA256` and `ring::rsa::PublicExponent::MAX`.
+- `aitp_verifier/identity.py` — no code edits for either phase, but its own summary docstring
+  (three places) needed updating during the finalization pass to mention issue #47's
+  candidate-count/RSA-range hazards alongside #38's depth hazard, the same class of drift the
+  Phase 2 gate had already fixed for the RSA half only. `issuer_keys.get(issuer)` at 214, the
+  guarded `issuer_keys_from(resolved)` call at 216, and `_verify_oidc`'s `except ValueError`
+  clause at **225** already convert
+  anything either phase raises to `AitpError("KEY_RESOLUTION_FAILED", retryable=True)` —
+  neither phase edits this file.
+- `tests/test_identity_oidc.py` — both phases' direct-unit and through-`verify_identity` test
+  home; existing `_MAX_DEPTH`-boundary tests (~line 632+) and RSA tests
+  (`test_jwk_rsa_modulus_under_2048_bits_rejected`, ~line 824; `RSA_JWK`/`_RSA_PRIVATE_KEY`
+  material, lines 35-90) are the patterns both phases' new tests mirror.
+- `tests/test_unknown_fields.py` — end-to-end test home for both phases, via
+  `_load_conformance_input(spec_dir, "id-009")` → `mint_input` → mutate →
+  `verify_handshake_payload` (#38's own established pattern, same fixture).
+- `tests/test_boundary_contract.py` — read-only for this plan; confirmed its `_iter_leaf_paths`
+  walks scalar leaves only, so it cannot express "replace this array with a differently-sized
+  one" and isn't extended by either phase (see Phase 1's own Files note for why).
+- `CHANGELOG.md` — one shared `### Security-relevant` entry for both phases when they ship
+  together (matching #38's own one-entry-covers-several-hazards precedent at `CHANGELOG.md:151-156`);
+  when shipped separately, whichever phase lands second extends the first's entry.
+- **Sibling repo (read-only):** `../agentidentitytrustprotocol/rfcs/RFC-AITP-0007-key-resolution.md`
+  — no JWKS size guidance; `../agentidentitytrustprotocol/schemas/conformance/*.json` — no
+  fixture carries a `resolved_issuer_keys` member *at all* (71 fixtures, zero hits); the field
+  is synthesized by `minter.py:314` and consumed at `handshake.py:111`.
+- **Sibling repo (read-only):** `../aitp-rs/crates/aitp-handshake/src/jwk.rs` — `from_jwk_json`
+  (no RSA size check at parse time, by design) and `verify_jws_signature`'s RSA branch (line
+  288, `ring::signature::RSA_PKCS1_2048_8192_SHA256` — the source of Phase 2's 8192-bit
+  ceiling); `../aitp-rs/crates/aitp-transport-http/src/common.rs` — `rsa_modulus_bits_ok`
+  (line 65, floor-only, transport-layer-only, not used by the core handshake path) and
+  `MIN_RSA_MODULUS_BITS = 2048` (line 54, confirmed identical to this repo's own constant).
+
+## Verification environment
+
+Same as #38's own baseline: `uv run pytest` / `uv run --extra dev mypy` / `uv run python
+run_conformance.py --spec-dir ../agentidentitytrustprotocol`. Baseline as of `main` @
+`d7e76cd` (post-#38-merge): 492 passed, mypy clean on 23 source files. The conformance count
+is *not stable enough to pin as a fixed number in this file*: the plan's review pass measured
+**70 passed / 0 failed / 1 skipped** (vs. the stale 68/0/1 recorded in every earlier section of
+this file, from before the sibling spec repo added two vectors post-#38, `c2ebfff`/`67639c3`);
+Phase 1's own implementation then re-measured, twice, against the identical sibling-repo commit
+(`67639c3`, clean tree) and got **71 passed / 0 failed / 1 skipped** instead. Cause not
+identified — treat the conformance count as something to **measure fresh every time**, not a
+number to carry forward from this file.
+
+## PR strategy
+
+**Decided (2026-09-25, `/implement` §0): one PR for both phases.** Both are small
+(one constant + one restructure each), touch disjoint files (`jwk.py` vs `crypto.py`),
+are filed under the same issue (#47), share the same CWE-770 framing, and reviewing them
+together costs a reviewer little extra — matching #38's own single-PR precedent (PR #48
+bundled several related hazards under one issue). Phase 1 lands first (candidate-count
+cap), then Phase 2 (RSA modulus + exponent ceiling), each its own commit on
+`fix/issuer-key-resource-bounds`; `/ship` runs once, after both phases and the
+finalization pass are complete.
+
+## Status
+
+- **Plan written (2026-09-25).** Grounded via direct reads of `jwk.py`, `crypto.py`,
+  `identity.py`'s call site, and existing tests in this repo; live cost measurements (RSA key
+  construction from 2048 to 64,000,000 bits, candidate-count scaling from 1,000 to 500,000
+  entries, `e`-bound behavior) run this session rather than assumed; the sibling `aitp-rs`
+  repo's `jwk.rs`/`common.rs` read directly for the RSA-ceiling cross-implementation grounding;
+  the spec repo's conformance fixtures grepped for JWKS-shape usage (none found).
+- **Plan review: REVISE → fixed → SOUND (2026-09-25).** Fresh Opus agent checked the plan
+  against the actual code (not its own prose): read `jwk.py`/`crypto.py`/`identity.py` in full,
+  the sibling `aitp-rs` repo and `ring-0.17.14` sources directly, and ran the full suite (492
+  passed), `mypy` (clean), and conformance (**70/0/1**, not the 68/0/1 this file had recorded
+  everywhere else — stale after two conformance vectors landed in the sibling spec repo post-#38).
+  15 findings, all fixed in place in `plans/issue-47-issuer-key-resource-bounds.md` during the
+  same round: 8 stale `file:line` citations; the stale conformance baseline; an imprecise
+  fixture claim; three overstated/self-contradicting RSA cost figures; a false "overwhelming
+  majority of the savings" cost claim for Phase 2 (the true dominant cost,
+  `b64url_decode`, is upstream of both phases and now named as an explicit out-of-scope
+  residual); a wrong `e`-bound mechanism/conclusion; Phase 1's "candidate-free container" CPU
+  residual, independently verified live and recorded as a "KNOWN RESIDUAL" rather than left
+  implicit; an honesty fix to Phase 2's `Depends on`; plus a test-message-change note. One item
+  was left as a decision rather than applied: whether to fold `ring`'s 33-bit RSA
+  public-exponent ceiling into Phase 2. **Decided directly this session (Autonomy ladder,
+  "consequential but decidable"): fold it in.** `_MAX_RSA_EXPONENT_BITS = 33` is now part of
+  Phase 2's scope throughout (Delivers, code, edge cases, acceptance criteria 5-6 and 9, Tests) —
+  reasoning: it is the same citation, one clause, one test, and leaving it open would mean
+  shipping a phase whose own stated goal is `ring` parity while knowingly leaving a cheap
+  parity hole open on the sibling parameter. See the plan's own `## Plan review` section for
+  the full account. Ready for `/implement`.
+- **Phase 1: DONE (2026-09-25).** Branch `fix/issuer-key-resource-bounds`, plan/PROGRESS
+  bookkeeping committed at `4c775d9`. `_MAX_CANDIDATES = 64` added next to `_MAX_DEPTH` in
+  `aitp_verifier/jwk.py`; `_issuer_keys_from` restructured to thread a shared `out`
+  accumulator through all three candidate-producing sites (config string, JWKS `keys` loop,
+  bare JWK), each guarded by a new `_reserve(out)` helper checked before parsing. No approach
+  divergence from the plan. Files touched: `aitp_verifier/jwk.py`, `tests/test_identity_oidc.py`
+  (8 new tests), `tests/test_unknown_fields.py` (1 new e2e test), `CHANGELOG.md`
+  (`### Security-relevant` entry extending #38's own). `identity.py` and
+  `test_boundary_contract.py` untouched, as planned.
+  **Verifier: fresh Opus, 1 round, PASS.** It independently re-ran the full suite (492→499),
+  `mypy` (clean, including `tests/`), and `run_conformance.py` (0 failed both sides — see the
+  conformance-count instability note above; the count itself has now been observed to move
+  even with zero sibling-repo changes, so it is no longer treated as a pinned number anywhere
+  in this plan), and performed the acceptance-criterion-7 fault injection itself (via `Edit`,
+  not `git checkout`, per this repo's own fault-injection convention) — confirmed the
+  guard-dependent tests fail with `_reserve`'s check defeated, and pass restored, with the
+  working tree byte-identical afterward (verified by sha256). Two non-blocking test-strength
+  notes closed before commit: added `test_issuer_keys_from_candidates_split_across_multiple_jwks_still_capped`
+  (the 5×13-JWKS shape acceptance criterion 4 names as an alternative, not previously tested)
+  and `test_issuer_keys_from_config_string_candidates_also_capped` (`_reserve`'s
+  bare-config-string site, previously untested in its raising state) — suite now 501 passed,
+  mypy still clean. The plan's own "KNOWN RESIDUAL" edge case (candidate-free-container walk
+  cost, deliberately left open) filed as **issue #49** rather than left unfiled.
+  **Next: Phase 2** (RSA modulus + exponent ceiling in `crypto.py`).
+- **Phase 2: DONE (2026-09-25).** `_MAX_RSA_MODULUS_BITS = 8192` and
+  `_MAX_RSA_EXPONENT_BITS = 33` added next to `_MIN_RSA_MODULUS_BITS` in
+  `aitp_verifier/crypto.py`; `PublicKey.from_rsa_numbers` reordered to check both `n`'s and
+  `e`'s `bit_length()` against all bounds before calling `RSAPublicNumbers(...).public_key()`.
+  No approach divergence — including the exponent-bound scope addition decided during the
+  plan's own review pass, implemented exactly as recorded there. Files touched:
+  `aitp_verifier/crypto.py`, `aitp_verifier/jwk.py` (one-line docstring), `tests/test_identity_oidc.py`
+  (10 new tests), `tests/test_unknown_fields.py` (2 new e2e tests), `CHANGELOG.md` (extended
+  Phase 1's existing entry in place, per this phase's `Depends on` note, not a second bullet).
+  **Verifier: fresh Opus, 1 round, PASS.** Independently re-ran the full suite (501→512, then
+  →513 once the 2047-bit boundary test below was added, before commit),
+  `mypy` (including `tests/`), and `run_conformance.py` (0 failed against both a stashed
+  pre-Phase-2 baseline and the diff applied); performed both fault-injection acceptance
+  criteria itself, one bound at a time, via `Edit`; and additionally proved the two
+  monkeypatch tests non-vacuous with its own independent injection. Five non-blocking items
+  closed before commit (see the plan's own Phase 2 status note for detail): `identity.py`'s
+  stale RSA docstring line, `PROGRESS.md`'s Repo map updated to the post-implementation
+  shape, `uv.lock` added to `.gitignore`, two exponent-test assertions tightened to check
+  message text not only the bit count, and a literal 2047-bit floor-boundary test added.
+  Suite now 513 passed, mypy clean (36 files). **Next: finalization pass (§4), then `/ship`.**
+- **Finalization pass (§4), 2026-09-25.** Both phases landed independently with green gates,
+  but neither phase's own tests exercised a value engaging *both* new bounds at once — the
+  seam between them. Added 4 integration tests: `tests/test_identity_oidc.py`
+  (`test_issuer_keys_from_jwks_within_cap_with_valid_rsa_candidate_resolves` — a
+  fully-legitimate mixed-algorithm JWKS at exactly the candidate cap, including an RSA entry
+  at its own ceiling, still resolves;
+  `test_issuer_keys_from_over_ceiling_rsa_candidate_within_cap_is_rejected_by_rsa_check` — an
+  over-ceiling RSA candidate well inside the candidate cap is caught by Phase 2's own check,
+  proving Phase 1's cap neither needs to fire nor masks an in-budget RSA violation;
+  `test_issuer_keys_from_stops_at_candidate_cap_before_reaching_an_over_ceiling_rsa_entry` —
+  sibling of Phase 1's own early-exit test, using an over-ceiling RSA JWK as the entry just
+  past the cap instead of a malformed `kty`, proving early-exit holds across the seam too)
+  and one end-to-end test in `tests/test_unknown_fields.py`
+  (`test_handshake_jwks_within_candidate_cap_with_over_ceiling_rsa_candidate_is_key_resolution_failed`
+  — the first Phase 2 e2e test to embed the over-ceiling RSA key inside a JWKS rather than
+  replace the whole resolved value with a bare JWK). Full suite: 513 → 517 passed. `mypy
+  aitp_verifier tests`: clean, 36 files. `run_conformance.py`: 71 passed, 0 failed, 1 skipped
+  (unchanged). No local `docs/`/`CLAUDE.md` exists in this repo to sweep (confirmed: neither
+  file/dir present). `ASSUMPTIONS.md` has no entries tagged `Plan: plans/issue-47-...` — every
+  consequential call this plan made (both bound values, the exponent-bound scope addition, PR
+  strategy) was decided directly with concrete grounding and recorded in this file and the
+  plan itself, not left as an open/ambiguous assumption, so no `/reconcile` pass is needed for
+  this plan.
+- **Final whole-feature verification (§4), fresh Opus, round 1: GAPS (6 items, all
+  documentation/bookkeeping — zero code/correctness/security defects found).** The gate
+  independently re-ran the full suite (517 passed), `mypy` (clean, 36 files), and
+  `run_conformance.py` (71/0/1); ran 4 independent fault injections (one per bound, plus a
+  tightened exponent variant) all attributable to the correct new test; ran a 41-case
+  adversarial exception-leak probe over both phases' combined surface (zero leaks — the
+  "zero `identity.py` code edits needed" claim holds); and verified `ASSUMPTIONS.md` has zero
+  `#47`-tagged entries rather than trusting the plan's own claim. Findings, all closed before
+  the finalization commit: **(G1)** `identity.py`'s own summary docstring, in three places,
+  named only issue #38's depth hazard in its "what becomes `KEY_RESOLUTION_FAILED`"
+  enumeration, having never picked up #47's candidate-count/RSA-range hazards — the same class
+  of drift the Phase 2 gate had already fixed for the RSA half only; all three now name both
+  issues. **(G2)** The plan's Phase 2 Approach step 2 overstated the `b64url_decode` residual
+  by ~60x ("~12s for a 64-entry JWKS of 8MB moduli") — `issuer_keys_from` fails fast on the
+  first rejected candidate, so the true measured cost is ~194ms, not ~12s; corrected in the
+  plan with the gate's own measurements. **(G3)** That same residual (Long-term posture item
+  2) had been recorded as deliberately left open but never filed, breaking the precedent
+  issue #49 set for residual 1 — filed as **issue #50**, plan updated to reference it.
+  **(G4)** `PROGRESS.md`'s own Repo map (above) still carried pre-implementation line numbers
+  for `jwk.py` and `identity.py` despite claiming to describe the post-implementation shape —
+  corrected against the actual current files. **(G5)** This file's Phase 1/Phase 2 status
+  entries overcounted new `test_identity_oidc.py` tests by exactly one each (claimed 9/11,
+  actual 8/10) — corrected; aggregate suite counts (501/513/517) were already accurate.
+  **(G6)** The finalization pass's own 4 new seam tests all used an over-ceiling *modulus*;
+  none exercised an over-ceiling *exponent* embedded in a JWKS (coverage gap only — the gate
+  probed this live and confirmed correct behavior) — closed with two more seam tests
+  (`test_issuer_keys_from_over_ceiling_rsa_exponent_within_cap_is_rejected_by_rsa_check`,
+  `..._stops_at_candidate_cap_before_reaching_an_over_ceiling_rsa_exponent_entry`). Suite now
+  **519 passed**, mypy clean, conformance 71/0/1 unchanged after all six closures.
+- **Final whole-feature verification (§4), fresh Opus, round 2 (re-verify given round 1's gap
+  list): GAPS — 1 new item (N1, documentation-only), all 6 of round 1's items independently
+  confirmed genuinely closed (not taken on trust — re-read the code/plan/issue directly,
+  independently recounted the test deltas via git, independently re-measured the ~194ms
+  fail-fast claim, re-ran the full suite/mypy/conformance, ran the two new exponent-seam
+  tests).** **N1:** issue #50's body and the plan's Long-term posture item 2 both cited the
+  RSA `n`/`e` decode at `jwk.py:146-147` — correct pre-implementation, but stale after both
+  phases' commits shifted it to **`jwk.py:150-151`** (the same drift class as round 1's G4,
+  re-introduced into a live follow-up artifact by the G3 closure itself). Closed directly
+  (a one-line citation fix, no code/test implications) rather than spinning a third full
+  verification round: corrected `plans/issue-47-issuer-key-resource-bounds.md:707` and issue
+  #50's body via `gh issue edit`; re-ran `pytest`/`mypy` to confirm nothing else moved — still
+  **519 passed**, mypy clean. Two rounds is this plan's cap (matching `/implement`'s §4 round
+  cap); round 2's only finding was a trivial citation drift, not a repeat of any round-1 item
+  or a new substantive gap, so proceeding to commit and `/ship` rather than spawning a round 3.
+
+## Ship
+
+- **`/ship` §0-1: orient/sync/local suite, 2026-09-25.** On `fix/issuer-key-resource-bounds`,
+  3 commits ahead of `main` @ `d7e76cd`, tree clean; merge-base with `main` equals
+  `origin/main`'s tip exactly, so no rebase was needed. `DECISIONS.md` has no entries relevant
+  to this diff. Full local suite: `pytest` **519 passed**; bare `mypy` (CI's own form, per
+  `pyproject.toml`'s `[tool.mypy]` `files` setting) **clean, 37 source files**;
+  `run_conformance.py` **71 passed, 0 failed, 1 skipped**.
+- **`/ship` §2: pre-merge verification gate, fresh Opus: GAPS — 1 item, documentation/
+  risk-assessment only, zero code/correctness/security defects; explicitly "merge-ready."**
+  Independently re-ran the full suite/mypy/conformance (all matched); read `jwk.py`/
+  `crypto.py`/`identity.py` in full; independently recounted the diff's new tests via git (27
+  functions across both test files, not the ~45 a rough estimate in the gate's own brief had
+  guessed — `PROGRESS.md`'s own count of 27 was confirmed correct); verified the ring-parity
+  citations against the actual `ring-0.17.14` source a second time; tried several bypass
+  attempts on the new bounds (leading-zero-padded moduli, degenerate exponents) — none
+  succeeded; confirmed `ASSUMPTIONS.md` has zero `#47`-tagged entries by grepping, not
+  trusting the claim; confirmed issues #49/#50 are real, open, and match their descriptions.
+  **The one gap:** issue #49's own deferral rationale — "the residual walk is O(memory the
+  caller already allocated), no amplification" — is **false for an aliased Python object
+  graph** (a shape JSON cannot produce, but a direct Python caller of `verify_identity` can):
+  because only `list`s recurse and `dict`s are always terminal, 16 nested lists each holding
+  `F` references to the *same* next-level list produce `F^16` node visits from `O(16*F)`
+  actual memory. Independently reproduced (not merely trusted): 16 aliased lists at fanout 3
+  (~384 bytes) → **2.64s CPU, 0 candidates, neither `_MAX_CANDIDATES` nor `_MAX_DEPTH` ever
+  fires**. Pre-existing since #38, not a regression in this diff, and not a bound either
+  phase claims to close — but the *reasoning* that authorized deferring it was wrong, so the
+  record needed correcting before merge. Closed via two doc-only edits, no code/test changes:
+  `plans/issue-47-issuer-key-resource-bounds.md`'s Phase 1 KNOWN RESIDUAL and the matching
+  Long-term-posture bullet both corrected with the aliasing finding and the retraction of the
+  "no amplification" ground; **issue #49's body rewritten** (`gh issue edit`) with the
+  corrected severity assessment, an "Update" note at the top, and the reproduction snippet, so
+  a future implementer sees accurate priority rather than the original underestimate. `pytest`
+  re-run after the doc-only edits: still **519 passed** (unaffected, as expected).
+  **Next: commit this correction, push, open PR, watch CI, merge.**
+
+pushed fix/issuer-key-resource-bounds 0e285710fcdf2ac6531f9c5ec042c7150e27135b
+PR #51 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/51

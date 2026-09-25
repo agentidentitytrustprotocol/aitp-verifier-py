@@ -27,7 +27,10 @@ Two directions live here:
   RFC-AITP-0007 §3 and RFC-AITP-0002 §2.3. ``issuer_keys_from``'s value is
   caller/resolver-supplied, not schema-validated (issue #38): its list walk
   is depth-bounded (``_MAX_DEPTH``, enforced by a private helper so the
-  public function's signature can't be used to bypass it), and
+  public function's signature can't be used to bypass it), its total
+  candidate count across every shape/nesting combination is bounded
+  (``_MAX_CANDIDATES``, checked before each candidate is parsed, not only
+  after the final list is built — issue #47), and
   ``issuer_key_from_jwk``'s own rejection messages route an unrecognized
   ``kty``/``crv`` through ``fields.describe_value`` rather than ``repr()``,
   so a container value there can neither blow the message budget nor raise
@@ -109,7 +112,8 @@ def issuer_key_from_jwk(value: dict[str, Any]) -> IssuerKey:
     * ``kty=OKP``, ``crv=Ed25519`` — a 32-byte ``x`` — ``jose_alg="EdDSA"``.
     * ``kty=EC``, ``crv=P-256`` — 32-byte ``x`` and ``y`` — ``jose_alg="ES256"``.
     * ``kty=RSA`` — base64url ``n``/``e`` — ``jose_alg="RS256"`` (modulus MUST
-      be at least 2048 bits; see ``crypto.PublicKey.from_rsa_numbers``).
+      be between 2048 and 8192 bits and the public exponent at most 33 bits;
+      see ``crypto.PublicKey.from_rsa_numbers``).
 
     Raises ``ValueError`` for any other/malformed shape.
     """
@@ -184,6 +188,19 @@ def issuer_key_from_config(b64url: str) -> IssuerKey:
 # coupling than one small, independently-justified number.
 _MAX_DEPTH = 16
 
+# Maximum total candidate keys a single issuer_keys_from call will resolve,
+# across every shape/nesting combination that can produce a candidate (a
+# JWKS's `keys` array, a flat list, or any mix of the two). Checked before
+# each candidate is parsed, not only after the final list is built -- same
+# "guard at entry, not only at the recursion site" reasoning _MAX_DEPTH
+# above already establishes: checking only the final list length would
+# still pay full parse cost for every candidate past the cap before
+# rejecting. 64 is generous headroom (2-6x) over real-world OIDC-provider
+# JWKS practice (Google/Microsoft/Okta/Auth0 typically carry 2-10 keys,
+# rarely up to ~20-30 during rotation overlap; RFC 7517 gives no size
+# guidance) -- not a number tightly calibrated to it (issue #47).
+_MAX_CANDIDATES = 64
+
 
 def issuer_keys_from(value: Any) -> list[IssuerKey]:
     """Normalize a caller-supplied issuer-key value into a flat candidate list.
@@ -201,14 +218,19 @@ def issuer_keys_from(value: Any) -> list[IssuerKey]:
     let a malformed entry silently vanish instead of surfacing as a
     resolution error. Depth-bounded (``_MAX_DEPTH``, issue #38): a value
     nesting lists past that bound also raises ``ValueError`` rather than a
-    raw ``RecursionError``. This function's own signature carries no
-    ``depth`` parameter — the bounded walk lives in a private helper — so a
-    caller cannot pass a starting depth that defeats the cap.
+    raw ``RecursionError``. Bounded to at most ``_MAX_CANDIDATES`` total
+    candidates across every shape/nesting combination (issue #47); checked
+    before parsing each one, not only after. This function's own signature
+    carries no ``depth``/accumulator parameter — the bounded walk lives in
+    a private helper — so a caller cannot pass a starting state that
+    defeats either cap.
     """
-    return _issuer_keys_from(value, 0)
+    out: list[IssuerKey] = []
+    _issuer_keys_from(value, 0, out)
+    return out
 
 
-def _issuer_keys_from(value: Any, depth: int) -> list[IssuerKey]:
+def _issuer_keys_from(value: Any, depth: int, out: list[IssuerKey]) -> None:
     # Guard at entry, not only at the recursion site: a caller passing an
     # already-deep value could exceed the cap before the first check ever
     # ran if the guard sat only where the recursive call is made (same
@@ -218,19 +240,38 @@ def _issuer_keys_from(value: Any, depth: int) -> list[IssuerKey]:
     if depth > _MAX_DEPTH:
         raise ValueError(f"issuer key value nesting exceeds the maximum depth ({_MAX_DEPTH})")
     if value is None:
-        return []
+        return
     if isinstance(value, str):
-        return [issuer_key_from_config(value)]
+        _reserve(out)
+        out.append(issuer_key_from_config(value))
+        return
     if isinstance(value, dict):
         if "keys" in value:
             keys = value["keys"]
             if not isinstance(keys, list):
                 raise ValueError("JWKS 'keys' must be a list")
-            return [issuer_key_from_jwk(k) for k in keys]
-        return [issuer_key_from_jwk(value)]
+            for k in keys:
+                _reserve(out)
+                out.append(issuer_key_from_jwk(k))
+            return
+        _reserve(out)
+        out.append(issuer_key_from_jwk(value))
+        return
     if isinstance(value, list):
-        out: list[IssuerKey] = []
         for item in value:
-            out.extend(_issuer_keys_from(item, depth + 1))
-        return out
+            _issuer_keys_from(item, depth + 1, out)
+        return
     raise ValueError(f"unsupported issuer key value shape: {type(value).__name__}")
+
+
+def _reserve(out: list[IssuerKey]) -> None:
+    # Checked before every append, at all three candidate-producing sites
+    # above -- not only inside the JWKS "keys" loop -- so a value that
+    # spreads candidates across many small containers (many sibling
+    # single-JWK list entries, or many small-`keys` JWKS objects nested
+    # inside a list) cannot evade the cap by never presenting one single
+    # oversized array. `out` is threaded through every recursive call
+    # rather than built-and-merged per frame (the pre-#47 shape), which is
+    # what makes a *global*, cross-shape running total possible at all.
+    if len(out) >= _MAX_CANDIDATES:
+        raise ValueError(f"issuer key value carries more than {_MAX_CANDIDATES} candidate keys")

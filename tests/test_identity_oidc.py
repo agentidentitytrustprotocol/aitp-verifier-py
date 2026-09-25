@@ -21,11 +21,18 @@ from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 
 from aitp_verifier.aid import parse_aid
 from aitp_verifier.b64 import b64url_decode, b64url_encode
-from aitp_verifier.crypto import PrivateKey, sha256
+from aitp_verifier.crypto import _MAX_RSA_EXPONENT_BITS, _MAX_RSA_MODULUS_BITS, PrivateKey, sha256
 from aitp_verifier.errors import AitpError
 from aitp_verifier import identity
 from aitp_verifier.identity import verify_identity
-from aitp_verifier.jwk import _MAX_DEPTH, issuer_key_from_config, issuer_key_from_jwk, issuer_keys_from, thumbprint
+from aitp_verifier.jwk import (
+    _MAX_CANDIDATES,
+    _MAX_DEPTH,
+    issuer_key_from_config,
+    issuer_key_from_jwk,
+    issuer_keys_from,
+    thumbprint,
+)
 from aitp_verifier.minter import _mint_oidc_jwt
 
 NOW = 1711900000
@@ -803,6 +810,107 @@ def test_identity_oidc_issuer_key_recursion_error_is_key_resolution_failed_not_a
     assert exc_info.value.message == "issuer key value is too deeply nested to resolve"
 
 
+# --- resolved_issuer_keys candidate-count bound (issue #47) -------------------
+#
+# Adjacent dimension to the depth bound above, on the same caller/resolver-
+# supplied `resolved_issuer_keys` value: `issuer_keys_from`'s candidate list
+# had no cap, so a JWKS or nested-list value with an arbitrary number of
+# entries parsed every one of them (measured: ~3.5us/candidate, linear) before
+# `identity.py` ever saw a result. `_MAX_CANDIDATES` bounds the running total
+# across every shape/nesting combination, checked before each candidate is
+# parsed -- not only after the final list is built.
+
+
+def _jwks(n: int) -> dict[str, Any]:
+    """A JWKS carrying *n* copies of the same well-formed Ed25519 JWK."""
+    jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    return {"keys": [jwk] * n}
+
+
+def test_max_candidates_is_64() -> None:
+    """Pins the exact constant so the boundary tests below keep meaning what
+    their names say if it's ever changed."""
+    assert _MAX_CANDIDATES == 64
+
+
+def test_issuer_keys_from_at_max_candidates_resolves() -> None:
+    """A JWKS with exactly `_MAX_CANDIDATES` well-formed entries resolves --
+    the cap bounds rejection, not legitimate width."""
+    candidates = issuer_keys_from(_jwks(_MAX_CANDIDATES))
+    assert len(candidates) == _MAX_CANDIDATES
+
+
+def test_issuer_keys_from_past_max_candidates_raises_value_error() -> None:
+    """One entry past the cap -- `_MAX_CANDIDATES + 1` -- is the first count
+    rejected, as a slow-but-successful parse never happens."""
+    with pytest.raises(ValueError):
+        issuer_keys_from(_jwks(_MAX_CANDIDATES + 1))
+
+
+def test_issuer_keys_from_candidates_split_across_containers_still_capped() -> None:
+    """The identical `_MAX_CANDIDATES + 1` total, split across many small
+    sibling containers (many single-JWK list entries) rather than one
+    oversized JWKS, is rejected identically -- proving the running total is
+    global across the whole walk, not a per-container check a naive
+    `len(keys) > _MAX_CANDIDATES` guard inside the JWKS branch alone would
+    miss."""
+    jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    value = [jwk] * (_MAX_CANDIDATES + 1)
+    with pytest.raises(ValueError):
+        issuer_keys_from(value)
+
+
+def test_issuer_keys_from_candidates_split_across_multiple_jwks_still_capped() -> None:
+    """Sibling of the flat-list split above, for the *other* shape the plan
+    names: several smaller JWKS objects (5 x 13 = 65) nested in a list,
+    rather than many single-JWK list entries -- rules out a narrower naive
+    fix that caps `len(keys)` per JWKS without threading a cross-container
+    total. 4 x 16 = 64 (at the cap) resolves; 5 x 13 = 65 (one JWKS fewer,
+    one more key each) is rejected."""
+    jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    assert len(issuer_keys_from([{"keys": [jwk] * 16}] * 4)) == _MAX_CANDIDATES
+    with pytest.raises(ValueError):
+        issuer_keys_from([{"keys": [jwk] * 13}] * 5)
+
+
+def test_issuer_keys_from_config_string_candidates_also_capped() -> None:
+    """`_reserve`'s bare-config-string append site (`_issuer_keys_from`'s
+    `isinstance(value, str)` branch, the one candidate-producing site the
+    JWKS-shaped tests above never exercise) is guarded the same as the other
+    two -- a flat list of config strings past the cap is rejected too, not
+    only a JWKS."""
+    config = b64url_encode(_issuer_pub("EdDSA"))
+    assert len(issuer_keys_from([config] * _MAX_CANDIDATES)) == _MAX_CANDIDATES
+    with pytest.raises(ValueError):
+        issuer_keys_from([config] * (_MAX_CANDIDATES + 1))
+
+
+def test_issuer_keys_from_stops_parsing_at_the_cap() -> None:
+    """`_MAX_CANDIDATES` valid entries followed by one entry that would itself
+    raise a *different*, distinguishable `ValueError` if ever parsed must
+    still raise the count-limit message, not the malformed entry's own --
+    proving the cap is checked before parsing, not only after building the
+    full list (if it were checked only after, every entry up to and including
+    the malformed one would already have been parsed, and the malformed
+    entry's own error would surface instead)."""
+    jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    value = [jwk] * _MAX_CANDIDATES + [{"kty": "nonsense"}]
+    with pytest.raises(ValueError) as exc_info:
+        issuer_keys_from(value)
+    assert f"more than {_MAX_CANDIDATES} candidate keys" in str(exc_info.value)
+    assert "unsupported or missing JWK 'kty'" not in str(exc_info.value)
+
+
+def test_identity_oidc_past_max_candidates_is_key_resolution_failed_not_a_crash() -> None:
+    identity = _identity()
+    env = _envelope()
+    jwt = _mint(identity, env, self_aid=SENDER_AID)
+    identity["proof"] = jwt
+    with pytest.raises(AitpError) as exc_info:
+        _verify(identity, env, self_aid=SENDER_AID, issuer_keys={ISSUER: _jwks(_MAX_CANDIDATES + 1)})
+    assert _err(exc_info) == "KEY_RESOLUTION_FAILED"
+
+
 # --- jwk.py unit tests ----------------------------------------------------------
 
 
@@ -824,6 +932,196 @@ def test_jwk_unsupported_curve_p384() -> None:
 def test_jwk_rsa_modulus_under_2048_bits_rejected() -> None:
     with pytest.raises(ValueError):
         issuer_key_from_jwk({"kty": "RSA", "n": _SMALL_N_B64U, "e": _SMALL_E_B64U})
+
+
+def test_jwk_rsa_modulus_at_2047_bits_rejected() -> None:
+    """The literal floor boundary, one bit under -- the test above pins the
+    floor's *general* behavior with a separately-pinned under-sized key
+    (1024 bits), not the exact `_MIN_RSA_MODULUS_BITS - 1` edge."""
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "RSA", "n": _rsa_n_b64u(2047), "e": _SMALL_E_B64U})
+    assert "2047" in str(exc_info.value)
+
+
+# --- RSA modulus/exponent ceiling (issue #47) ----------------------------------
+#
+# Adjacent to the pre-existing floor check above: `from_rsa_numbers` enforced
+# only `_MIN_RSA_MODULUS_BITS`, with no upper bound on either the modulus or
+# the public exponent, and checked the floor only after already constructing
+# the full `cryptography` key object. Both new bounds are grounded in the
+# companion Rust implementation's own `ring` algorithm choice
+# (`ring::signature::RSA_PKCS1_2048_8192_SHA256`,
+# `ring::rsa::PublicExponent::MAX`) and checked via a cheap integer
+# `bit_length()` probe before any key object is built.
+
+
+def _rsa_n_b64u(bits: int) -> str:
+    """A synthetic odd integer of exactly `bits` bits, encoded as JWK `n`.
+
+    `cryptography` validates only `n >= 3` for a *public* key -- never
+    primality -- so a real RSA modulus is not needed to pin this boundary."""
+    n_int = (1 << (bits - 1)) | 1
+    return b64url_encode(n_int.to_bytes((bits + 7) // 8, "big"))
+
+
+def _rsa_e_b64u(bits: int) -> str:
+    """A synthetic odd integer of exactly `bits` bits, encoded as JWK `e`."""
+    e_int = (1 << (bits - 1)) | 1
+    return b64url_encode(e_int.to_bytes((bits + 7) // 8, "big"))
+
+
+def test_max_rsa_modulus_and_exponent_bits_are_8192_and_33() -> None:
+    """Pins the exact constants so the boundary tests below keep meaning what
+    their names say if they're ever changed."""
+    assert _MAX_RSA_MODULUS_BITS == 8192
+    assert _MAX_RSA_EXPONENT_BITS == 33
+
+
+def test_jwk_rsa_modulus_at_8192_bits_accepted() -> None:
+    """The cap bounds rejection at the ceiling too, not only the floor."""
+    parsed = issuer_key_from_jwk({"kty": "RSA", "n": _rsa_n_b64u(8192), "e": _SMALL_E_B64U})
+    assert parsed.jose_alg == "RS256"
+
+
+def test_jwk_rsa_modulus_over_8192_bits_rejected() -> None:
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "RSA", "n": _rsa_n_b64u(8193), "e": _SMALL_E_B64U})
+    assert "8193" in str(exc_info.value)
+
+
+def test_jwk_rsa_modulus_over_ceiling_never_constructs_a_key_object(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Proves the bit-length check runs before `RSAPublicNumbers(...)` is ever
+    called for an over-ceiling modulus -- not merely that the final result is
+    rejected. The raiser must raise something `pytest.raises(ValueError)`
+    cannot absorb, or this test would be vacuous even if the reorder
+    regressed."""
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise AssertionError("RSAPublicNumbers should not be called")
+
+    monkeypatch.setattr(rsa, "RSAPublicNumbers", _boom)
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "RSA", "n": _rsa_n_b64u(8193), "e": _SMALL_E_B64U})
+    assert "8193" in str(exc_info.value)
+
+
+def test_identity_oidc_rsa_modulus_over_ceiling_is_key_resolution_failed_not_a_crash() -> None:
+    identity = _identity()
+    env = _envelope()
+    jwt = _mint(identity, env, self_aid=SENDER_AID)
+    identity["proof"] = jwt
+    jwk = {"kty": "RSA", "n": _rsa_n_b64u(8193), "e": _SMALL_E_B64U}
+    with pytest.raises(AitpError) as exc_info:
+        _verify(identity, env, self_aid=SENDER_AID, issuer_keys={ISSUER: jwk})
+    assert _err(exc_info) == "KEY_RESOLUTION_FAILED"
+
+
+def test_jwk_rsa_exponent_at_33_bits_accepted() -> None:
+    """A valid 2048-bit modulus (the pinned known-answer key material) paired
+    with a public exponent at exactly the 33-bit ceiling still resolves."""
+    parsed = issuer_key_from_jwk({"kty": "RSA", "n": b64url_encode(_N_BYTES), "e": _rsa_e_b64u(33)})
+    assert parsed.jose_alg == "RS256"
+
+
+def test_jwk_rsa_exponent_over_33_bits_rejected() -> None:
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "RSA", "n": b64url_encode(_N_BYTES), "e": _rsa_e_b64u(34)})
+    assert "public exponent" in str(exc_info.value)
+    assert "34" in str(exc_info.value)
+
+
+def test_jwk_rsa_exponent_over_ceiling_never_constructs_a_key_object(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise AssertionError("RSAPublicNumbers should not be called")
+
+    monkeypatch.setattr(rsa, "RSAPublicNumbers", _boom)
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "RSA", "n": b64url_encode(_N_BYTES), "e": _rsa_e_b64u(34)})
+    assert "public exponent" in str(exc_info.value)
+    assert "34" in str(exc_info.value)
+
+
+def test_identity_oidc_rsa_exponent_over_ceiling_is_key_resolution_failed_not_a_crash() -> None:
+    identity = _identity()
+    env = _envelope()
+    jwt = _mint(identity, env, self_aid=SENDER_AID)
+    identity["proof"] = jwt
+    jwk = {"kty": "RSA", "n": b64url_encode(_N_BYTES), "e": _rsa_e_b64u(34)}
+    with pytest.raises(AitpError) as exc_info:
+        _verify(identity, env, self_aid=SENDER_AID, issuer_keys={ISSUER: jwk})
+    assert _err(exc_info) == "KEY_RESOLUTION_FAILED"
+
+
+# --- Phase 1 x Phase 2 seam: a JWKS mixing both bounds (issue #47, finalization) --
+#
+# Neither phase's own tests exercise a value that engages *both* new bounds at
+# once. These prove the two caps compose correctly: the candidate-count cap
+# does not shadow the RSA cap for an in-budget candidate, and does not need
+# to reach an RSA candidate past the cap to reject the value.
+
+
+def test_issuer_keys_from_jwks_within_cap_with_valid_rsa_candidate_resolves() -> None:
+    """A JWKS at exactly `_MAX_CANDIDATES`, mixing Ed25519 entries with one
+    RSA entry at the modulus/exponent ceiling, resolves normally -- both caps
+    bound rejection only, and neither interferes with a fully legitimate
+    mixed-algorithm JWKS."""
+    ed_jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    rsa_jwk = {"kty": "RSA", "n": _rsa_n_b64u(8192), "e": _rsa_e_b64u(33)}
+    candidates = issuer_keys_from({"keys": [ed_jwk] * (_MAX_CANDIDATES - 1) + [rsa_jwk]})
+    assert len(candidates) == _MAX_CANDIDATES
+    assert candidates[-1].jose_alg == "RS256"
+
+
+def test_issuer_keys_from_over_ceiling_rsa_candidate_within_cap_is_rejected_by_rsa_check() -> None:
+    """An over-ceiling RSA candidate well *within* the candidate-count cap
+    (position 5 of 10) is rejected by Phase 2's own check, proving Phase 1's
+    cap does not need to fire, and does not mask, an in-budget RSA
+    violation."""
+    ed_jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    bad_rsa_jwk = {"kty": "RSA", "n": _rsa_n_b64u(8193), "e": _SMALL_E_B64U}
+    value = {"keys": [ed_jwk] * 4 + [bad_rsa_jwk] + [ed_jwk] * 5}
+    with pytest.raises(ValueError) as exc_info:
+        issuer_keys_from(value)
+    assert "8193" in str(exc_info.value)
+    assert "candidate keys" not in str(exc_info.value)
+
+
+def test_issuer_keys_from_stops_at_candidate_cap_before_reaching_an_over_ceiling_rsa_entry() -> None:
+    """Sibling of Phase 1's own `..._stops_parsing_at_the_cap` test, using an
+    over-ceiling RSA JWK as the entry just past the cap instead of a
+    malformed `kty` -- proving the early-exit property holds across the seam
+    with Phase 2 too, not only for the kty-rejection case Phase 1's own test
+    used."""
+    ed_jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    bad_rsa_jwk = {"kty": "RSA", "n": _rsa_n_b64u(8193), "e": _SMALL_E_B64U}
+    value = [ed_jwk] * _MAX_CANDIDATES + [bad_rsa_jwk]
+    with pytest.raises(ValueError) as exc_info:
+        issuer_keys_from(value)
+    assert f"more than {_MAX_CANDIDATES} candidate keys" in str(exc_info.value)
+    assert "8193" not in str(exc_info.value)
+
+
+def test_issuer_keys_from_over_ceiling_rsa_exponent_within_cap_is_rejected_by_rsa_check() -> None:
+    """Exponent-focused sibling of the modulus seam test above -- an
+    over-ceiling RSA public exponent, not modulus, well within the
+    candidate-count cap is rejected by Phase 2's own exponent check."""
+    ed_jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    bad_rsa_jwk = {"kty": "RSA", "n": b64url_encode(_N_BYTES), "e": _rsa_e_b64u(34)}
+    value = {"keys": [ed_jwk] * 4 + [bad_rsa_jwk] + [ed_jwk] * 5}
+    with pytest.raises(ValueError) as exc_info:
+        issuer_keys_from(value)
+    assert "public exponent" in str(exc_info.value)
+    assert "candidate keys" not in str(exc_info.value)
+
+
+def test_issuer_keys_from_stops_at_candidate_cap_before_reaching_an_over_ceiling_rsa_exponent_entry() -> None:
+    """Exponent-focused sibling of the early-exit seam test above."""
+    ed_jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    bad_rsa_jwk = {"kty": "RSA", "n": b64url_encode(_N_BYTES), "e": _rsa_e_b64u(34)}
+    value = [ed_jwk] * _MAX_CANDIDATES + [bad_rsa_jwk]
+    with pytest.raises(ValueError) as exc_info:
+        issuer_keys_from(value)
+    assert f"more than {_MAX_CANDIDATES} candidate keys" in str(exc_info.value)
+    assert "public exponent" not in str(exc_info.value)
 
 
 def test_config_key_45_chars_rejected() -> None:

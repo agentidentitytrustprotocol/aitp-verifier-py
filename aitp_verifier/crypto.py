@@ -21,10 +21,14 @@ only** and **only** as third-party OIDC-issuer key material resolved via
 algorithm (``aid.py`` only ever parses ``ed25519``/``p256`` identifiers) and
 is unreachable from the AID-keyed ``verify_digest`` profile — an AITP agent's
 own signing key is always Ed25519 or P-256. RSA public keys built here MUST
-carry a modulus of at least 2048 bits, matching the floor
-``ring::signature::RSA_PKCS1_2048_8192_SHA256`` gives the companion Rust
-implementation for free, so both independent implementations accept the same
-issuer keys.
+carry a modulus between 2048 and 8192 bits and a public exponent of at most
+33 bits, matching the range ``ring::signature::RSA_PKCS1_2048_8192_SHA256``
+and ``ring::rsa::PublicExponent::MAX`` give the companion Rust implementation
+for free, so both independent implementations accept the same issuer keys —
+and, for the ceiling and the exponent bound (issue #47), so this
+implementation never accepts an RSA key the companion implementation would
+refuse to verify against. Both bounds are checked from the raw ``n``/``e``
+bytes before a key object is ever constructed.
 """
 
 from __future__ import annotations
@@ -43,6 +47,20 @@ ALG_P256 = "p256"
 ALG_RSA = "rsa"
 
 _MIN_RSA_MODULUS_BITS = 2048
+# Ceiling matches ring::signature::RSA_PKCS1_2048_8192_SHA256, the algorithm
+# identifier the companion Rust implementation uses for RS256 verification
+# (issue #47): without it, this implementation would silently accept (and
+# verify a JWT against) an RSA JWK the companion implementation's own `ring`
+# call refuses. Not a DoS-motivated-only number -- it is the range this
+# module's own docstring already claimed to match.
+_MAX_RSA_MODULUS_BITS = 8192
+# Matches ring::rsa::PublicExponent::MAX = (1u64 << 33) - 1, the same
+# resource-exhaustion-motivated ceiling `ring` enforces on the public
+# exponent, for the identical cross-implementation-parity reason as the
+# modulus ceiling above -- Python `cryptography`'s own floor check
+# (`e >= 3`, enforced inside `.public_key()`, not here) is far weaker than
+# `ring`'s and is not a substitute for this bound.
+_MAX_RSA_EXPONENT_BITS = 33
 
 __all__ = ["ALG_ED25519", "ALG_P256", "ALG_RSA", "PublicKey", "PrivateKey", "sha256"]
 
@@ -92,13 +110,29 @@ class PublicKey:
         """Build a verification-only RSA key from JWK ``n``/``e`` byte strings.
 
         Reachable only via a third-party OIDC-issuer JWK/JWKS (``jwk.py``) —
-        never via an AID. Rejects any modulus under 2048 bits.
+        never via an AID. Rejects any modulus outside [2048, 8192] bits or a
+        public exponent wider than 33 bits, checked before constructing a key
+        object for it (issue #47) so an out-of-range value costs a
+        ``bit_length()`` call, not a full RSA public-key construction. Both
+        bounds match ``ring``'s own enforced range/ceiling in the companion
+        Rust implementation.
         """
-        public_numbers = rsa.RSAPublicNumbers(int.from_bytes(e, "big"), int.from_bytes(n, "big"))
-        key = public_numbers.public_key()
-        if key.key_size < _MIN_RSA_MODULUS_BITS:
-            raise ValueError(f"RSA modulus must be at least {_MIN_RSA_MODULUS_BITS} bits, got {key.key_size}")
-        return cls(ALG_RSA, key)
+        n_int = int.from_bytes(n, "big")
+        bits = n_int.bit_length()
+        if not (_MIN_RSA_MODULUS_BITS <= bits <= _MAX_RSA_MODULUS_BITS):
+            raise ValueError(
+                f"RSA modulus must be between {_MIN_RSA_MODULUS_BITS} and "
+                f"{_MAX_RSA_MODULUS_BITS} bits, got {bits}"
+            )
+        e_int = int.from_bytes(e, "big")
+        e_bits = e_int.bit_length()
+        if e_bits > _MAX_RSA_EXPONENT_BITS:
+            raise ValueError(
+                f"RSA public exponent must be at most {_MAX_RSA_EXPONENT_BITS} bits, "
+                f"got {e_bits}"
+            )
+        public_numbers = rsa.RSAPublicNumbers(e_int, n_int)
+        return cls(ALG_RSA, public_numbers.public_key())
 
     def verify_digest(self, digest: bytes, sig: bytes) -> bool:
         """Verify a JCS-profile / PoP signature over a 32-byte SHA-256 *digest*.

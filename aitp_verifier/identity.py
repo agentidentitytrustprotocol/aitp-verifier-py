@@ -10,16 +10,18 @@ Two binding types feed the mutual handshake:
   checks (``iss``/``sub``/``exp``/``iat``/``aud``/``nonce``/``cnf.jkt``) run
   without a successful signature verification directly ahead of them. The
   issuer MUST be a trusted anchor. Supported algorithms are ``EdDSA``
-  (Ed25519), ``ES256`` (P-256) and ``RS256`` (RSA, 2048+ bit modulus); the
+  (Ed25519), ``ES256`` (P-256) and ``RS256`` (RSA, modulus between 2048 and
+  8192 bits, public exponent at most 33 bits — see ``crypto.py``); the
   issuer key may be supplied as a legacy 43/44-char raw base64url string, a
   single JWK, or a JWKS (``{"keys": [...]}"``) — see ``jwk.py``. The header's
   ``alg`` is pinned to the *resolved key's own structural algorithm* and
   compared, never trusted on its own (alg-confusion defense); ``none`` in any
   spelling is never in the allowed set. Any claim/structural failure is
   ``IDENTITY_FAILED``; zero resolvable issuer-key candidates, or a
-  malformed, too-deeply-nested, or wrongly-shaped ``resolved_issuer_keys``
-  value (issue #38 — this is caller/resolver-supplied, not schema-validated),
-  is ``KEY_RESOLUTION_FAILED``; an untrusted issuer is
+  malformed, too-deeply-nested, too-numerous, or wrongly-shaped
+  ``resolved_issuer_keys`` value (issues #38, #47 — this is
+  caller/resolver-supplied, not schema-validated), is
+  ``KEY_RESOLUTION_FAILED``; an untrusted issuer is
   ``INCOMPATIBLE_TRUST_ANCHORS``.
 * **pinned_key** — an Ed25519 proof over the five-field input
   ``"aitp-pinned-key-v1\\0" + sender \\0 + receiver \\0 + message_id \\0 +
@@ -136,10 +138,12 @@ def _verify_oidc(
        candidates -> ``KEY_RESOLUTION_FAILED`` (retryable — a key might show
        up on a later resolution attempt). The same code covers every way
        resolution can fail to produce usable candidates in the first place
-       (issue #38): ``issuer_keys`` itself not being a mapping, or its
-       per-issuer value being too deeply nested or otherwise malformed for
-       ``issuer_keys_from`` to walk — none of these are a proof-shape
-       problem, so none get ``IDENTITY_FAILED``. A header ``kid`` with no
+       (issues #38, #47): ``issuer_keys`` itself not being a mapping, or its
+       per-issuer value being too deeply nested, carrying too many candidate
+       keys, carrying an RSA key outside the accepted modulus/exponent
+       range, or otherwise malformed for ``issuer_keys_from`` to walk —
+       none of these are a proof-shape problem, so none get
+       ``IDENTITY_FAILED``. A header ``kid`` with no
        matching candidate, or no ``kid`` with 2+ candidates (ambiguous), ->
        a resolution *target* did exist but couldn't be pinned, which IS a
        proof-shape problem, not a resolution problem: ``IDENTITY_FAILED``.
@@ -185,14 +189,16 @@ def _verify_oidc(
         # construction unvalidated header JSON, container included.
         raise AitpError("IDENTITY_FAILED", f"OIDC JWT alg {describe_value(alg)} is not one of {sorted(_ALLOWED_OIDC_ALGS)}")
 
-    # `issuer_keys` is caller/resolver-supplied, not schema-validated (issue
-    # #38): a non-`Mapping` argument, or a per-issuer value too deeply
-    # nested or otherwise malformed for `issuer_keys_from` to walk, must
-    # not escape as a raw `AttributeError`/`ValueError`/`RecursionError`.
-    # All three collapse into the same "no usable candidates" outcome as
-    # the existing zero-candidates case immediately below -- a resolver
-    # that hands back garbage has produced exactly as much usable key
-    # material as one that hands back nothing.
+    # `issuer_keys` is caller/resolver-supplied, not schema-validated (issues
+    # #38, #47): a non-`Mapping` argument, or a per-issuer value too deeply
+    # nested, carrying too many candidate keys, carrying an out-of-range RSA
+    # modulus/exponent, or otherwise malformed for `issuer_keys_from` to
+    # walk, must not escape as a raw
+    # `AttributeError`/`ValueError`/`RecursionError`. All of these collapse
+    # into the same "no usable candidates" outcome as the existing
+    # zero-candidates case immediately below -- a resolver that hands back
+    # garbage has produced exactly as much usable key material as one that
+    # hands back nothing.
     #
     # `isinstance(..., Mapping)` is structural only for the caller's own type
     # already being registered with (or subclassing) `collections.abc.Mapping`
