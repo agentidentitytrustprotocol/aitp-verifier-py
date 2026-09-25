@@ -25,7 +25,14 @@ from aitp_verifier.crypto import PrivateKey, sha256
 from aitp_verifier.errors import AitpError
 from aitp_verifier import identity
 from aitp_verifier.identity import verify_identity
-from aitp_verifier.jwk import _MAX_DEPTH, issuer_key_from_config, issuer_key_from_jwk, issuer_keys_from, thumbprint
+from aitp_verifier.jwk import (
+    _MAX_CANDIDATES,
+    _MAX_DEPTH,
+    issuer_key_from_config,
+    issuer_key_from_jwk,
+    issuer_keys_from,
+    thumbprint,
+)
 from aitp_verifier.minter import _mint_oidc_jwt
 
 NOW = 1711900000
@@ -801,6 +808,107 @@ def test_identity_oidc_issuer_key_recursion_error_is_key_resolution_failed_not_a
         _verify(identity_desc, env, self_aid=SENDER_AID, issuer_keys={ISSUER: issuer_key})
     assert _err(exc_info) == "KEY_RESOLUTION_FAILED"
     assert exc_info.value.message == "issuer key value is too deeply nested to resolve"
+
+
+# --- resolved_issuer_keys candidate-count bound (issue #47) -------------------
+#
+# Adjacent dimension to the depth bound above, on the same caller/resolver-
+# supplied `resolved_issuer_keys` value: `issuer_keys_from`'s candidate list
+# had no cap, so a JWKS or nested-list value with an arbitrary number of
+# entries parsed every one of them (measured: ~3.5us/candidate, linear) before
+# `identity.py` ever saw a result. `_MAX_CANDIDATES` bounds the running total
+# across every shape/nesting combination, checked before each candidate is
+# parsed -- not only after the final list is built.
+
+
+def _jwks(n: int) -> dict[str, Any]:
+    """A JWKS carrying *n* copies of the same well-formed Ed25519 JWK."""
+    jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    return {"keys": [jwk] * n}
+
+
+def test_max_candidates_is_64() -> None:
+    """Pins the exact constant so the boundary tests below keep meaning what
+    their names say if it's ever changed."""
+    assert _MAX_CANDIDATES == 64
+
+
+def test_issuer_keys_from_at_max_candidates_resolves() -> None:
+    """A JWKS with exactly `_MAX_CANDIDATES` well-formed entries resolves --
+    the cap bounds rejection, not legitimate width."""
+    candidates = issuer_keys_from(_jwks(_MAX_CANDIDATES))
+    assert len(candidates) == _MAX_CANDIDATES
+
+
+def test_issuer_keys_from_past_max_candidates_raises_value_error() -> None:
+    """One entry past the cap -- `_MAX_CANDIDATES + 1` -- is the first count
+    rejected, as a slow-but-successful parse never happens."""
+    with pytest.raises(ValueError):
+        issuer_keys_from(_jwks(_MAX_CANDIDATES + 1))
+
+
+def test_issuer_keys_from_candidates_split_across_containers_still_capped() -> None:
+    """The identical `_MAX_CANDIDATES + 1` total, split across many small
+    sibling containers (many single-JWK list entries) rather than one
+    oversized JWKS, is rejected identically -- proving the running total is
+    global across the whole walk, not a per-container check a naive
+    `len(keys) > _MAX_CANDIDATES` guard inside the JWKS branch alone would
+    miss."""
+    jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    value = [jwk] * (_MAX_CANDIDATES + 1)
+    with pytest.raises(ValueError):
+        issuer_keys_from(value)
+
+
+def test_issuer_keys_from_candidates_split_across_multiple_jwks_still_capped() -> None:
+    """Sibling of the flat-list split above, for the *other* shape the plan
+    names: several smaller JWKS objects (5 x 13 = 65) nested in a list,
+    rather than many single-JWK list entries -- rules out a narrower naive
+    fix that caps `len(keys)` per JWKS without threading a cross-container
+    total. 4 x 16 = 64 (at the cap) resolves; 5 x 13 = 65 (one JWKS fewer,
+    one more key each) is rejected."""
+    jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    assert len(issuer_keys_from([{"keys": [jwk] * 16}] * 4)) == _MAX_CANDIDATES
+    with pytest.raises(ValueError):
+        issuer_keys_from([{"keys": [jwk] * 13}] * 5)
+
+
+def test_issuer_keys_from_config_string_candidates_also_capped() -> None:
+    """`_reserve`'s bare-config-string append site (`_issuer_keys_from`'s
+    `isinstance(value, str)` branch, the one candidate-producing site the
+    JWKS-shaped tests above never exercise) is guarded the same as the other
+    two -- a flat list of config strings past the cap is rejected too, not
+    only a JWKS."""
+    config = b64url_encode(_issuer_pub("EdDSA"))
+    assert len(issuer_keys_from([config] * _MAX_CANDIDATES)) == _MAX_CANDIDATES
+    with pytest.raises(ValueError):
+        issuer_keys_from([config] * (_MAX_CANDIDATES + 1))
+
+
+def test_issuer_keys_from_stops_parsing_at_the_cap() -> None:
+    """`_MAX_CANDIDATES` valid entries followed by one entry that would itself
+    raise a *different*, distinguishable `ValueError` if ever parsed must
+    still raise the count-limit message, not the malformed entry's own --
+    proving the cap is checked before parsing, not only after building the
+    full list (if it were checked only after, every entry up to and including
+    the malformed one would already have been parsed, and the malformed
+    entry's own error would surface instead)."""
+    jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    value = [jwk] * _MAX_CANDIDATES + [{"kty": "nonsense"}]
+    with pytest.raises(ValueError) as exc_info:
+        issuer_keys_from(value)
+    assert f"more than {_MAX_CANDIDATES} candidate keys" in str(exc_info.value)
+    assert "unsupported or missing JWK 'kty'" not in str(exc_info.value)
+
+
+def test_identity_oidc_past_max_candidates_is_key_resolution_failed_not_a_crash() -> None:
+    identity = _identity()
+    env = _envelope()
+    jwt = _mint(identity, env, self_aid=SENDER_AID)
+    identity["proof"] = jwt
+    with pytest.raises(AitpError) as exc_info:
+        _verify(identity, env, self_aid=SENDER_AID, issuer_keys={ISSUER: _jwks(_MAX_CANDIDATES + 1)})
+    assert _err(exc_info) == "KEY_RESOLUTION_FAILED"
 
 
 # --- jwk.py unit tests ----------------------------------------------------------

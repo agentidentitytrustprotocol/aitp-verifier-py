@@ -42,7 +42,7 @@ from aitp_verifier.errors import AitpError
 from aitp_verifier.fields import reject_unknown_fields
 from aitp_verifier.handshake import verify_handshake_payload
 from aitp_verifier.identity import verify_identity
-from aitp_verifier.jwk import thumbprint_for_aid
+from aitp_verifier.jwk import _MAX_CANDIDATES, thumbprint_for_aid
 from aitp_verifier.jws import encode_jws
 from aitp_verifier.keys import load_kat_keys
 from aitp_verifier.manifest import verify_manifest
@@ -2374,6 +2374,24 @@ def test_handshake_non_mapping_resolved_issuer_keys_is_key_resolution_failed_not
     keys = load_kat_keys(spec_dir)
     minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
     minted["resolved_issuer_keys"] = "not-a-mapping"
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "KEY_RESOLUTION_FAILED"
+
+
+def test_handshake_past_max_candidates_resolved_issuer_key_is_key_resolution_failed_not_a_crash(
+    spec_dir: Path,
+) -> None:
+    """Adjacent hazard to the depth bound above, found by #38's own
+    verification pass and filed as issue #47: `issuer_keys_from`'s candidate
+    count had no cap. `_MAX_CANDIDATES + 1` well-formed entries in a JWKS
+    replacing the fixture's single resolved key must still resolve to
+    `KEY_RESOLUTION_FAILED`, not a slow-but-successful parse."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    issuer = minted["envelope"]["payload"]["identity"]["issuer"]
+    jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(b"\x01" * 32)}
+    minted["resolved_issuer_keys"][issuer] = {"keys": [jwk] * (_MAX_CANDIDATES + 1)}
     with pytest.raises(AitpError) as exc:
         verify_handshake_payload(minted)
     assert exc.value.code == "KEY_RESOLUTION_FAILED"

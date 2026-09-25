@@ -154,6 +154,20 @@ here, so a future integrator has one place to check before upgrading.
   16 levels (public signature unchanged; the cap lives in a private helper so it cannot be
   bypassed by a caller-supplied starting depth). No legitimate value nests past 1 level.
   (issue #38)
+- **`jwk.issuer_keys_from`'s candidate count is now bounded to 64**, an adjacent dimension
+  to the depth bound above on the same caller/resolver-supplied `resolved_issuer_keys`
+  value: previously, a JWKS or nested-list value could resolve to an arbitrary number of
+  candidate keys, each fully parsed, with no limit — linear, resolver-driven CPU cost paid
+  on every OIDC identity verification (measured: ~3.5µs/candidate, so a 500,000-candidate
+  value cost ~1.7s per call). The check runs before each candidate is parsed, not only
+  after the final list is built, and the running total is threaded through every
+  recursive call so it cannot be evaded by splitting candidates across many small sibling
+  containers instead of one oversized array. 64 is generous headroom over real-world
+  OIDC-provider JWKS practice (typically 2-10 keys, rarely up to ~20-30 during rotation
+  overlap). Public signature unchanged; the cap lives in a private helper so it cannot be
+  bypassed by a caller-supplied starting accumulator. Converts to the same
+  `AitpError("KEY_RESOLUTION_FAILED")` as every other malformed-`resolved_issuer_keys`
+  hazard above, through the same unmodified call site. (issue #47)
 - **`verify_revocation_snapshot` now guards its own `policy` argument** the same way
   `verify_tct`/`verify_delegation_token`'s new `policy` handling above does, instead of
   bracket-reading it raw. Previously, a missing `max_staleness_secs` raised `KeyError`; a

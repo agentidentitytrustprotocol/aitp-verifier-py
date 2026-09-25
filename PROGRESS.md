@@ -2131,17 +2131,25 @@ above) isn't swept in.
 
 Same as #38's own baseline: `uv run pytest` / `uv run --extra dev mypy` / `uv run python
 run_conformance.py --spec-dir ../agentidentitytrustprotocol`. Baseline as of `main` @
-`d7e76cd` (post-#38-merge), **re-measured live during this plan's review pass**: 492 passed,
-mypy clean on 23 source files (`mypy aitp_verifier`), conformance **70 passed / 0 failed /
-1 skipped** — *not* the 68/0/1 recorded in every earlier section of this file. The sibling spec
-repo added two conformance vectors after #38 landed (`c2ebfff`, `67639c3`), so 68/0/1 is stale
-from `main`'s point of view and must not be used as the "unchanged" target.
+`d7e76cd` (post-#38-merge): 492 passed, mypy clean on 23 source files. The conformance count
+is *not stable enough to pin as a fixed number in this file*: the plan's review pass measured
+**70 passed / 0 failed / 1 skipped** (vs. the stale 68/0/1 recorded in every earlier section of
+this file, from before the sibling spec repo added two vectors post-#38, `c2ebfff`/`67639c3`);
+Phase 1's own implementation then re-measured, twice, against the identical sibling-repo commit
+(`67639c3`, clean tree) and got **71 passed / 0 failed / 1 skipped** instead. Cause not
+identified — treat the conformance count as something to **measure fresh every time**, not a
+number to carry forward from this file.
 
 ## PR strategy
 
-Not decided here — `/implement`'s own §0 call (see this plan's own Open Questions: both
-phases are small, independently shippable, and filed under one issue, matching #38's own
-single-PR bundling precedent, but the decision belongs to `/implement`, not `/plan`).
+**Decided (2026-09-25, `/implement` §0): one PR for both phases.** Both are small
+(one constant + one restructure each), touch disjoint files (`jwk.py` vs `crypto.py`),
+are filed under the same issue (#47), share the same CWE-770 framing, and reviewing them
+together costs a reviewer little extra — matching #38's own single-PR precedent (PR #48
+bundled several related hazards under one issue). Phase 1 lands first (candidate-count
+cap), then Phase 2 (RSA modulus + exponent ceiling), each its own commit on
+`fix/issuer-key-resource-bounds`; `/ship` runs once, after both phases and the
+finalization pass are complete.
 
 ## Status
 
@@ -2172,3 +2180,27 @@ single-PR bundling precedent, but the decision belongs to `/implement`, not `/pl
   shipping a phase whose own stated goal is `ring` parity while knowingly leaving a cheap
   parity hole open on the sibling parameter. See the plan's own `## Plan review` section for
   the full account. Ready for `/implement`.
+- **Phase 1: DONE (2026-09-25).** Branch `fix/issuer-key-resource-bounds`, plan/PROGRESS
+  bookkeeping committed at `4c775d9`. `_MAX_CANDIDATES = 64` added next to `_MAX_DEPTH` in
+  `aitp_verifier/jwk.py`; `_issuer_keys_from` restructured to thread a shared `out`
+  accumulator through all three candidate-producing sites (config string, JWKS `keys` loop,
+  bare JWK), each guarded by a new `_reserve(out)` helper checked before parsing. No approach
+  divergence from the plan. Files touched: `aitp_verifier/jwk.py`, `tests/test_identity_oidc.py`
+  (9 new tests), `tests/test_unknown_fields.py` (1 new e2e test), `CHANGELOG.md`
+  (`### Security-relevant` entry extending #38's own). `identity.py` and
+  `test_boundary_contract.py` untouched, as planned.
+  **Verifier: fresh Opus, 1 round, PASS.** It independently re-ran the full suite (492→499),
+  `mypy` (clean, including `tests/`), and `run_conformance.py` (0 failed both sides — see the
+  conformance-count instability note above; the count itself has now been observed to move
+  even with zero sibling-repo changes, so it is no longer treated as a pinned number anywhere
+  in this plan), and performed the acceptance-criterion-7 fault injection itself (via `Edit`,
+  not `git checkout`, per this repo's own fault-injection convention) — confirmed the
+  guard-dependent tests fail with `_reserve`'s check defeated, and pass restored, with the
+  working tree byte-identical afterward (verified by sha256). Two non-blocking test-strength
+  notes closed before commit: added `test_issuer_keys_from_candidates_split_across_multiple_jwks_still_capped`
+  (the 5×13-JWKS shape acceptance criterion 4 names as an alternative, not previously tested)
+  and `test_issuer_keys_from_config_string_candidates_also_capped` (`_reserve`'s
+  bare-config-string site, previously untested in its raising state) — suite now 501 passed,
+  mypy still clean. The plan's own "KNOWN RESIDUAL" edge case (candidate-free-container walk
+  cost, deliberately left open) filed as **issue #49** rather than left unfiled.
+  **Next: Phase 2** (RSA modulus + exponent ceiling in `crypto.py`).

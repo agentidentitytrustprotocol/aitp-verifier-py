@@ -106,7 +106,19 @@ nesting is 0-1 levels" claim to lean on.
 
 ### Phase 1 — bound `issuer_keys_from`'s total candidate count, checked before each parse
 
-**Status:** TODO
+**Status:** DONE (2026-09-25). Implemented exactly as planned, no approach divergence. A fresh
+Opus verification gate returned **PASS** on the first round, having independently re-run the
+full suite (499→501 passed after two additional tests added post-verification), `mypy`, and
+`run_conformance.py`, and having performed the acceptance-criterion-7 fault injection itself
+(confirmed the guard-dependent tests fail with the guard defeated, pass restored). Two
+non-blocking test-strength notes from that gate were closed before commit: added
+`test_issuer_keys_from_candidates_split_across_multiple_jwks_still_capped` (the 5×13-JWKS
+shape acceptance criterion 4 names as an alternative to the flat-list shape, not previously
+tested) and `test_issuer_keys_from_config_string_candidates_also_capped` (`_reserve`'s
+bare-config-string append site, the one of the three candidate-producing sites no other test
+exercised in its raising state). The KNOWN RESIDUAL edge case below (candidate-free-container
+walk cost) was filed as a follow-up rather than closed in this phase, per its own stated
+disposition: **issue #49**.
 
 **Delivers:** `issuer_keys_from`/`_issuer_keys_from` rejects a caller-supplied
 `resolved_issuer_keys` value that would resolve to more than a fixed number of candidate keys
@@ -279,9 +291,8 @@ over-the-cap entry, not merely after building an oversized list. Converts to
   the parse path multiplies that by ~35-100x; (b) closing it needs a second, different kind of
   cap (a nodes-visited counter threaded alongside `out` — which this phase's accumulator
   restructure would make easy to add later, at the cost of a second constant and a second set
-  of boundary tests). If the implementer wants it closed now it is a small addition to this
-  same restructure; if not, it belongs in a follow-up issue, and this phase's Delivers line
-  must not be read as claiming it. **Do not describe Phase 1 as "bounding
+  of boundary tests). Filed as **issue #49** rather than closed in this phase; this phase's
+  Delivers line must not be read as claiming it. **Do not describe Phase 1 as "bounding
   `issuer_keys_from`'s CPU cost" — it bounds its candidate count.**
 
 **Acceptance criteria:**
@@ -307,13 +318,16 @@ over-the-cap entry, not merely after building an oversized list. Converts to
    check-after-building implementation if that implementation happened to report the count
    first, and the negative one is what actually pins "never parsed."
 6. Full suite green (baseline measured on `main` at `d7e76cd`: **492 passed**),
-   `run_conformance.py --spec-dir ../agentidentitytrustprotocol` unchanged (baseline measured:
-   **70 passed, 0 failed, 1 skipped** — no fixture carries `resolved_issuer_keys` at all),
+   `run_conformance.py --spec-dir ../agentidentitytrustprotocol` unchanged (baseline measured
+   live during Phase 1's own implementation, run twice for consistency: **71 passed, 0 failed,
+   1 skipped** — no fixture carries `resolved_issuer_keys` at all),
    `mypy aitp_verifier` clean (baseline: "Success: no issues found in 23 source files").
-   **Note the conformance baseline is 70/0/1, not the 68/0/1 recorded throughout `PROGRESS.md`:**
-   the sibling spec repo added two vectors after #38 landed (`c2ebfff`, `67639c3`), so 68/0/1 is
-   stale and an implementer who pins the old number will read a green run as a regression.
-   Re-measure against the sibling repo's HEAD before asserting "unchanged."
+   **Note the conformance baseline is 71/0/1, not the 68/0/1 recorded throughout most of
+   `PROGRESS.md`, nor the 70/0/1 this plan's own review round recorded minutes earlier against
+   the identical sibling-repo commit (`67639c3`, clean tree — re-confirmed):** the count moved
+   again between the review round and Phase 1's implementation despite no sibling-repo change
+   being found, so an implementer must **re-measure fresh, every time**, rather than trust any
+   number written down here, including this one.
 7. Fault-injection: reverting only `_reserve`'s guard (leaving the accumulator threading in
    place) makes criterion 3's and criterion 4's tests fail (`DID NOT RAISE ValueError`),
    confirming the check itself — not some other change — is what they're pinned to.
@@ -563,9 +577,10 @@ wording the phase is genuinely independently shippable in either order.
    never reached — proven via the same `monkeypatch` mechanics as criterion 4, confirming the
    *exponent-bit-count* `ValueError` fires, not the monkeypatch's own raiser.
 7. Full suite green (baseline on `main` at `d7e76cd`: **492 passed**),
-   `run_conformance.py --spec-dir ../agentidentitytrustprotocol` unchanged (baseline:
-   **70 passed, 0 failed, 1 skipped** — see Phase 1's criterion 6 for why this is *not* the
-   68/0/1 `PROGRESS.md` records), `mypy aitp_verifier` clean (baseline: 23 source files).
+   `run_conformance.py --spec-dir ../agentidentitytrustprotocol` unchanged (re-measure fresh —
+   see Phase 1's criterion 6 for why this number has already moved twice within this plan's own
+   lifetime, most recently to **71 passed, 0 failed, 1 skipped**, and must not be pinned),
+   `mypy aitp_verifier` clean (baseline: 23 source files).
 8. Fault-injection: reverting only the new modulus-ceiling half of the bound check (leaving
    the floor check, the exponent check, and the reordering in place) makes the 8193-bit-modulus
    test fail (`DID NOT RAISE ValueError`).
@@ -654,7 +669,7 @@ why that one, specifically, didn't stay on this list.)
 
 1. **Unbounded walk over candidate-free containers** (Phase 1's own "KNOWN RESIDUAL" edge case):
    `issuer_keys_from([None] * 5_000_000)` → 159ms, 0 candidates, `_MAX_CANDIDATES` never fires.
-   Closing it needs a nodes-visited counter threaded alongside `out`.
+   Closing it needs a nodes-visited counter threaded alongside `out`. **Filed as issue #49.**
 2. **Unbounded `b64url_decode` of `n`/`e`** (Phase 2's Approach step 2): 188ms for one 8 MB
    modulus, upstream of `from_rsa_numbers` at `jwk.py:146-147` and untouched by either phase.
    Closing it needs an O(1) encoded-length pre-gate in `jwk.py::issuer_key_from_jwk`.
