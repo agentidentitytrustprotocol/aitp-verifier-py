@@ -38,7 +38,14 @@ Two directions live here:
   member it decodes (OKP ``x``; EC ``x``/``y``; RSA ``n``/``e``) is length-
   checked against ``_MAX_B64_MEMBER_CHARS`` *before* decoding, not only
   after (issue #50), so an oversized value is rejected in O(1) rather than
-  paying decode cost proportional to its size. Every ``ValueError`` either
+  paying decode cost proportional to its size, and the walk's own total
+  node count is bounded (``_MAX_NODES_VISITED``, issue #49), independent of
+  whether any candidate is ever produced — closing both a candidate-free
+  value (linear, unbounded) and an *aliased* Python value (the same list
+  object referenced more than once within its own containing structure,
+  reachable only from a direct Python caller, never from JSON — exponential
+  node visits from a small amount of actual allocated memory, since this
+  walk never deduplicates aliased references). Every ``ValueError`` either
   can raise is converted to ``AitpError`` at the one call site,
   ``identity.py``'s ``_verify_oidc``.
 """
@@ -237,6 +244,43 @@ _MAX_DEPTH = 16
 # guidance) -- not a number tightly calibrated to it (issue #47).
 _MAX_CANDIDATES = 64
 
+# Maximum number of _issuer_keys_from calls (list-walk "nodes") one
+# issuer_keys_from call will make, checked before any other work at entry
+# -- same "guard at entry, not only at the recursion site" placement
+# _MAX_DEPTH's own check already uses. _MAX_CANDIDATES (via _reserve) bounds
+# candidates actually appended to `out`; it does nothing for a
+# candidate-free value (None, or {"keys": []}), which never calls _reserve
+# at all -- the walk over such a value stays linear and unbounded in the
+# caller-supplied structure's size. Worse, for an *aliased* Python value
+# (the same list object referenced more than once inside its own
+# containing structure -- unreachable via JSON, only via a direct Python
+# caller), the walk is not merely unbounded but exponential: _MAX_DEPTH (16)
+# nested lists each holding F references to the same next-level list
+# produce F^16 node visits from O(16*F) actual allocated memory (issue
+# #49). A counter over total _issuer_keys_from calls closes both cases in
+# one fix, since it bounds total work regardless of aliasing or shape --
+# unlike _MAX_DEPTH (bounds nesting depth, catches deep-but-narrow chains
+# early enough to also protect Python's own call-stack recursion limit --
+# a fanout-1 chain past ~990 levels, roughly sys.getrecursionlimit()'s
+# default, would raise a raw RecursionError before this counter ever
+# reached its own cap) and _MAX_CANDIDATES (bounds successfully-parsed
+# candidates), this bounds breadth x depth together, which neither
+# existing cap does. The JWKS "keys" loop below does real per-candidate
+# parse work between two _visit calls (no _visit call of its own inside
+# that loop); it stays bounded only because _reserve already caps that
+# loop at _MAX_CANDIDATES iterations across the whole walk, and each
+# candidate's own decode cost is separately bounded by _MAX_B64_MEMBER_CHARS
+# (issue #50) -- the real total-work bound this cap delivers is a
+# composition of all three, not this counter alone.
+# 4096 is generous headroom (~60x) over any realistic legitimate value --
+# a genuine value nests at most 1 level deep per this module's own
+# _MAX_DEPTH comment, so even a generously-shaped legitimate structure
+# (candidates spread across sibling containers, up to _MAX_CANDIDATES=64)
+# tops out around 65-100 nodes -- not a number tightly calibrated to it.
+# At ~0.03-0.09us/node (measured for the linear case), the worst case at
+# the cap costs a few hundred microseconds.
+_MAX_NODES_VISITED = 4096
+
 
 def issuer_keys_from(value: Any) -> list[IssuerKey]:
     """Normalize a caller-supplied issuer-key value into a flat candidate list.
@@ -256,17 +300,33 @@ def issuer_keys_from(value: Any) -> list[IssuerKey]:
     nesting lists past that bound also raises ``ValueError`` rather than a
     raw ``RecursionError``. Bounded to at most ``_MAX_CANDIDATES`` total
     candidates across every shape/nesting combination (issue #47); checked
-    before parsing each one, not only after. This function's own signature
-    carries no ``depth``/accumulator parameter — the bounded walk lives in
-    a private helper — so a caller cannot pass a starting state that
-    defeats either cap.
+    before parsing each one, not only after. Bounded to at most
+    ``_MAX_NODES_VISITED`` total walk steps (issue #49), independent of
+    whether any candidate is ever produced — closing both a candidate-free
+    value (e.g. a long list of ``None``, unbounded and linear) and an
+    *aliased* Python value (the same list object referenced more than once
+    inside its own containing structure, unreachable via JSON but
+    reachable from a direct Python caller — exponential, not merely
+    unbounded, since aliasing is never deduplicated by this walk). This
+    function's own signature carries no ``depth``/accumulator/visit-counter
+    parameter — the bounded walk lives in a private helper — so a caller
+    cannot pass a starting state that defeats any of the three caps.
     """
     out: list[IssuerKey] = []
-    _issuer_keys_from(value, 0, out)
+    visits = [0]
+    _issuer_keys_from(value, 0, out, visits)
     return out
 
 
-def _issuer_keys_from(value: Any, depth: int, out: list[IssuerKey]) -> None:
+def _issuer_keys_from(value: Any, depth: int, out: list[IssuerKey], visits: list[int]) -> None:
+    # Guard at entry, not only at the recursion site -- and ahead of the
+    # depth check below -- so every value this walk touches (dict, string,
+    # list, or None) is counted exactly once, including candidate-free
+    # ones that never reach _reserve. `visits` is a single-element list
+    # used as a mutable counter box (a bare int can't be mutated across
+    # recursive calls by reference), threaded the same way `out` already
+    # is: a shared, mutated-in-place accumulator, not a per-frame value.
+    _visit(visits)
     # Guard at entry, not only at the recursion site: a caller passing an
     # already-deep value could exceed the cap before the first check ever
     # ran if the guard sat only where the recursive call is made (same
@@ -295,7 +355,7 @@ def _issuer_keys_from(value: Any, depth: int, out: list[IssuerKey]) -> None:
         return
     if isinstance(value, list):
         for item in value:
-            _issuer_keys_from(item, depth + 1, out)
+            _issuer_keys_from(item, depth + 1, out, visits)
         return
     raise ValueError(f"unsupported issuer key value shape: {type(value).__name__}")
 
@@ -311,3 +371,12 @@ def _reserve(out: list[IssuerKey]) -> None:
     # what makes a *global*, cross-shape running total possible at all.
     if len(out) >= _MAX_CANDIDATES:
         raise ValueError(f"issuer key value carries more than {_MAX_CANDIDATES} candidate keys")
+
+
+def _visit(visits: list[int]) -> None:
+    # `visits` is a fresh [0] created once per issuer_keys_from call (not
+    # shared across separate calls, e.g. for a multi-issuer or multi-hop
+    # verification) -- same per-call scoping `out`/`depth` already have.
+    visits[0] += 1
+    if visits[0] > _MAX_NODES_VISITED:
+        raise ValueError(f"issuer key value visits more than {_MAX_NODES_VISITED} nodes while resolving")
