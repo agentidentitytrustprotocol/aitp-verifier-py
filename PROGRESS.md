@@ -2085,3 +2085,90 @@ above) isn't swept in.
   conformance+tests+types @ 3.11/3.12/3.13/3.14, declared-floors install) — squash-merged as
   `13093ca`, branch deleted, issue #38 closed automatically via the PR title. No deploy to
   watch (library package, no `vercel.json`/`railway.json` in this repo).
+
+# PROGRESS (plans/issue-47-issuer-key-resource-bounds.md)
+
+## Repo map
+
+- `aitp_verifier/jwk.py` — Phase 1's edit site. `_MAX_DEPTH = 16` (line 185, #38's precedent
+  for constant placement/style), `issuer_keys_from`/`_issuer_keys_from` (188-236, the walk to
+  restructure into an accumulator). `__all__` (51-58) does not export `_issuer_keys_from`.
+- `aitp_verifier/crypto.py` — Phase 2's edit site. `_MIN_RSA_MODULUS_BITS = 2048` (line 45),
+  `PublicKey.from_rsa_numbers` (91-101: `.public_key()` at 98, floor check at 99-100 —
+  construct-then-check today). Module docstring RSA paragraph (18-27) already cites
+  `ring::signature::RSA_PKCS1_2048_8192_SHA256` at 23-27 for the floor's own justification —
+  the ceiling half of that same citation is Phase 2's grounding.
+- `aitp_verifier/identity.py` — read-only for this plan. `issuer_keys.get(issuer)` at 208, the
+  guarded `issuer_keys_from(resolved)` call at 210, and `_verify_oidc`'s `except ValueError`
+  clause at **219-220** (not 207-208, as an earlier draft of this map said) already convert
+  anything either phase raises to `AitpError("KEY_RESOLUTION_FAILED", retryable=True)` —
+  neither phase edits this file.
+- `tests/test_identity_oidc.py` — both phases' direct-unit and through-`verify_identity` test
+  home; existing `_MAX_DEPTH`-boundary tests (~line 632+) and RSA tests
+  (`test_jwk_rsa_modulus_under_2048_bits_rejected`, ~line 824; `RSA_JWK`/`_RSA_PRIVATE_KEY`
+  material, lines 35-90) are the patterns both phases' new tests mirror.
+- `tests/test_unknown_fields.py` — end-to-end test home for both phases, via
+  `_load_conformance_input(spec_dir, "id-009")` → `mint_input` → mutate →
+  `verify_handshake_payload` (#38's own established pattern, same fixture).
+- `tests/test_boundary_contract.py` — read-only for this plan; confirmed its `_iter_leaf_paths`
+  walks scalar leaves only, so it cannot express "replace this array with a differently-sized
+  one" and isn't extended by either phase (see Phase 1's own Files note for why).
+- `CHANGELOG.md` — one shared `### Security-relevant` entry for both phases when they ship
+  together (matching #38's own one-entry-covers-several-hazards precedent at `CHANGELOG.md:151-156`);
+  when shipped separately, whichever phase lands second extends the first's entry.
+- **Sibling repo (read-only):** `../agentidentitytrustprotocol/rfcs/RFC-AITP-0007-key-resolution.md`
+  — no JWKS size guidance; `../agentidentitytrustprotocol/schemas/conformance/*.json` — no
+  fixture carries a `resolved_issuer_keys` member *at all* (71 fixtures, zero hits); the field
+  is synthesized by `minter.py:314` and consumed at `handshake.py:111`.
+- **Sibling repo (read-only):** `../aitp-rs/crates/aitp-handshake/src/jwk.rs` — `from_jwk_json`
+  (no RSA size check at parse time, by design) and `verify_jws_signature`'s RSA branch (line
+  288, `ring::signature::RSA_PKCS1_2048_8192_SHA256` — the source of Phase 2's 8192-bit
+  ceiling); `../aitp-rs/crates/aitp-transport-http/src/common.rs` — `rsa_modulus_bits_ok`
+  (line 65, floor-only, transport-layer-only, not used by the core handshake path) and
+  `MIN_RSA_MODULUS_BITS = 2048` (line 54, confirmed identical to this repo's own constant).
+
+## Verification environment
+
+Same as #38's own baseline: `uv run pytest` / `uv run --extra dev mypy` / `uv run python
+run_conformance.py --spec-dir ../agentidentitytrustprotocol`. Baseline as of `main` @
+`d7e76cd` (post-#38-merge), **re-measured live during this plan's review pass**: 492 passed,
+mypy clean on 23 source files (`mypy aitp_verifier`), conformance **70 passed / 0 failed /
+1 skipped** — *not* the 68/0/1 recorded in every earlier section of this file. The sibling spec
+repo added two conformance vectors after #38 landed (`c2ebfff`, `67639c3`), so 68/0/1 is stale
+from `main`'s point of view and must not be used as the "unchanged" target.
+
+## PR strategy
+
+Not decided here — `/implement`'s own §0 call (see this plan's own Open Questions: both
+phases are small, independently shippable, and filed under one issue, matching #38's own
+single-PR bundling precedent, but the decision belongs to `/implement`, not `/plan`).
+
+## Status
+
+- **Plan written (2026-09-25).** Grounded via direct reads of `jwk.py`, `crypto.py`,
+  `identity.py`'s call site, and existing tests in this repo; live cost measurements (RSA key
+  construction from 2048 to 64,000,000 bits, candidate-count scaling from 1,000 to 500,000
+  entries, `e`-bound behavior) run this session rather than assumed; the sibling `aitp-rs`
+  repo's `jwk.rs`/`common.rs` read directly for the RSA-ceiling cross-implementation grounding;
+  the spec repo's conformance fixtures grepped for JWKS-shape usage (none found).
+- **Plan review: REVISE → fixed → SOUND (2026-09-25).** Fresh Opus agent checked the plan
+  against the actual code (not its own prose): read `jwk.py`/`crypto.py`/`identity.py` in full,
+  the sibling `aitp-rs` repo and `ring-0.17.14` sources directly, and ran the full suite (492
+  passed), `mypy` (clean), and conformance (**70/0/1**, not the 68/0/1 this file had recorded
+  everywhere else — stale after two conformance vectors landed in the sibling spec repo post-#38).
+  15 findings, all fixed in place in `plans/issue-47-issuer-key-resource-bounds.md` during the
+  same round: 8 stale `file:line` citations; the stale conformance baseline; an imprecise
+  fixture claim; three overstated/self-contradicting RSA cost figures; a false "overwhelming
+  majority of the savings" cost claim for Phase 2 (the true dominant cost,
+  `b64url_decode`, is upstream of both phases and now named as an explicit out-of-scope
+  residual); a wrong `e`-bound mechanism/conclusion; Phase 1's "candidate-free container" CPU
+  residual, independently verified live and recorded as a "KNOWN RESIDUAL" rather than left
+  implicit; an honesty fix to Phase 2's `Depends on`; plus a test-message-change note. One item
+  was left as a decision rather than applied: whether to fold `ring`'s 33-bit RSA
+  public-exponent ceiling into Phase 2. **Decided directly this session (Autonomy ladder,
+  "consequential but decidable"): fold it in.** `_MAX_RSA_EXPONENT_BITS = 33` is now part of
+  Phase 2's scope throughout (Delivers, code, edge cases, acceptance criteria 5-6 and 9, Tests) —
+  reasoning: it is the same citation, one clause, one test, and leaving it open would mean
+  shipping a phase whose own stated goal is `ring` parity while knowingly leaving a cheap
+  parity hole open on the sibling parameter. See the plan's own `## Plan review` section for
+  the full account. Ready for `/implement`.
