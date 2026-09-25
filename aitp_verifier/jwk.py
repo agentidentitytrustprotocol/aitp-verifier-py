@@ -34,8 +34,12 @@ Two directions live here:
   ``issuer_key_from_jwk``'s own rejection messages route an unrecognized
   ``kty``/``crv`` through ``fields.describe_value`` rather than ``repr()``,
   so a container value there can neither blow the message budget nor raise
-  ``RecursionError`` while the message is being built. Every ``ValueError``
-  either can raise is converted to ``AitpError`` at the one call site,
+  ``RecursionError`` while the message is being built, and each base64url
+  member it decodes (OKP ``x``; EC ``x``/``y``; RSA ``n``/``e``) is length-
+  checked against ``_MAX_B64_MEMBER_CHARS`` *before* decoding, not only
+  after (issue #50), so an oversized value is rejected in O(1) rather than
+  paying decode cost proportional to its size. Every ``ValueError`` either
+  can raise is converted to ``AitpError`` at the one call site,
   ``identity.py``'s ``_verify_oidc``.
 """
 
@@ -104,6 +108,38 @@ def _require_str(value: Any, member: str) -> str:
     return value
 
 
+# Maximum encoded length (unpadded base64url characters) this module will
+# decode for any single JWK member (OKP `x`; EC `x`/`y`; RSA `n`/`e`), checked
+# before b64url_decode is ever called -- not merely before the length check
+# each branch already runs on the *decoded* bytes. b64url_decode's own
+# alphabet scan (b64.py:26) is already O(len(text)) before the actual
+# base64 decode runs, so the bound has to sit ahead of that call, not just
+# ahead of crypto.py's bit_length() check on the RSA path (issue #50).
+#
+# 8192 is generous headroom over every real member's minimal encoding: a
+# fixed 32-byte OKP/EC coordinate needs exactly 43 unpadded chars; an
+# 8192-bit RSA modulus (_MAX_RSA_MODULUS_BITS in crypto.py) needs at most
+# 1366 when minimally encoded per RFC 7518 SS6.3.1's "as small as possible"
+# requirement -- ~6x headroom on the tightest case, not a number tightly
+# calibrated to it (same "generous, not tight" style _MAX_CANDIDATES uses).
+# One shared constant across all five sites, rather than five individually-
+# tuned ones, keeps the bound simple to state and test; the goal is bounding
+# cost to a negligible constant, not fitting each member's exact minimum.
+# issuer_key_from_config's own two b64url_decode sites need no such helper:
+# they already gate on encoded length (`== 43`/`== 44`) before decoding.
+_MAX_B64_MEMBER_CHARS = 8192
+
+
+def _decode_member(value: dict[str, Any], member: str) -> bytes:
+    text = _require_str(value.get(member), member)
+    if len(text) > _MAX_B64_MEMBER_CHARS:
+        raise ValueError(
+            f"JWK member {member!r} exceeds the maximum encoded length "
+            f"({_MAX_B64_MEMBER_CHARS} base64url characters), got {len(text)}"
+        )
+    return b64url_decode(text)
+
+
 def issuer_key_from_jwk(value: dict[str, Any]) -> IssuerKey:
     """Parse one JWK object (RFC 7517 §4) into an :class:`IssuerKey`.
 
@@ -128,7 +164,7 @@ def issuer_key_from_jwk(value: dict[str, Any]) -> IssuerKey:
         crv = value.get("crv")
         if crv != "Ed25519":
             raise ValueError(f"unsupported OKP curve: {describe_value(crv)}")
-        x = b64url_decode(_require_str(value.get("x"), "x"))
+        x = _decode_member(value, "x")
         if len(x) != 32:
             raise ValueError(f"Ed25519 JWK 'x' must decode to 32 bytes, got {len(x)}")
         return IssuerKey(kid=kid, jose_alg="EdDSA", public_key=PublicKey.from_raw(ALG_ED25519, x))
@@ -137,8 +173,8 @@ def issuer_key_from_jwk(value: dict[str, Any]) -> IssuerKey:
         crv = value.get("crv")
         if crv != "P-256":
             raise ValueError(f"unsupported EC curve: {describe_value(crv)}")
-        x = b64url_decode(_require_str(value.get("x"), "x"))
-        y = b64url_decode(_require_str(value.get("y"), "y"))
+        x = _decode_member(value, "x")
+        y = _decode_member(value, "y")
         if len(x) != 32 or len(y) != 32:
             raise ValueError(f"P-256 JWK 'x'/'y' must each decode to 32 bytes, got {len(x)}/{len(y)}")
         numbers = ec.EllipticCurvePublicNumbers(
@@ -147,8 +183,8 @@ def issuer_key_from_jwk(value: dict[str, Any]) -> IssuerKey:
         return IssuerKey(kid=kid, jose_alg="ES256", public_key=PublicKey(ALG_P256, numbers.public_key()))
 
     if kty == "RSA":
-        n = b64url_decode(_require_str(value.get("n"), "n"))
-        e = b64url_decode(_require_str(value.get("e"), "e"))
+        n = _decode_member(value, "n")
+        e = _decode_member(value, "e")
         return IssuerKey(kid=kid, jose_alg="RS256", public_key=PublicKey.from_rsa_numbers(n, e))
 
     raise ValueError(f"unsupported or missing JWK 'kty': {describe_value(kty)}")

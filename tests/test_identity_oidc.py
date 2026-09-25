@@ -26,6 +26,7 @@ from aitp_verifier.errors import AitpError
 from aitp_verifier import identity
 from aitp_verifier.identity import verify_identity
 from aitp_verifier.jwk import (
+    _MAX_B64_MEMBER_CHARS,
     _MAX_CANDIDATES,
     _MAX_DEPTH,
     issuer_key_from_config,
@@ -1049,6 +1050,145 @@ def test_identity_oidc_rsa_exponent_over_ceiling_is_key_resolution_failed_not_a_
     with pytest.raises(AitpError) as exc_info:
         _verify(identity, env, self_aid=SENDER_AID, issuer_keys={ISSUER: jwk})
     assert _err(exc_info) == "KEY_RESOLUTION_FAILED"
+
+
+# --- JWK member decode-length bound (issue #50) --------------------------------
+#
+# `issuer_key_from_jwk` decodes each base64url member (OKP `x`; EC `x`/`y`; RSA
+# `n`/`e`) via `_decode_member`, which checks the *encoded* string's length
+# against `_MAX_B64_MEMBER_CHARS` before ever calling `b64url_decode` -- not
+# only after, via each branch's existing decoded-length/bit-length check.
+
+
+def test_max_b64_member_chars_is_8192() -> None:
+    """Pins the exact constant so the boundary tests below keep meaning what
+    their names say if it's ever changed."""
+    assert _MAX_B64_MEMBER_CHARS == 8192
+
+
+def _oversized_b64u() -> str:
+    """A syntactically valid base64url string one character past the cap."""
+    return "A" * (_MAX_B64_MEMBER_CHARS + 1)
+
+
+def _guarded_b64url_decode(text: str) -> bytes:
+    """A `b64url_decode` stand-in used to monkeypatch `jwk.py`'s own binding:
+    an over-cap string reaching this at all proves the pre-gate failed to
+    reject it before the call, which `pytest.raises(ValueError)` alone
+    cannot distinguish from the pre-gate firing after paying decode cost
+    anyway. An at-or-under-cap string (e.g. a sibling member that must still
+    legitimately decode in the same call) delegates to the real decoder, so
+    tests exercising one oversized member alongside one valid one don't
+    themselves explode on the valid member."""
+    if len(text) > _MAX_B64_MEMBER_CHARS:
+        raise AssertionError("b64url_decode should not be called for an over-cap member")
+    return b64url_decode(text)
+
+
+def test_issuer_key_from_jwk_okp_x_over_length_cap_rejected_before_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("aitp_verifier.jwk.b64url_decode", _guarded_b64url_decode)
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "OKP", "crv": "Ed25519", "x": _oversized_b64u()})
+    assert "exceeds the maximum encoded length" in str(exc_info.value)
+    assert "'x'" in str(exc_info.value)
+
+
+def test_issuer_key_from_jwk_ec_x_over_length_cap_rejected_before_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("aitp_verifier.jwk.b64url_decode", _guarded_b64url_decode)
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk(
+            {"kty": "EC", "crv": "P-256", "x": _oversized_b64u(), "y": b64url_encode(b"y" * 32)}
+        )
+    assert "exceeds the maximum encoded length" in str(exc_info.value)
+    assert "'x'" in str(exc_info.value)
+
+
+def test_issuer_key_from_jwk_ec_y_over_length_cap_rejected_before_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`x` is valid-shaped so the walk reaches `y`'s own decode call --
+    proving the gate fires at each site independently, not only the first
+    one an EC JWK happens to decode."""
+    monkeypatch.setattr("aitp_verifier.jwk.b64url_decode", _guarded_b64url_decode)
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk(
+            {"kty": "EC", "crv": "P-256", "x": b64url_encode(b"x" * 32), "y": _oversized_b64u()}
+        )
+    assert "exceeds the maximum encoded length" in str(exc_info.value)
+    assert "'y'" in str(exc_info.value)
+
+
+def test_issuer_key_from_jwk_rsa_n_over_length_cap_rejected_before_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("aitp_verifier.jwk.b64url_decode", _guarded_b64url_decode)
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "RSA", "n": _oversized_b64u(), "e": _SMALL_E_B64U})
+    assert "exceeds the maximum encoded length" in str(exc_info.value)
+    assert "'n'" in str(exc_info.value)
+
+
+def test_issuer_key_from_jwk_rsa_e_over_length_cap_rejected_before_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`n` is the valid pinned 2048-bit modulus so the walk reaches `e`'s own
+    decode call -- proving the gate fires at each RSA site independently."""
+    monkeypatch.setattr("aitp_verifier.jwk.b64url_decode", _guarded_b64url_decode)
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "RSA", "n": b64url_encode(_N_BYTES), "e": _oversized_b64u()})
+    assert "exceeds the maximum encoded length" in str(exc_info.value)
+    assert "'e'" in str(exc_info.value)
+
+
+def test_issuer_key_from_jwk_member_at_length_cap_reaches_decode() -> None:
+    """A member string at exactly the cap is not rejected by the pre-gate --
+    it reaches `b64url_decode` and is judged, and rejected, by the existing
+    downstream decoded-length check instead (never by the pre-gate's own
+    message)."""
+    at_cap = "A" * _MAX_B64_MEMBER_CHARS
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "OKP", "crv": "Ed25519", "x": at_cap})
+    assert "must decode to 32 bytes" in str(exc_info.value)
+    assert "exceeds the maximum encoded length" not in str(exc_info.value)
+
+
+def test_issuer_key_from_jwk_rsa_n_at_length_cap_reaches_decode() -> None:
+    """RSA sibling of the boundary test above: at-cap `n` reaches
+    `b64url_decode` and is judged by `crypto.py`'s bit-length check, not the
+    pre-gate. `"A" * cap` decodes to all-zero bytes (`bit_length() == 0`), so
+    this specific at-cap value is rejected by the *floor* check ("got 0"),
+    not the ceiling -- see the sibling test below for an at-cap value that
+    passes both bounds instead."""
+    at_cap = "A" * _MAX_B64_MEMBER_CHARS
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "RSA", "n": at_cap, "e": _SMALL_E_B64U})
+    assert "RSA modulus must be between" in str(exc_info.value)
+    assert "got 0" in str(exc_info.value)
+    assert "exceeds the maximum encoded length" not in str(exc_info.value)
+
+
+def test_issuer_key_from_jwk_rsa_n_at_length_cap_zero_padded_still_parses() -> None:
+    """An at-cap `n` is not necessarily malformed: `crypto.py`'s
+    `bit_length()` check strips leading zero bytes for free, so a value
+    consisting mostly of `\\x00` padding around a genuine small modulus
+    decodes to an in-range bit length and parses successfully -- it is not
+    a candidate `issuer_keys_from`'s fail-fast (issue #47) would ever stop
+    on. This is the mechanism behind issue #52 (found during #50's own
+    `/ship` gate): the shared, generous member-length cap does not, by
+    itself, bound the total decode work a JWKS of many such candidates
+    costs the same way the existing per-candidate downstream checks bound a
+    genuinely malformed one. Pinned here as known, accepted behavior --
+    tracked for tightening in #52, not a regression to guard against."""
+    real_modulus = (1 << 2047) | 1  # exactly 2048 bits
+    real_bytes = real_modulus.to_bytes(256, "big")
+    zero_padded_n = b64url_encode(b"\x00" * (6144 - 256) + real_bytes)
+    assert len(zero_padded_n) == _MAX_B64_MEMBER_CHARS
+    parsed = issuer_key_from_jwk({"kty": "RSA", "n": zero_padded_n, "e": _SMALL_E_B64U})
+    assert parsed.jose_alg == "RS256"
 
 
 # --- Phase 1 x Phase 2 seam: a JWKS mixing both bounds (issue #47, finalization) --

@@ -42,7 +42,7 @@ from aitp_verifier.errors import AitpError
 from aitp_verifier.fields import reject_unknown_fields
 from aitp_verifier.handshake import verify_handshake_payload
 from aitp_verifier.identity import verify_identity
-from aitp_verifier.jwk import _MAX_CANDIDATES, thumbprint_for_aid
+from aitp_verifier.jwk import _MAX_B64_MEMBER_CHARS, _MAX_CANDIDATES, thumbprint_for_aid
 from aitp_verifier.jws import encode_jws
 from aitp_verifier.keys import load_kat_keys
 from aitp_verifier.manifest import verify_manifest
@@ -2456,6 +2456,29 @@ def test_handshake_jwks_within_candidate_cap_with_over_ceiling_rsa_candidate_is_
     with pytest.raises(AitpError) as exc:
         verify_handshake_payload(minted)
     assert exc.value.code == "KEY_RESOLUTION_FAILED"
+
+
+def test_handshake_oversized_jwk_member_resolved_issuer_key_is_key_resolution_failed_not_a_crash(
+    spec_dir: Path,
+) -> None:
+    """Sibling hazard, issue #50 (a follow-up to #47): `issuer_key_from_jwk`
+    decoded each base64url member (OKP `x`; EC `x`/`y`; RSA `n`/`e`) before
+    checking its length, paying full decode cost for an oversized value
+    before any bound rejected it. An over-cap `x`, replacing the fixture's
+    single resolved key, must still resolve to `KEY_RESOLUTION_FAILED` --
+    and via the new pre-gate's own message, not merely via whatever
+    downstream check an oversized-but-eventually-decoded value happened to
+    fail (the code alone already passed before this fix, since the existing
+    catch-all already converts any `ValueError` here)."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    issuer = minted["envelope"]["payload"]["identity"]["issuer"]
+    oversized_x = b64url_encode(b"\x01" * (_MAX_B64_MEMBER_CHARS + 1))
+    minted["resolved_issuer_keys"][issuer] = {"kty": "OKP", "crv": "Ed25519", "x": oversized_x}
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "KEY_RESOLUTION_FAILED"
+    assert "exceeds the maximum encoded length" in str(exc.value)
 
 
 @pytest.mark.parametrize("identity", ["not-an-object", ["a"], 5, None])

@@ -192,3 +192,22 @@ here, so a future integrator has one place to check before upgrading.
   entry points already give a non-dict `policy`. Found and fixed during this plan's
   finalization pass, closing the fail-mode-helper triplication the `policy` work above had
   already introduced across three modules.
+- **`issuer_key_from_jwk` now length-checks each base64url member it decodes (OKP `x`; EC
+  `x`/`y`; RSA `n`/`e`) before decoding it**, not only via the existing checks on the
+  *decoded* bytes (32-byte length for OKP/EC; `crypto.py`'s bit-length ceiling for RSA,
+  issue #47). Previously, an oversized caller/resolver-supplied member string paid full
+  decode cost — an alphabet-membership scan followed by the actual base64 decode — before
+  any bound had a chance to reject it (measured: a base64url string decoding to an 8 MB
+  modulus cost ~188ms to decode before the existing RSA ceiling rejected it; the EC path,
+  which decodes both `x` and `y` before checking either, cost ~410ms for the same reason).
+  A new private helper rejects any member whose *encoded* string exceeds 8192 unpadded
+  base64url characters — generous headroom (~6x) over the largest legitimate value, an
+  8192-bit RSA modulus at 1366 characters minimally encoded — in O(1), before
+  `b64url_decode` is ever called. Every legitimate key of any supported size still parses
+  unchanged; only genuinely oversized input is affected, converging on the same
+  `AitpError("KEY_RESOLUTION_FAILED")` as every other malformed-JWK hazard, through the
+  same unmodified call site. (issue #50; a residual — a zero-padded, at-cap RSA modulus is
+  not malformed, so up to 64 such candidates in one JWKS can still cost ~1 MiB/~18ms of
+  decode work per verification call, an increase over a tighter per-member cap but still a
+  strict improvement over the unbounded pre-fix cost — is tracked in issue #52, found
+  during this fix's own pre-merge review)
