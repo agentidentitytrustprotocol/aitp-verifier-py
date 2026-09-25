@@ -1886,3 +1886,83 @@ independently a complete fix). Branch: `fix/jwk-issuer-keys-depth-bound`.
 - **Two review rounds run, per the plan's own cap.** Both rounds' findings were concrete,
   cite-backed, and directly fixable (not genuine requirements ambiguity), so per the cap this
   plan is not sent for a third round — ready for `/implement`.
+
+## Phase 1 — depth-cap `issuer_keys_from`, bound its sibling's message construction, guard the one call site against every reachable shape, and close the class-level test-harness gap — DONE (2026-09-24)
+
+**Diff:** `aitp_verifier/jwk.py` (public/private `issuer_keys_from`/`_issuer_keys_from` split,
+`_MAX_DEPTH = 16`, `describe_value` at the three `crv`/`kty` message sites, module docstring),
+`aitp_verifier/identity.py` (`isinstance(issuer_keys, Mapping)` guard + two-clause
+`except RecursionError`/`except ValueError` conversion to `AitpError("KEY_RESOLUTION_FAILED")`
+at `_verify_oidc`'s one call site, module + `_verify_oidc` docstring updates),
+`aitp_verifier/fields.py` (`describe_value` docstring: `jwk.py` added as a third
+consumer/importer), `tests/test_identity_oidc.py` (+14 tests: 6 direct `jwk.py`-level, 6
+through-`verify_identity`, matching the plan's Tests section), `tests/test_unknown_fields.py`
+(+4 end-to-end tests through `verify_handshake_payload` against the `id-009` `mutual_hello`
+fixture), `tests/test_boundary_contract.py` (second leaf-sweep loop over `issuer_keys` inside
+`test_boundary_contract_identity_never_raises_a_bare_exception`), `CHANGELOG.md` (one
+`### Security-relevant` entry matching the `jcs.py`/issue #31 entry's voice). Two divergences
+from the plan's exact prose, both recorded inline in `plans/issue-38-jwk-issuer-keys-depth-bound.md`'s
+own Phase 1 section: the 4 end-to-end test names omit the plan's `_hello_` infix
+(cosmetic only), and `test_issuer_keys_from_past_max_depth_raises_value_error_not_recursion_error`
+uses a well-formed JWK leaf rather than the section's usual sentinel string, found necessary
+during fault-injection (see below).
+
+**Verification:**
+- Full suite: 491 passed (baseline 475 + 16 new: `test_identity_oidc.py` 55→69,
+  `test_unknown_fields.py` 285→289; `test_boundary_contract.py` stays at 9 test functions —
+  the new sweep is a second loop inside an existing one, not a new test).
+- `mypy`: clean, "Success: no issues found in 37 source files".
+- `run_conformance.py --spec-dir ../agentidentitytrustprotocol`: 68 passed, 0 failed, 1 skipped
+  — unchanged from baseline, as the plan's acceptance criterion 10 predicted (no fixture
+  exercises `resolved_issuer_keys` hostility).
+- **Fault-injection (acceptance criterion 11), all performed live against this diff, not
+  assumed:**
+  - Reverted `jwk.py`/`identity.py`/`fields.py` to `HEAD` (via `git stash push --keep-index`,
+    scoped to just those three files so the test edits stayed in place) and ran the 4
+    end-to-end crash-reproducing tests in `test_unknown_fields.py`: all 4 failed, each with its
+    exact claimed bare exception — `RecursionError: maximum recursion depth exceeded` (deep
+    nesting), `ValueError: unsupported issuer key value shape: int` (malformed scalar),
+    `RecursionError: maximum recursion depth exceeded while getting the repr of an object`
+    (deeply nested `kty`), `AttributeError: 'str' object has no attribute 'get'` (non-Mapping).
+    Restored via `git stash pop`.
+  - **Process note:** the `git stash pop` initially left `jwk.py` on a later, unrelated
+    `git checkout -- aitp_verifier/jwk.py` call made to revert a separate temporary
+    fault-injection edit — that command discards a file's entire working-tree state, not just
+    the one line intended, and wiped the whole Phase 1 `jwk.py` fix since it had never been
+    committed. Recovered by re-reading the reverted file and re-applying the exact same edits
+    from this session's own record of them; `git diff aitp_verifier/jwk.py` after recovery is
+    byte-for-byte the intended fix (confirmed against a scratchpad backup taken just before,
+    and against the full suite/mypy passing again after). Lesson applied for the rest of this
+    pass: fault-injection reverts on uncommitted files now use `Edit` to change/restore the
+    exact line, never `git checkout` on a file with unstaged work.
+  - Boundary-pinning tests (criterion 2/3, at/past `_MAX_DEPTH`): temporarily changed the
+    guard to `if depth > 999999:` (via `Edit`, reverted via `Edit`). This is what surfaced the
+    vacuous-leaf finding recorded in the plan's own Divergence notes — the past-cap test, as
+    originally written with the section's sentinel-string leaf, stayed green even with the cap
+    fully defeated (the sentinel string fails `issuer_key_from_config`'s own length check
+    independent of any cap). Fixed by switching that one test's leaf to a well-formed JWK; with
+    the cap defeated the fixed test now correctly fails (`Failed: DID NOT RAISE ValueError`),
+    and with the cap restored it passes.
+  - Monkeypatch test (criterion 6): temporarily removed `identity.py`'s
+    `except RecursionError` clause (via `Edit`, reverted via `Edit`, `except ValueError`
+    clause untouched). The monkeypatched `RecursionError` then escaped uncaught as expected,
+    confirming the clause — not something else — is what the test is pinned to.
+  - Final state re-confirmed: full suite 491 passed, `mypy` clean, `run_conformance.py`
+    68/0/1, `jwk.py` identical to the scratchpad backup taken before fault injection began.
+
+**Tracked-file closeout:**
+- `plans/issue-38-jwk-issuer-keys-depth-bound.md` — Phase 1 `Status: DONE`, divergence notes
+  added inline.
+- `ASSUMPTIONS.md` — no entry needed. Every judgment call made during implementation (test
+  leaf content, exact test names) was mechanical/cosmetic, not a genuine ambiguity the plan
+  left open; the plan's own Open Questions section already confirms nothing was escalated.
+- Local `docs/`/`CLAUDE.md` — none reference `jwk.py`/`issuer_keys_from` (confirmed: no repo
+  `CLAUDE.md`/`docs/` directory exists at this repo's root beyond `README.md`), so nothing
+  else needed updating beyond the module docstrings already in the diff.
+
+**What's next:** this is a single-phase plan, so Phase 1 completing means the plan is
+feature-complete pending the `/implement` finalization pass (§4: whole-suite re-run —
+already green above — integration-test-gap check, docs sweep, final cumulative Opus
+verification) and the mandatory fresh-Opus per-phase verification gate (§2), neither of which
+has run yet. Then hand off to `/ship` (no `/reconcile` needed — no `ASSUMPTIONS.md` entries
+this plan).

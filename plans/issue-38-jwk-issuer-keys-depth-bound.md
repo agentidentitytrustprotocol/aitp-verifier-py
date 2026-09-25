@@ -161,7 +161,29 @@ completed review rounds, rather than invented fresh or left for `/implement` to 
 
 ### Phase 1 — depth-cap `issuer_keys_from`, bound its sibling's message construction, guard the one call site against every reachable shape, and close the class-level test-harness gap
 
-**Status:** TODO
+**Status:** DONE
+
+**Divergence notes:**
+- The four end-to-end tests in `tests/test_unknown_fields.py` are named without the
+  `_hello_` infix the plan's Tests section used (e.g.
+  `test_handshake_deeply_nested_resolved_issuer_key_is_key_resolution_failed_not_a_crash`,
+  not `test_handshake_hello_deeply_nested_resolved_issuer_key_is_key_resolution_failed_not_a_crash`)
+  — a naming-only divergence with no behavioral difference; each test still does exactly what
+  its corresponding acceptance criterion specifies, against the same `id-009` `mutual_hello`
+  fixture.
+- `test_issuer_keys_from_past_max_depth_raises_value_error_not_recursion_error`'s leaf value
+  is a well-formed JWK, not this section's usual `"deep-leaf-sentinel"` string convention. Found
+  during the mandatory fault-injection pass (acceptance criterion 11b): with the sentinel leaf,
+  reverting only the depth-cap guard did *not* make the test's `pytest.raises(ValueError)`
+  fail — `issuer_key_from_config` itself still rejects that malformed 17-char-ish string,
+  independent of the cap, so the test stayed green with no cap present at all. That directly
+  contradicts criterion 11b's own stated expectation ("nothing raised at that depth at all")
+  and would have made the test vacuous. Switched the leaf to a real, resolvable JWK so the
+  cap-absent outcome is genuinely "resolves with no exception" — confirmed live: with the cap
+  defeated the test now correctly fails with `Failed: DID NOT RAISE ValueError`, and with the
+  cap restored it passes. No other test needed this change (every other crash-reproducing test
+  already uses a leaf/value whose only path to an exception is through the code this phase
+  fixes).
 
 **Delivers:** `verify_handshake_payload` and `verify_identity` raise `AitpError` (never a
 raw `RecursionError`/`ValueError`/`AttributeError`) for every reachable shape of a hostile

@@ -24,7 +24,16 @@ Two directions live here:
   JWK's own ``alg`` member or from anything the token itself claims. A JWK
   that lies about ``alg`` still parses under the algorithm its structure
   actually implies; this is the alg-confusion defense described in
-  RFC-AITP-0007 §3 and RFC-AITP-0002 §2.3.
+  RFC-AITP-0007 §3 and RFC-AITP-0002 §2.3. ``issuer_keys_from``'s value is
+  caller/resolver-supplied, not schema-validated (issue #38): its list walk
+  is depth-bounded (``_MAX_DEPTH``, enforced by a private helper so the
+  public function's signature can't be used to bypass it), and
+  ``issuer_key_from_jwk``'s own rejection messages route an unrecognized
+  ``kty``/``crv`` through ``fields.describe_value`` rather than ``repr()``,
+  so a container value there can neither blow the message budget nor raise
+  ``RecursionError`` while the message is being built. Every ``ValueError``
+  either can raise is converted to ``AitpError`` at the one call site,
+  ``identity.py``'s ``_verify_oidc``.
 """
 
 from __future__ import annotations
@@ -37,6 +46,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from .aid import Aid
 from .b64 import b64url_decode, b64url_encode
 from .crypto import ALG_ED25519, ALG_P256, PublicKey, sha256
+from .fields import describe_value
 
 __all__ = [
     "thumbprint",
@@ -113,7 +123,7 @@ def issuer_key_from_jwk(value: dict[str, Any]) -> IssuerKey:
     if kty == "OKP":
         crv = value.get("crv")
         if crv != "Ed25519":
-            raise ValueError(f"unsupported OKP curve: {crv!r}")
+            raise ValueError(f"unsupported OKP curve: {describe_value(crv)}")
         x = b64url_decode(_require_str(value.get("x"), "x"))
         if len(x) != 32:
             raise ValueError(f"Ed25519 JWK 'x' must decode to 32 bytes, got {len(x)}")
@@ -122,7 +132,7 @@ def issuer_key_from_jwk(value: dict[str, Any]) -> IssuerKey:
     if kty == "EC":
         crv = value.get("crv")
         if crv != "P-256":
-            raise ValueError(f"unsupported EC curve: {crv!r}")
+            raise ValueError(f"unsupported EC curve: {describe_value(crv)}")
         x = b64url_decode(_require_str(value.get("x"), "x"))
         y = b64url_decode(_require_str(value.get("y"), "y"))
         if len(x) != 32 or len(y) != 32:
@@ -137,7 +147,7 @@ def issuer_key_from_jwk(value: dict[str, Any]) -> IssuerKey:
         e = b64url_decode(_require_str(value.get("e"), "e"))
         return IssuerKey(kid=kid, jose_alg="RS256", public_key=PublicKey.from_rsa_numbers(n, e))
 
-    raise ValueError(f"unsupported or missing JWK 'kty': {kty!r}")
+    raise ValueError(f"unsupported or missing JWK 'kty': {describe_value(kty)}")
 
 
 def issuer_key_from_config(b64url: str) -> IssuerKey:
@@ -159,6 +169,22 @@ def issuer_key_from_config(b64url: str) -> IssuerKey:
     raise ValueError(f"issuer key config string must be 43 (Ed25519) or 44 (P-256) chars, got {len(b64url)}")
 
 
+# Maximum LIST nesting depth this walk will descend before rejecting a
+# caller-supplied issuer-key value as malformed. Unlike jcs.py's _MAX_DEPTH
+# (a full JSON-tree walk over input of unknown provenance), this recursion
+# is over LIST nesting only: a dict is always a terminal JWK/JWKS leaf,
+# parsed within the same call frame rather than recursed into again -- so
+# a genuine value nests at most 1 level deep (a flat list of
+# JWK/JWKS/config-string entries; RFC-AITP-0007 gives no meaning to a
+# nested list). 16 is generous headroom over that, not a number tightly
+# calibrated to it. Kept as its own constant rather than importing
+# jcs.py's private _MAX_DEPTH: that cap is calibrated against a
+# structurally different (full-tree, not list-only) recursion, and
+# reaching into a sibling module's private name would be a leakier
+# coupling than one small, independently-justified number.
+_MAX_DEPTH = 16
+
+
 def issuer_keys_from(value: Any) -> list[IssuerKey]:
     """Normalize a caller-supplied issuer-key value into a flat candidate list.
 
@@ -173,8 +199,24 @@ def issuer_keys_from(value: Any) -> list[IssuerKey]:
     zero candidates as key-resolution failure). Raises ``ValueError``
     immediately on the first malformed candidate — partial tolerance would
     let a malformed entry silently vanish instead of surfacing as a
-    resolution error.
+    resolution error. Depth-bounded (``_MAX_DEPTH``, issue #38): a value
+    nesting lists past that bound also raises ``ValueError`` rather than a
+    raw ``RecursionError``. This function's own signature carries no
+    ``depth`` parameter — the bounded walk lives in a private helper — so a
+    caller cannot pass a starting depth that defeats the cap.
     """
+    return _issuer_keys_from(value, 0)
+
+
+def _issuer_keys_from(value: Any, depth: int) -> list[IssuerKey]:
+    # Guard at entry, not only at the recursion site: a caller passing an
+    # already-deep value could exceed the cap before the first check ever
+    # ran if the guard sat only where the recursive call is made (same
+    # reasoning as jcs.py::_serialize). `depth` is an internal walk
+    # counter, not part of the public contract -- see issuer_keys_from's
+    # own docstring for why it is not exposed as a parameter there.
+    if depth > _MAX_DEPTH:
+        raise ValueError(f"issuer key value nesting exceeds the maximum depth ({_MAX_DEPTH})")
     if value is None:
         return []
     if isinstance(value, str):
@@ -189,6 +231,6 @@ def issuer_keys_from(value: Any) -> list[IssuerKey]:
     if isinstance(value, list):
         out: list[IssuerKey] = []
         for item in value:
-            out.extend(issuer_keys_from(item))
+            out.extend(_issuer_keys_from(item, depth + 1))
         return out
     raise ValueError(f"unsupported issuer key value shape: {type(value).__name__}")

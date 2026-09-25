@@ -2310,6 +2310,75 @@ def test_verify_identity_pinned_key_missing_pop_nonce_is_identity_failed_not_a_c
     assert exc.value.code == "IDENTITY_FAILED"
 
 
+# --- resolved_issuer_keys depth bound + malformed-shape hazards (issue #38),
+# --- end to end through verify_handshake_payload -----------------------------
+#
+# `id-009` is the OIDC conformance fixture (unlike `_hello_input` above, which
+# builds a `pinned_key` identity that never reaches `jwk.py` at all): minting
+# it populates `resolved_issuer_keys[issuer]` with one genuine, resolvable
+# key, so mutating that one entry (or the container itself) after minting --
+# not before, per this file's own convention -- reaches `identity.py:181`'s
+# call into `jwk.issuer_keys_from` through the real handshake entry point,
+# with every other gate ahead of it (manifest, envelope, proof) still
+# genuinely satisfied.
+
+
+def test_handshake_deeply_nested_resolved_issuer_key_is_key_resolution_failed_not_a_crash(
+    spec_dir: Path,
+) -> None:
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    issuer = minted["envelope"]["payload"]["identity"]["issuer"]
+    value: Any = "deep-leaf-sentinel"
+    for _ in range(3000):
+        value = [value]
+    minted["resolved_issuer_keys"][issuer] = value
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "KEY_RESOLUTION_FAILED"
+
+
+def test_handshake_malformed_resolved_issuer_key_is_key_resolution_failed_not_a_crash(
+    spec_dir: Path,
+) -> None:
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    issuer = minted["envelope"]["payload"]["identity"]["issuer"]
+    minted["resolved_issuer_keys"][issuer] = 12345
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "KEY_RESOLUTION_FAILED"
+
+
+def test_handshake_deeply_nested_kty_in_resolved_issuer_key_is_key_resolution_failed_not_a_crash(
+    spec_dir: Path,
+) -> None:
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    issuer = minted["envelope"]["payload"]["identity"]["issuer"]
+    value: Any = "deep-leaf-sentinel"
+    for _ in range(20000):
+        value = {"a": value}
+    minted["resolved_issuer_keys"][issuer] = {"kty": value}
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "KEY_RESOLUTION_FAILED"
+
+
+def test_handshake_non_mapping_resolved_issuer_keys_is_key_resolution_failed_not_a_crash(
+    spec_dir: Path,
+) -> None:
+    """The whole `resolved_issuer_keys` container, not one issuer's entry
+    inside it, being a non-`Mapping` -- used to raise a raw `AttributeError`
+    from `identity.py`'s own `.get()`."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    minted["resolved_issuer_keys"] = "not-a-mapping"
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "KEY_RESOLUTION_FAILED"
+
+
 @pytest.mark.parametrize("identity", ["not-an-object", ["a"], 5, None])
 def test_handshake_hello_mistyped_identity_reports_identity_failed(identity: Any, spec_dir: Path) -> None:
     """Unlike the checks above, this one runs AFTER `verify_manifest` (mh-002/

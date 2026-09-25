@@ -134,6 +134,20 @@ here, so a future integrator has one place to check before upgrading.
   `extensions` member whose interior RFC-AITP-0001 §7 forbids inspecting. Callers now see
   `AitpError` where they previously saw an unhandled `RecursionError`, which is the
   boundary contract this library states everywhere else. (issue #31)
+- **`verify_identity`'s OIDC path now bounds and converts every failure mode of its
+  `resolved_issuer_keys` argument** — a caller/resolver-supplied value carrying no schema
+  at all, unlike this entry point's other arguments. `jwk.issuer_keys_from`'s list walk was
+  unbounded and could drive a raw `RecursionError` on a deeply nested value; its own
+  `issuer_key_from_jwk` rendered an unrecognized `kty`/`crv` with `repr()`, the same
+  unbounded-message/RecursionError-during-formatting hazard `describe_value` (issue #31)
+  already closed elsewhere, just never swept here; and `resolved_issuer_keys` itself not
+  being a mapping raised a raw `AttributeError` from `.get()`. All three now raise
+  `AitpError("KEY_RESOLUTION_FAILED")`, the same code already used for "no usable
+  candidates" — a resolver that hands back garbage has produced exactly as much usable key
+  material as one that hands back nothing. `issuer_keys_from`'s list nesting is capped at
+  16 levels (public signature unchanged; the cap lives in a private helper so it cannot be
+  bypassed by a caller-supplied starting depth). No legitimate value nests past 1 level.
+  (issue #38)
 - **`verify_revocation_snapshot` now guards its own `policy` argument** the same way
   `verify_tct`/`verify_delegation_token`'s new `policy` handling above does, instead of
   bracket-reading it raw. Previously, a missing `max_staleness_secs` raised `KeyError`; a

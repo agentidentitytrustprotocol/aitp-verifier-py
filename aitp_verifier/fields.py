@@ -51,9 +51,11 @@ Finally it carries ``describe_value``, which is not a gate at all but the
 counterpart to these gates' *messages*: the cost-bounded way to name a value
 a gate has just rejected. It lives here because the modules that need it sit
 on opposite sides of the import graph -- ``jws.py`` (which ``identity.py``
-imports) and ``identity.py`` itself -- so neither can own it without
-inverting that dependency, while this module is already imported by both and
-depends on nothing above ``b64``/``errors``/``jcs``.
+imports) and ``identity.py`` itself, joined by ``jwk.py`` (issue #38, for the
+identical reason: bounding an unrecognized JWK ``kty``/``crv`` value's
+rejection message) -- so none of the three can own it without inverting a
+dependency, while this module is already imported by all of them and depends
+on nothing above ``b64``/``errors``/``jcs``.
 
 The single exception is remapped at its call site, not here:
 ``sessionbundle.py``'s embedded participant TCT, where RFC-AITP-0010 §5 step 7
