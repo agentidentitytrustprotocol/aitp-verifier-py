@@ -2335,3 +2335,6 @@ finalization pass are complete.
   a future implementer sees accurate priority rather than the original underestimate. `pytest`
   re-run after the doc-only edits: still **519 passed** (unaffected, as expected).
   **Next: commit this correction, push, open PR, watch CI, merge.**
+
+pushed fix/issuer-key-resource-bounds 0e285710fcdf2ac6531f9c5ec042c7150e27135b
+PR #51 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/51
