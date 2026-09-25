@@ -2299,4 +2299,39 @@ finalization pass are complete.
   **519 passed**, mypy clean. Two rounds is this plan's cap (matching `/implement`'s §4 round
   cap); round 2's only finding was a trivial citation drift, not a repeat of any round-1 item
   or a new substantive gap, so proceeding to commit and `/ship` rather than spawning a round 3.
-  **Next: commit the finalization work, then `/ship`.**
+
+## Ship
+
+- **`/ship` §0-1: orient/sync/local suite, 2026-09-25.** On `fix/issuer-key-resource-bounds`,
+  3 commits ahead of `main` @ `d7e76cd`, tree clean; merge-base with `main` equals
+  `origin/main`'s tip exactly, so no rebase was needed. `DECISIONS.md` has no entries relevant
+  to this diff. Full local suite: `pytest` **519 passed**; bare `mypy` (CI's own form, per
+  `pyproject.toml`'s `[tool.mypy]` `files` setting) **clean, 37 source files**;
+  `run_conformance.py` **71 passed, 0 failed, 1 skipped**.
+- **`/ship` §2: pre-merge verification gate, fresh Opus: GAPS — 1 item, documentation/
+  risk-assessment only, zero code/correctness/security defects; explicitly "merge-ready."**
+  Independently re-ran the full suite/mypy/conformance (all matched); read `jwk.py`/
+  `crypto.py`/`identity.py` in full; independently recounted the diff's new tests via git (27
+  functions across both test files, not the ~45 a rough estimate in the gate's own brief had
+  guessed — `PROGRESS.md`'s own count of 27 was confirmed correct); verified the ring-parity
+  citations against the actual `ring-0.17.14` source a second time; tried several bypass
+  attempts on the new bounds (leading-zero-padded moduli, degenerate exponents) — none
+  succeeded; confirmed `ASSUMPTIONS.md` has zero `#47`-tagged entries by grepping, not
+  trusting the claim; confirmed issues #49/#50 are real, open, and match their descriptions.
+  **The one gap:** issue #49's own deferral rationale — "the residual walk is O(memory the
+  caller already allocated), no amplification" — is **false for an aliased Python object
+  graph** (a shape JSON cannot produce, but a direct Python caller of `verify_identity` can):
+  because only `list`s recurse and `dict`s are always terminal, 16 nested lists each holding
+  `F` references to the *same* next-level list produce `F^16` node visits from `O(16*F)`
+  actual memory. Independently reproduced (not merely trusted): 16 aliased lists at fanout 3
+  (~384 bytes) → **2.64s CPU, 0 candidates, neither `_MAX_CANDIDATES` nor `_MAX_DEPTH` ever
+  fires**. Pre-existing since #38, not a regression in this diff, and not a bound either
+  phase claims to close — but the *reasoning* that authorized deferring it was wrong, so the
+  record needed correcting before merge. Closed via two doc-only edits, no code/test changes:
+  `plans/issue-47-issuer-key-resource-bounds.md`'s Phase 1 KNOWN RESIDUAL and the matching
+  Long-term-posture bullet both corrected with the aliasing finding and the retraction of the
+  "no amplification" ground; **issue #49's body rewritten** (`gh issue edit`) with the
+  corrected severity assessment, an "Update" note at the top, and the reproduction snippet, so
+  a future implementer sees accurate priority rather than the original underestimate. `pytest`
+  re-run after the doc-only edits: still **519 passed** (unaffected, as expected).
+  **Next: commit this correction, push, open PR, watch CI, merge.**

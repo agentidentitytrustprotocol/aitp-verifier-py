@@ -285,13 +285,33 @@ over-the-cap entry, not merely after building an oversized list. Converts to
   not *eliminate* the resolver-driven CPU cost named in Context item 1 — it removes the
   expensive multiplier (per-candidate `issuer_key_from_jwk`: ~3.3µs/entry, measured) and leaves
   the cheap one (bare walk: ~0.03-0.09µs/entry, measured), a **~35-100x reduction in
-  amplification per input element, not a bound on total work**. Accepted here rather than
-  fixed, on two grounds: (a) the value is a Python object the *caller* has already materialized,
-  so the residual walk is O(memory the caller already allocated) with no amplification, whereas
-  the parse path multiplies that by ~35-100x; (b) closing it needs a second, different kind of
-  cap (a nodes-visited counter threaded alongside `out` — which this phase's accumulator
-  restructure would make easy to add later, at the cost of a second constant and a second set
-  of boundary tests). Filed as **issue #49** rather than closed in this phase; this phase's
+  amplification per input element, not a bound on total work**.
+
+  **Correction, found by `/ship`'s own pre-merge gate, not by this session's earlier review
+  passes:** an earlier draft of this bullet justified deferring the fix partly on "the value
+  is a Python object the *caller* has already materialized, so the residual walk is
+  O(memory the caller already allocated) with **no amplification**." That claim is **false**
+  for an *aliased* value — one where the same list object appears more than once inside its
+  own containing structure, something JSON (which cannot express aliasing/reference-sharing)
+  can never produce, but a Python caller constructing `resolved_issuer_keys` directly
+  (bypassing `json.loads`) can. Because a `dict` is always a terminal leaf here and only
+  `list`s recurse, `_MAX_DEPTH` nested lists each containing `F` references to the *same*
+  next-level list produce `F^_MAX_DEPTH` node visits from `O(_MAX_DEPTH * F)` actual
+  allocated memory — genuine amplification, not O(allocated memory). Measured live: 16
+  aliased lists at fanout 3 (a ~384-byte structure) → **2.64s CPU, 0 candidates,
+  `_MAX_CANDIDATES` never fires, `_MAX_DEPTH` never trips** (each branch is only 16 lists
+  deep); fanout 4 did not return within 10s. Reachable end-to-end: a resolver/caller
+  supplying such a value to `verify_identity`'s `issuer_keys` argument burns multiple seconds
+  of CPU before returning `KEY_RESOLUTION_FAILED`. This is **pre-existing behavior unchanged
+  since #38** (not a regression introduced by this diff), not a bound either of this plan's
+  phases claims to close, and does not affect the correctness of anything actually shipped
+  here — but the *rationale* for deferring it was wrong, so the "no amplification" ground
+  above is retracted: the deferral now rests solely on closing it needing a second, different
+  kind of cap (a nodes-visited counter threaded alongside `out` — which this phase's
+  accumulator restructure would make easy to add later, at the cost of a second constant and
+  a second set of boundary tests), which still holds. Accepted as still-deferred, but
+  **issue #49's own body has been corrected to match** — see that issue for the current,
+  accurate severity assessment. Filed as **issue #49** rather than closed in this phase; this phase's
   Delivers line must not be read as claiming it. **Do not describe Phase 1 as "bounding
   `issuer_keys_from`'s CPU cost" — it bounds its candidate count.**
 
@@ -702,7 +722,13 @@ why that one, specifically, didn't stay on this list.)
 
 1. **Unbounded walk over candidate-free containers** (Phase 1's own "KNOWN RESIDUAL" edge case):
    `issuer_keys_from([None] * 5_000_000)` → 159ms, 0 candidates, `_MAX_CANDIDATES` never fires.
-   Closing it needs a nodes-visited counter threaded alongside `out`. **Filed as issue #49.**
+   For a non-aliased value this is linear (no amplification); for an *aliased* one (a shape
+   JSON cannot produce, but a direct Python caller can) it is genuinely exponential — 16
+   aliased lists at fanout 3 measured 2.64s CPU from a ~384-byte structure (found by `/ship`'s
+   pre-merge gate; the "no amplification" framing in an earlier draft of this residual was
+   wrong for that case — see Phase 1's own KNOWN RESIDUAL edge case above for the full
+   correction). Closing it needs a nodes-visited counter threaded alongside `out`. **Filed as
+   issue #49**, body corrected to match this finding.
 2. **Unbounded `b64url_decode` of `n`/`e`** (Phase 2's Approach step 2): 188ms for one 8 MB
    modulus, upstream of `from_rsa_numbers` at `jwk.py:150-151` and untouched by either phase.
    Bounded in practice to a small constant number of such decodes per call (~194ms measured
