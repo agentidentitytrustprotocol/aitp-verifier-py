@@ -256,8 +256,8 @@ _MAX_CANDIDATES = 64
 # containing structure -- unreachable via JSON, only via a direct Python
 # caller), the walk is not merely unbounded but exponential: _MAX_DEPTH (16)
 # nested lists each holding F references to the same next-level list
-# produce F^16 node visits from O(16*F) actual allocated memory (issue
-# #49). A counter over total _issuer_keys_from calls closes both cases in
+# produce sum(F**i for i in range(17)) node visits (order F^16) from
+# O(16*F) actual allocated memory (issue #49). A counter over total _issuer_keys_from calls closes both cases in
 # one fix, since it bounds total work regardless of aliasing or shape --
 # unlike _MAX_DEPTH (bounds nesting depth, catches deep-but-narrow chains
 # early enough to also protect Python's own call-stack recursion limit --

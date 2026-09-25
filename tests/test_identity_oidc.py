@@ -924,9 +924,10 @@ def test_identity_oidc_past_max_candidates_is_key_resolution_failed_not_a_crash(
 # (the same list object referenced more than once inside its own containing
 # structure -- unreachable via JSON, only via a direct Python caller), the
 # walk is exponential, not merely unbounded: `_MAX_DEPTH` (16) nested lists
-# each holding F references to the same next-level list produce F^16 node
-# visits from O(16*F) actual allocated memory. `_MAX_NODES_VISITED` bounds
-# total `_issuer_keys_from` calls regardless of shape or aliasing.
+# each holding F references to the same next-level list produce
+# sum(F**i for i in range(17)) node visits (order F^16) from O(16*F)
+# actual allocated memory. `_MAX_NODES_VISITED` bounds total
+# `_issuer_keys_from` calls regardless of shape or aliasing.
 
 
 def test_max_nodes_visited_is_4096() -> None:
@@ -953,12 +954,23 @@ def test_issuer_keys_from_large_candidate_free_flat_list_raises_node_visit_error
     assert f"visits more than {_MAX_NODES_VISITED} nodes" in str(exc_info.value)
 
 
+def test_issuer_keys_from_large_candidate_free_jwks_list_raises_node_visit_error() -> None:
+    """The other candidate-free shape the module docstring names alongside
+    `None`: a long list of empty JWKS objects. Each `{"keys": []}` dict is a
+    terminal leaf (dicts never recurse), so `_MAX_CANDIDATES`/`_reserve`
+    never fires either -- only the node-visit cap catches this shape."""
+    with pytest.raises(ValueError) as exc_info:
+        issuer_keys_from([{"keys": []}] * _MAX_NODES_VISITED)
+    assert f"visits more than {_MAX_NODES_VISITED} nodes" in str(exc_info.value)
+
+
 def test_issuer_keys_from_aliased_structure_raises_node_visit_error_exact_count() -> None:
     """The issue's own reproduction: 16 nested lists, each holding 3
     references to the *same* next-level list object (~384 bytes of actual
     allocated memory) -- without this cap, sum(3**i for i in range(17))
-    (~64.5 million) node visits, measured at multiple seconds of CPU. Calls `_issuer_keys_from` directly
-    (not the public `issuer_keys_from`) to assert on `visits[0]` itself --
+    (~64.5 million) node visits, measured at multiple seconds of CPU.
+    Calls `_issuer_keys_from` directly (not the public `issuer_keys_from`)
+    to assert on `visits[0]` itself --
     a deterministic, non-timing proof that the cap fired after exactly
     `_MAX_NODES_VISITED + 1` calls, not merely that some `ValueError`
     eventually surfaced. `pytest.raises(ValueError)` alone cannot

@@ -221,14 +221,14 @@ here, so a future integrator has one place to check before upgrading.
   object referenced more than once inside its own containing structure, unreachable via
   JSON but reachable from a direct Python caller constructing `resolved_issuer_keys`
   directly — the walk was not merely unbounded but **exponential**: `_MAX_DEPTH` (16)
-  nested lists each holding `F` references to the same next-level list produced `F^16` node
-  visits from only `O(16·F)` actual allocated memory (measured: 16 levels, fanout 3, ~384
-  bytes of allocated objects, cost ~2.75s CPU, 0 candidates, neither existing cap ever
-  fired). A new counter, checked at the top of every walk step before any further
+  nested lists each holding `F` references to the same next-level list produced
+  `sum(F**i for i in range(17))` node visits (order `F^16`) from only `O(16·F)` actual
+  allocated memory (measured: 16 levels, fanout 3, ~384 bytes of allocated objects, cost
+  ~2.75s CPU, 0 candidates, neither existing cap ever fired). A new counter, checked at the top of every walk step before any further
   recursion, closes both cases in one fix: an oversized or aliased value is rejected after
   at most 4096 total walk steps (a few hundred microseconds), regardless of the caller-
   supplied structure's true size or branching factor. Every legitimate value (a genuine
   value nests at most 1 level deep and spreads at most 64 candidates across its
-  containers) needs on the order of tens of nodes — 60x+ headroom under the new cap.
+  containers) needs on the order of tens of nodes — ~40-60x headroom under the new cap.
   Converges on the same `AitpError("KEY_RESOLUTION_FAILED")` as every other malformed-
   `resolved_issuer_keys` hazard, through the same unmodified call site. (issue #49)

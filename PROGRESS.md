@@ -2476,4 +2476,19 @@ merged #53
     directly per the Autonomy ladder, recorded in the plan's own Open questions instead).
   - Single-phase plan — Phase 1's own gate covers the whole feature; no separate
     finalization-verify pass needed (same precedent as #50).
-- **Next:** commit Phase 1, then `/ship`.
+- Phase 1 committed: `4b933e8` on `fix/jwk-node-visit-bound`.
+- **`/ship` pre-merge gate: PASS** (fresh Opus verifier, round 1). Independently
+  re-derived the node counts, headroom claim, and cap-composition reasoning rather than
+  trusting the Phase 1 gate's numbers on sight; ran its own break-the-fix mutation
+  (via a pytest plugin, no repo file touched) confirming the e2e test's extra
+  assertions are load-bearing, not just the error code. Confirmed zero
+  `ASSUMPTIONS.md` entries for this plan and zero doc drift. 4 non-blocking
+  documentation nits, all applied directly (no re-verify round — comment/doc/test-
+  coverage only, no executable-code change): the `F^16` leaf-count figure corrected
+  to the exact `sum(F**i for i in range(17))` total-visit figure in the remaining
+  spots (`jwk.py`, `CHANGELOG.md`, the plan's Context, `test_identity_oidc.py`); the
+  CHANGELOG's "60x+ headroom" over-claim corrected to "~40-60x"; a new test added
+  (`test_issuer_keys_from_large_candidate_free_jwks_list_raises_node_visit_error`)
+  for the `{"keys": []}` candidate-free shape the docs already claimed was covered.
+  Re-verified green: 535 passed (534 + 1 new test), mypy clean (37 files).
+- **Next:** commit the ship-gate fixes, sync with `main`, open PR, watch CI, merge.

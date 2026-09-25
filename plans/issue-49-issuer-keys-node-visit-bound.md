@@ -26,8 +26,9 @@ follow-up correction (recorded in the issue body) established the real severity:
 - **Aliased (only reachable via a direct Python caller — `json.loads` never produces
   aliased structures):** because a `dict` is always a terminal leaf in this walk (parsed
   inline, never recursed into again) and only `list`s recurse, `_MAX_DEPTH` (16) nested
-  lists each holding `F` references to the *same* next-level list object produce `F^16`
-  node visits from only `O(16·F)` actual allocated memory — genuine **exponential**
+  lists each holding `F` references to the *same* next-level list object produce
+  `sum(F**i for i in range(17))` node visits (order `F^16`) from only `O(16·F)` actual
+  allocated memory — genuine **exponential**
   amplification, not `O(allocated memory)`. Measured: fanout 3 (`value = None; for _ in
   range(16): value = [value, value, value]`, ~384 bytes) costs **2.64s CPU, 0 candidates,
   neither `_MAX_DEPTH` nor `_MAX_CANDIDATES` ever fires** (each branch is exactly 16 lists
@@ -62,6 +63,24 @@ clean) — no re-verify round needed for such mechanical corrections. The other 
 (a harmless module-vs-local `jwk` name reuse in test_unknown_fields.py; a cosmetic
 docstring-clause ordering in jwk.py's module docstring) are accepted as-is, not worth
 a diff.
+
+**`/ship` pre-merge gate: PASS** (fresh Opus verifier, round 1). Independently
+re-derived the node counts, headroom claim, and composition-with-other-caps reasoning
+rather than trusting the Phase 1 gate's numbers on sight; ran its own break-the-fix
+mutation (via a pytest plugin, no repo file touched) confirming the e2e test's extra
+assertions are load-bearing, not just the error code. Confirmed zero `ASSUMPTIONS.md`
+entries for this plan, zero doc drift (no `docs/` or `CLAUDE.md` describes this
+behavior), and tracked-file consistency (`Status: DONE` here, `PROGRESS.md`'s trail
+matches the diff exactly). 4 non-blocking documentation nits raised, all applied
+directly (no re-verify round, purely comment/doc/test-coverage corrections, no
+executable-code change): the `F^16` leaf-count figure corrected to the exact
+`sum(F**i for i in range(17))` total-visit figure in the remaining 3 spots
+(`jwk.py`, `CHANGELOG.md`, this file's Context, and the second `test_identity_oidc.py`
+occurrence); the CHANGELOG's "60x+ headroom" over-claim corrected to "~40-60x" to
+match the code comment's own stated range; a new test
+(`test_issuer_keys_from_large_candidate_free_jwks_list_raises_node_visit_error`)
+added for the `{"keys": []}` candidate-free shape the docs already claimed was
+covered. Re-verified green: 535 passed (534 + 1 new test), mypy clean.
 
 **Delivers:** a `_MAX_NODES_VISITED` cap on the total number of `_issuer_keys_from` calls
 made while resolving one `issuer_keys_from` value, checked at the top of every call (same
