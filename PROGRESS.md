@@ -2338,3 +2338,9 @@ finalization pass are complete.
 
 pushed fix/issuer-key-resource-bounds 0e285710fcdf2ac6531f9c5ec042c7150e27135b
 PR #51 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/51
+- **CI:** all 8 jobs green (wheel build/smoke-test, cross-platform macOS/Windows @ 3.13,
+  conformance+tests+types @ 3.11/3.12/3.13/3.14, declared-floors install) — squash-merged as
+  `44ba06e`, branch deleted, issue #47 closed automatically via the PR title. No deploy to
+  watch (library package, no `vercel.json`/`railway.json`/`fly.toml` in this repo).
+
+merged #51
