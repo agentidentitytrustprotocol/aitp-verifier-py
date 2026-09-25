@@ -165,16 +165,27 @@ and `_decode_member` the same way: between `_require_str` (`jwk.py:101-104`) and
   `_require_str` (called first, inside `_decode_member`) still raises its own `ValueError`
   before length or decode is ever considered. The new check composes with the existing one,
   doesn't replace it.
-- **Composition with `_MAX_CANDIDATES` (#47):** the global candidate cap already bounds how
-  many times any of these five sites can even be reached in one `issuer_keys_from` call (at
-  most 64). `64 × 2 × 8192 = 1,048,576` (exactly 1 MiB) is a correct but loose *upper*
-  bound, not the reachable worst case: an at-cap member is always oversized for its own
-  downstream check too (a 6144-byte decode is never 32 bytes; a 49,152-bit value is never
-  ≤8192 bits), and `issuer_keys_from` fails fast at the first malformed candidate
-  (`jwk.py:255` raising out of the walk), so the walk stops there. The reachable worst case
-  is closer to ~63 valid candidates (≤1366 chars each) plus one at-cap pair — roughly
-  100 KB of decode work, not 1 MiB — since fail-fast stops the walk at the first oversized
-  member rather than letting 64 of them accumulate.
+- **Composition with `_MAX_CANDIDATES` (#47) — corrected during `/ship`'s pre-merge gate.**
+  An earlier draft of this section claimed the reachable worst case was far below the loose
+  `64 × 2 × 8192 = 1,048,576`-char (1 MiB) upper bound, reasoning that "an at-cap member is
+  always oversized for its own downstream check too," so fail-fast would stop the walk at
+  the first one. **That premise is false for RSA and was independently reproduced, not
+  merely asserted:** `crypto.py:120-122` computes `int.from_bytes(n, "big").bit_length()`,
+  which strips leading zero bytes for free — an at-cap (6144-byte-decoding) `n` consisting
+  mostly of `\x00` padding around a genuine small modulus (e.g. 5888 zero bytes + a real
+  256-byte 2048-bit value) decodes to a perfectly valid, in-range `bit_length`, and **parses
+  successfully**. Fail-fast never fires, because there is no malformed candidate to fail on.
+  64 such at-cap-but-valid RSA candidates therefore *do* all parse in one `issuer_keys_from`
+  call — measured at ~9-18ms (machine-dependent) for the full 1 MiB of decode work, vs.
+  ~0.7ms for 64 legitimate minimal-size candidates: roughly a 25x cost multiplier over
+  legitimate JWKS practice, not the "~100 KB, fail-fast stops it" this section previously
+  claimed. **This is still a strict improvement over `main`** (a single unbounded decode
+  costing up to ~188-410ms per call, per issue #50's own pre-fix measurements) and is fully
+  bounded (no caller-controlled multiplier beyond the fixed 64/2/8192 product) — but the
+  bound is the honest ~1 MiB/~18ms figure, not the ~100 KB one. Tracked as a residual in
+  issue #52 (below) rather than tightened here: the generous-shared-cap design (one number,
+  not five individually-tuned ones) was a deliberate Phase 1 choice, and ~18ms is not, on
+  its own, a reason to reverse it mid-`/ship`.
 - This phase does **not** bound the memory cost of the caller already holding an oversized
   string in the JSON/config value passed into `issuer_keys_from` — that string exists
   before this module ever sees it (upstream JSON/config parsing, out of this module's

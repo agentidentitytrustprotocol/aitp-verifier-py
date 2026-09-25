@@ -1158,13 +1158,37 @@ def test_issuer_key_from_jwk_member_at_length_cap_reaches_decode() -> None:
 
 def test_issuer_key_from_jwk_rsa_n_at_length_cap_reaches_decode() -> None:
     """RSA sibling of the boundary test above: at-cap `n` reaches
-    `b64url_decode` and is judged by `crypto.py`'s bit-length ceiling, not
-    the pre-gate."""
+    `b64url_decode` and is judged by `crypto.py`'s bit-length check, not the
+    pre-gate. `"A" * cap` decodes to all-zero bytes (`bit_length() == 0`), so
+    this specific at-cap value is rejected by the *floor* check ("got 0"),
+    not the ceiling -- see the sibling test below for an at-cap value that
+    passes both bounds instead."""
     at_cap = "A" * _MAX_B64_MEMBER_CHARS
     with pytest.raises(ValueError) as exc_info:
         issuer_key_from_jwk({"kty": "RSA", "n": at_cap, "e": _SMALL_E_B64U})
     assert "RSA modulus must be between" in str(exc_info.value)
+    assert "got 0" in str(exc_info.value)
     assert "exceeds the maximum encoded length" not in str(exc_info.value)
+
+
+def test_issuer_key_from_jwk_rsa_n_at_length_cap_zero_padded_still_parses() -> None:
+    """An at-cap `n` is not necessarily malformed: `crypto.py`'s
+    `bit_length()` check strips leading zero bytes for free, so a value
+    consisting mostly of `\\x00` padding around a genuine small modulus
+    decodes to an in-range bit length and parses successfully -- it is not
+    a candidate `issuer_keys_from`'s fail-fast (issue #47) would ever stop
+    on. This is the mechanism behind issue #52 (found during #50's own
+    `/ship` gate): the shared, generous member-length cap does not, by
+    itself, bound the total decode work a JWKS of many such candidates
+    costs the same way the existing per-candidate downstream checks bound a
+    genuinely malformed one. Pinned here as known, accepted behavior --
+    tracked for tightening in #52, not a regression to guard against."""
+    real_modulus = (1 << 2047) | 1  # exactly 2048 bits
+    real_bytes = real_modulus.to_bytes(256, "big")
+    zero_padded_n = b64url_encode(b"\x00" * (6144 - 256) + real_bytes)
+    assert len(zero_padded_n) == _MAX_B64_MEMBER_CHARS
+    parsed = issuer_key_from_jwk({"kty": "RSA", "n": zero_padded_n, "e": _SMALL_E_B64U})
+    assert parsed.jose_alg == "RS256"
 
 
 # --- Phase 1 x Phase 2 seam: a JWKS mixing both bounds (issue #47, finalization) --

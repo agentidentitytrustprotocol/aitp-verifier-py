@@ -2379,3 +2379,36 @@ merged #51
   `tests/test_identity_oidc.py`, `tests/test_unknown_fields.py`, `CHANGELOG.md`,
   `plans/issue-50-jwk-member-decode-bound.md`.
 - **Next:** `/ship`.
+
+## Ship
+
+- §0-1: orient (clean tree on `fix/jwk-member-decode-bound`), synced with `origin/main`
+  (already up to date, no rebase needed), local suite re-confirmed green (528 passed, mypy
+  clean) before the gate.
+- **§2 pre-merge gate: GAPS (1 blocking, 3 minor) → all closed.** Verifier: fresh Opus
+  subagent. The blocking finding: the plan's "Composition with `_MAX_CANDIDATES`" section
+  claimed fail-fast bounds the reachable worst case to ~100 KB, reasoning that an at-cap
+  member is always malformed for its own downstream check too. **False for RSA, and
+  independently reproduced (not merely trusted) before acting on it**: `crypto.py`'s
+  `bit_length()` check strips leading zero bytes for free, so a zero-padded, at-cap `n`
+  around a genuine small modulus parses successfully — not malformed, so fail-fast never
+  fires. Reproduced live: 64 such at-cap-but-valid RSA candidates in one JWKS all parse,
+  ~9-18ms for the full ~1 MiB of decode work (vs ~0.7ms for 64 legitimate candidates) — a
+  real, bounded, but larger-than-claimed residual. Same shape as #49's aliasing-
+  amplification correction during #47's own ship gate: a documentation/reasoning error
+  found this late, not a defect in the fix itself (which remains a strict improvement over
+  `main`'s unbounded pre-fix cost). Closed via: correcting the plan's composed-bound
+  section with the measured figures; fixing a minor wrong-mechanism claim in
+  `test_issuer_key_from_jwk_rsa_n_at_length_cap_reaches_decode`'s docstring ("ceiling" →
+  floor, since `"A" * cap` decodes to all-zero bytes); adding
+  `test_issuer_key_from_jwk_rsa_n_at_length_cap_zero_padded_still_parses`, pinning the
+  known-and-accepted residual behavior rather than leaving it unexercised; filing **issue
+  #52** (https://github.com/agentidentitytrustprotocol/aitp-verifier-py/issues/52) tracking
+  the residual for a future tightening (per-member-tuned caps, or rejecting non-minimal
+  RSA encodings outright per RFC 7518 §6.3.1), same "spin off the residual" pattern as
+  #49/#50 themselves; extending the CHANGELOG entry with an honest residual note. No
+  production code changed — doc/test/issue-tracker only. `pytest` re-run: **529 passed**
+  (528 + 1 new pinning test); mypy clean. Not re-verified by a second fresh agent: every
+  change is a direct, cited application of the one finding (matches how #47's own ship gate
+  closed its analogous #49 finding directly, without a second round).
+- **Next: commit this correction, push, open PR, watch CI, merge.**

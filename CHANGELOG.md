@@ -206,4 +206,8 @@ here, so a future integrator has one place to check before upgrading.
   `b64url_decode` is ever called. Every legitimate key of any supported size still parses
   unchanged; only genuinely oversized input is affected, converging on the same
   `AitpError("KEY_RESOLUTION_FAILED")` as every other malformed-JWK hazard, through the
-  same unmodified call site. (issue #50)
+  same unmodified call site. (issue #50; a residual — a zero-padded, at-cap RSA modulus is
+  not malformed, so up to 64 such candidates in one JWKS can still cost ~1 MiB/~18ms of
+  decode work per verification call, an increase over a tighter per-member cap but still a
+  strict improvement over the unbounded pre-fix cost — is tracked in issue #52, found
+  during this fix's own pre-merge review)
