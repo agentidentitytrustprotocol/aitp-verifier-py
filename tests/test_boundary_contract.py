@@ -261,6 +261,16 @@ def test_boundary_contract_identity_never_raises_a_bare_exception(spec_dir: Path
     entirely -- the same reasoning `test_unknown_fields.py`'s
     `test_handshake_hello_mistyped_identity_reports_identity_failed` already
     uses at the single-case level.
+
+    A second sweep below mutates `resolved_issuer_keys` itself, holding
+    `identity` fixed at its original minted value (issue #38): this argument
+    is caller/resolver-supplied, not schema-validated, so it is not out of
+    scope the way the harness's own top-level-call-argument exclusion (module
+    docstring) reads `trust_anchors`/`trust_store`/`now` -- there is a
+    resolver in the loop for this one and none for those. `_iter_leaf_paths`/
+    `_mutate` are already generic over any dict/list shape, so no change to
+    either was needed -- only a second loop reusing them over a different
+    root.
     """
     keys = load_kat_keys(spec_dir)
     violations: list[str] = []
@@ -306,6 +316,28 @@ def test_boundary_contract_identity_never_raises_a_bare_exception(spec_dir: Path
                     dotted = ".".join(map(str, leaf_rel))
                     violations.append(
                         f"{fixture['id']}: verify_identity({dotted}={label}) raised "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+
+        for leaf_rel in _iter_leaf_paths(issuer_keys):
+            for label, mutation in _MUTATIONS:
+                mutated_issuer_keys = _mutate(issuer_keys, leaf_rel, mutation)
+                try:
+                    verify_identity(
+                        base_identity,
+                        menv,
+                        self_aid,
+                        trust_anchors=trust_anchors,
+                        trust_store=trust_store,
+                        issuer_keys=mutated_issuer_keys,
+                        now=REFERENCE_CLOCK,
+                    )
+                except AitpError:
+                    pass
+                except Exception as exc:  # noqa: BLE001 - a crash IS the finding
+                    dotted = ".".join(map(str, leaf_rel))
+                    violations.append(
+                        f"{fixture['id']}: verify_identity(resolved_issuer_keys.{dotted}={label}) raised "
                         f"{type(exc).__name__}: {exc}"
                     )
     assert not violations, "\n".join(violations)

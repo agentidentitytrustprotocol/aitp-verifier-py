@@ -23,8 +23,9 @@ from aitp_verifier.aid import parse_aid
 from aitp_verifier.b64 import b64url_decode, b64url_encode
 from aitp_verifier.crypto import PrivateKey, sha256
 from aitp_verifier.errors import AitpError
+from aitp_verifier import identity
 from aitp_verifier.identity import verify_identity
-from aitp_verifier.jwk import issuer_key_from_config, issuer_key_from_jwk, issuer_keys_from, thumbprint
+from aitp_verifier.jwk import _MAX_DEPTH, issuer_key_from_config, issuer_key_from_jwk, issuer_keys_from, thumbprint
 from aitp_verifier.minter import _mint_oidc_jwt
 
 NOW = 1711900000
@@ -615,6 +616,191 @@ def test_container_valued_jwt_header_param_is_reported_by_type_not_rendered(head
     assert _err(exc_info) == "IDENTITY_FAILED"
     assert "<dict>" in exc_info.value.message
     assert "deep-leaf-sentinel" not in exc_info.value.message
+
+
+# --- resolved_issuer_keys depth bound + malformed-shape hazards (issue #38) -----
+#
+# `identity.py:210` calls `jwk.issuer_keys_from` on `resolved_issuer_keys`, a
+# caller/resolver-supplied value with no schema at all. Three distinct
+# hazards on that one call, none reachable via `canonicalize` and so none
+# caught by the issue #31 fixes above: (1) `issuer_keys_from`'s own list walk
+# had no depth bound, so a deeply nested value drove a raw `RecursionError`;
+# (2) `issuer_key_from_jwk`'s `kty`/`crv` rejection messages rendered an
+# unvalidated value with `{value!r}`, the exact issue #31 hazard, just never
+# swept in this file; (3) `issuer_keys` itself not being a `Mapping` raised a
+# raw `AttributeError` from `.get()`, one level above either of the above.
+
+
+def _deep_list(n: int, leaf: Any = "deep-leaf-sentinel") -> Any:
+    """*n* nested `list` levels around a scalar/JWK leaf."""
+    value: Any = leaf
+    for _ in range(n):
+        value = [value]
+    return value
+
+
+def test_max_depth_is_16() -> None:
+    """Pins the exact constant so the boundary tests below keep meaning what
+    their names say if it's ever changed."""
+    assert _MAX_DEPTH == 16
+
+
+def test_issuer_keys_from_at_max_depth_resolves() -> None:
+    """A list nested exactly `_MAX_DEPTH` levels around one well-formed JWK
+    still resolves -- the cap bounds rejection, not legitimate depth."""
+    jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    candidates = issuer_keys_from(_deep_list(_MAX_DEPTH, leaf=jwk))
+    assert len(candidates) == 1
+    assert candidates[0].jose_alg == "EdDSA"
+
+
+def test_issuer_keys_from_past_max_depth_raises_value_error_not_recursion_error() -> None:
+    """One level deeper -- `_MAX_DEPTH + 1` -- is the first depth rejected.
+    `pytest.raises(ValueError)` cannot absorb a `RecursionError`
+    (`RecursionError` subclasses `RuntimeError`, not `ValueError`), so a
+    regressed cap fails this test rather than passing it.
+
+    The leaf is a well-formed JWK, not the section's usual sentinel string --
+    a malformed leaf would raise `ValueError` for its own, unrelated reason
+    regardless of whether the cap ever fires (confirmed live: defeating the
+    cap entirely still left this test green with the sentinel leaf, which is
+    exactly the vacuous-test failure mode this file's own module docstring
+    warns about for `_deep_dict`). A resolvable leaf makes "no exception" the
+    cap-absent outcome, so this assertion is genuinely about the cap.
+    """
+    jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    with pytest.raises(ValueError):
+        issuer_keys_from(_deep_list(_MAX_DEPTH + 1, leaf=jwk))
+
+
+def test_issuer_keys_from_malformed_scalar_raises_value_error() -> None:
+    """Pins the pre-existing behavior of `jwk.py`'s final-else branch stays
+    correct after the public/private depth-guard split."""
+    with pytest.raises(ValueError):
+        issuer_keys_from(12345)
+    with pytest.raises(ValueError):
+        issuer_keys_from(True)
+
+
+def test_issuer_key_from_jwk_deeply_nested_kty_does_not_crash_the_message() -> None:
+    """A container `kty` value must never reach `repr()` -- deep enough to
+    raise `RecursionError` while the rejection message itself is being
+    built, exactly the issue #31 hazard, on a leaf `issuer_keys_from`'s own
+    depth cap does not see (this is a depth-0 JWK leaf, never recursed into
+    by `issuer_keys_from`)."""
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": _deep_dict(20000)})
+    assert "<dict>" in str(exc_info.value)
+    assert "deep-leaf-sentinel" not in str(exc_info.value)
+
+
+def test_issuer_key_from_jwk_deeply_nested_crv_under_okp_does_not_crash_the_message() -> None:
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "OKP", "crv": _deep_dict(20000)})
+    assert "<dict>" in str(exc_info.value)
+    assert "deep-leaf-sentinel" not in str(exc_info.value)
+
+
+def test_issuer_key_from_jwk_deeply_nested_crv_under_ec_does_not_crash_the_message() -> None:
+    """Sibling of the OKP case above for the other branch acceptance criterion
+    7 names (`kty in {"OKP","EC"}`) -- `jwk.py:132-135`'s own `crv` guard, not
+    exercised by the OKP-only case since it's a separate `if kty == "EC":`
+    branch reached only through this specific `kty` value."""
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "EC", "crv": _deep_dict(20000)})
+    assert "<dict>" in str(exc_info.value)
+    assert "deep-leaf-sentinel" not in str(exc_info.value)
+
+
+def test_identity_oidc_deeply_nested_issuer_key_is_key_resolution_failed_not_a_crash() -> None:
+    identity = _identity()
+    env = _envelope()
+    jwt = _mint(identity, env, self_aid=SENDER_AID)
+    identity["proof"] = jwt
+    with pytest.raises(AitpError) as exc_info:
+        _verify(identity, env, self_aid=SENDER_AID, issuer_keys={ISSUER: _deep_list(3000)})
+    assert _err(exc_info) == "KEY_RESOLUTION_FAILED"
+
+
+def test_identity_oidc_malformed_issuer_key_is_key_resolution_failed_not_a_crash() -> None:
+    identity = _identity()
+    env = _envelope()
+    jwt = _mint(identity, env, self_aid=SENDER_AID)
+    identity["proof"] = jwt
+    with pytest.raises(AitpError) as exc_info:
+        _verify(identity, env, self_aid=SENDER_AID, issuer_keys={ISSUER: 12345})
+    assert _err(exc_info) == "KEY_RESOLUTION_FAILED"
+
+
+def test_identity_oidc_deeply_nested_kty_is_key_resolution_failed_not_a_crash() -> None:
+    identity = _identity()
+    env = _envelope()
+    jwt = _mint(identity, env, self_aid=SENDER_AID)
+    identity["proof"] = jwt
+    with pytest.raises(AitpError) as exc_info:
+        _verify(identity, env, self_aid=SENDER_AID, issuer_keys={ISSUER: {"kty": _deep_dict(20000)}})
+    assert _err(exc_info) == "KEY_RESOLUTION_FAILED"
+
+
+def test_identity_oidc_non_mapping_issuer_keys_truthy_is_key_resolution_failed_not_a_crash() -> None:
+    """`issuer_keys` itself -- the whole resolver-supplied argument, not one
+    issuer's value inside it -- being a non-`Mapping` used to raise a raw
+    `AttributeError` from `.get()`. A truthy value survives `_verify`'s own
+    `issuer_keys or {}` convenience default, unlike the falsy case below."""
+    identity = _identity()
+    env = _envelope()
+    jwt = _mint(identity, env, self_aid=SENDER_AID)
+    identity["proof"] = jwt
+    with pytest.raises(AitpError) as exc_info:
+        _verify(identity, env, self_aid=SENDER_AID, issuer_keys=12345)  # type: ignore[arg-type]
+    assert _err(exc_info) == "KEY_RESOLUTION_FAILED"
+
+
+def test_verify_identity_non_mapping_issuer_keys_falsy_is_key_resolution_failed_not_a_crash() -> None:
+    """Same hazard as above, for a FALSY non-`Mapping` value (`0`). Calls
+    `verify_identity` directly rather than through `_verify`, whose own
+    `issuer_keys or {}` default would silently substitute `{}` and mask
+    exactly the value under test -- the same class of falsy-value bypass
+    `ASSUMPTIONS.md` documents once already, there in `delegation.py`
+    production code rather than a test helper."""
+    identity = _identity()
+    env = _envelope()
+    jwt = _mint(identity, env, self_aid=SENDER_AID)
+    identity["proof"] = jwt
+    with pytest.raises(AitpError) as exc_info:
+        verify_identity(
+            identity, env, SENDER_AID,
+            trust_anchors=None, trust_store=None, issuer_keys=0,  # type: ignore[arg-type]
+            now=NOW,
+        )
+    assert _err(exc_info) == "KEY_RESOLUTION_FAILED"
+
+
+def test_identity_oidc_issuer_key_recursion_error_is_key_resolution_failed_not_a_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defense in depth behind `jwk.py`'s own depth cap: a `RecursionError`
+    raised by `issuer_keys_from` anyway -- because the *caller's* own stack
+    was already near exhaustion on entry, which the cap cannot see -- still
+    becomes an `AitpError`. Patched on the name `identity.py` imports
+    directly, mirroring `test_fields.py`'s own
+    `test_canonical_bytes_converts_recursionerror_to_aitperror`. The message
+    is asserted to be the constant literal: interpolating one while the
+    stack is exhausted can re-trigger the error.
+    """
+    def _boom(value: object) -> list[Any]:
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(identity, "issuer_keys_from", _boom)
+    identity_desc = _identity()
+    env = _envelope()
+    jwt = _mint(identity_desc, env, self_aid=SENDER_AID)
+    identity_desc["proof"] = jwt
+    issuer_key = b64url_encode(_issuer_pub("EdDSA"))
+    with pytest.raises(AitpError) as exc_info:
+        _verify(identity_desc, env, self_aid=SENDER_AID, issuer_keys={ISSUER: issuer_key})
+    assert _err(exc_info) == "KEY_RESOLUTION_FAILED"
+    assert exc_info.value.message == "issuer key value is too deeply nested to resolve"
 
 
 # --- jwk.py unit tests ----------------------------------------------------------

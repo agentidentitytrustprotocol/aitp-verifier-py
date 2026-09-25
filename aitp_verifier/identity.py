@@ -16,8 +16,10 @@ Two binding types feed the mutual handshake:
   ``alg`` is pinned to the *resolved key's own structural algorithm* and
   compared, never trusted on its own (alg-confusion defense); ``none`` in any
   spelling is never in the allowed set. Any claim/structural failure is
-  ``IDENTITY_FAILED``; zero resolvable issuer-key candidates is
-  ``KEY_RESOLUTION_FAILED``; an untrusted issuer is
+  ``IDENTITY_FAILED``; zero resolvable issuer-key candidates, or a
+  malformed, too-deeply-nested, or wrongly-shaped ``resolved_issuer_keys``
+  value (issue #38 — this is caller/resolver-supplied, not schema-validated),
+  is ``KEY_RESOLUTION_FAILED``; an untrusted issuer is
   ``INCOMPATIBLE_TRUST_ANCHORS``.
 * **pinned_key** — an Ed25519 proof over the five-field input
   ``"aitp-pinned-key-v1\\0" + sender \\0 + receiver \\0 + message_id \\0 +
@@ -132,9 +134,14 @@ def _verify_oidc(
        ``{EdDSA, ES256, RS256}`` (``none`` in any spelling is not in this set).
     5. Resolve issuer-key candidates (``jwk.issuer_keys_from``). Zero
        candidates -> ``KEY_RESOLUTION_FAILED`` (retryable — a key might show
-       up on a later resolution attempt). A header ``kid`` with no matching
-       candidate, or no ``kid`` with 2+ candidates (ambiguous), -> a
-       resolution *target* did exist but couldn't be pinned, which is a
+       up on a later resolution attempt). The same code covers every way
+       resolution can fail to produce usable candidates in the first place
+       (issue #38): ``issuer_keys`` itself not being a mapping, or its
+       per-issuer value being too deeply nested or otherwise malformed for
+       ``issuer_keys_from`` to walk — none of these are a proof-shape
+       problem, so none get ``IDENTITY_FAILED``. A header ``kid`` with no
+       matching candidate, or no ``kid`` with 2+ candidates (ambiguous), ->
+       a resolution *target* did exist but couldn't be pinned, which IS a
        proof-shape problem, not a resolution problem: ``IDENTITY_FAILED``.
     6. The header ``alg`` MUST equal the resolved key's own structural
        algorithm (derived from key type in ``jwk.py``, never from a token's
@@ -178,7 +185,39 @@ def _verify_oidc(
         # construction unvalidated header JSON, container included.
         raise AitpError("IDENTITY_FAILED", f"OIDC JWT alg {describe_value(alg)} is not one of {sorted(_ALLOWED_OIDC_ALGS)}")
 
-    candidates = issuer_keys_from(issuer_keys.get(issuer))
+    # `issuer_keys` is caller/resolver-supplied, not schema-validated (issue
+    # #38): a non-`Mapping` argument, or a per-issuer value too deeply
+    # nested or otherwise malformed for `issuer_keys_from` to walk, must
+    # not escape as a raw `AttributeError`/`ValueError`/`RecursionError`.
+    # All three collapse into the same "no usable candidates" outcome as
+    # the existing zero-candidates case immediately below -- a resolver
+    # that hands back garbage has produced exactly as much usable key
+    # material as one that hands back nothing.
+    #
+    # `isinstance(..., Mapping)` is structural only for the caller's own type
+    # already being registered with (or subclassing) `collections.abc.Mapping`
+    # -- unlike `Hashable`/`Iterable`/`Sized`, `Mapping` defines no
+    # `__subclasshook__`, so a plain duck-typed object exposing only `.get()`
+    # (e.g. a lazy resolver wrapper) fails this check and is silently treated
+    # as "no issuer key resolvable", the same as a genuinely absent issuer,
+    # rather than consulted. `dict` and every stdlib mapping type are
+    # registered, so this only affects a caller's own custom, unregistered
+    # mapping-like class -- a real but narrow edge, not fixed here since
+    # registering with `Mapping.register(...)` (or subclassing it) is the
+    # caller's own, cheaper fix on their side.
+    resolved = issuer_keys.get(issuer) if isinstance(issuer_keys, Mapping) else None
+    try:
+        candidates = issuer_keys_from(resolved)
+    except RecursionError as exc:
+        # Defense in depth behind jwk.py's own depth cap, same reasoning as
+        # fields.py::canonical_bytes: the cap bounds THIS walk's frames, but
+        # a caller whose stack was already near-exhausted before calling in
+        # can still exhaust it inside a walk the cap would have admitted.
+        # Message is a constant literal -- formatting one while the stack
+        # is exhausted can itself re-trigger the error.
+        raise AitpError("KEY_RESOLUTION_FAILED", "issuer key value is too deeply nested to resolve", retryable=True) from exc
+    except ValueError as exc:
+        raise AitpError("KEY_RESOLUTION_FAILED", f"issuer key value for {issuer!r} is malformed: {exc}", retryable=True) from exc
     if not candidates:
         raise AitpError("KEY_RESOLUTION_FAILED", f"no issuer key resolvable for {issuer!r}", retryable=True)
 
