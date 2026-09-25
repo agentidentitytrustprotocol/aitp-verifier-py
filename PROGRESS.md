@@ -2080,3 +2080,4 @@ above) isn't swept in.
   mypy-coverage cost); and the already-flagged `uv.lock` hygiene note. Fixed the two
   substantive nits in commit `d832e7e`.
 - **Pushed:** `fix/jwk-issuer-keys-depth-bound` @ `d832e7e3ac5c3d9eb7104e84306bc0e4c2197752`.
+- **PR #48 opened:** https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/48
