@@ -2415,3 +2415,9 @@ merged #51
 
 pushed fix/jwk-member-decode-bound 506799b2b2c058b94da9e01465b3bbf35df31e85
 PR #53 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/53
+- **CI:** all 8 jobs green (wheel build/smoke-test, cross-platform macOS/Windows @ 3.13,
+  conformance+tests+types @ 3.11/3.12/3.13/3.14, declared-floors install) — squash-merged as
+  `614eb3a`, branch deleted, issue #50 closed automatically via the PR title. No deploy to
+  watch (library package, no `vercel.json`/`railway.json`/`fly.toml` in this repo).
+
+merged #53
