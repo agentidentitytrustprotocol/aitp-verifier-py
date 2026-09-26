@@ -428,3 +428,22 @@ rejected (mirroring the plan's existing rejected-alternatives treatment).
 No second round needed — every item was a calibration/precision/coverage
 fix, none touched the plan's mechanism, ordering, or safety reasoning, which
 the same review round already confirmed sound.
+
+## Implementation verification
+
+Fresh Opus agent, mandatory gate (`/implement` §2): **PASS**. Worked in an isolated git
+worktree pinned to the fix commit after detecting (via `git reflog`) that the shared
+working directory moved out from under it mid-run due to a concurrent session working
+issue #52 -- confirmed the shared repo's `jcs.py` was never touched by its own checks.
+Every implementation claim independently re-verified live, including a clean
+subprocess-isolated re-measurement at the cap that reproduced the code comment's own
+cost figures near-exactly (list 57.7ms/390.6KB vs. claimed 56ms/391KB; dict
+132.7ms/~1.46MB vs. claimed 132ms/~1.37MB; flat 189.9ms/~3.03MB vs. claimed
+192ms/~3.18MB), confirming those figures are genuine re-measurements, not fabricated. A
+break-the-fix mutation confirmed all 4 cap-dependent tests fail loudly without the fix.
+Confirmed via `git grep` that no production caller of `_serialize`/`dumps`/`canonicalize`
+was missed, and that `test_kat.py`'s known-answer vectors pass unchanged (zero
+output-content change for legitimate values). One non-blocking note: no test pins which
+cap's message wins if `_MAX_DEPTH` and `_MAX_NODES_VISITED` could fire on the same value
+-- not a defect, since both orderings raise `JcsError` and the composition test already
+proves non-shadowing.

@@ -2636,3 +2636,28 @@ alone vs. a separate output-size cap; where `visits` gets initialized) were reso
 directly in the plan per the Autonomy ladder. Single-phase plan — no separate
 finalization-verify pass needed (same precedent as #50/#49/#52). Spawning the
 implementation verification gate next.
+
+**Implementation verification gate: PASS** (fresh Opus agent, worked in an isolated git
+worktree pinned to the fix commit — the shared working directory moved out from under it
+mid-run, since the concurrent #52 session switched branches there; the agent detected
+this via `git reflog`, redid all checks isolated, and confirmed the shared repo's
+`jcs.py` was never touched). Independently re-verified all core claims live: 5 legitimate
+documents serialize unchanged; both aliased shapes raise; a clean subprocess-isolated
+re-measurement at the cap reproduced the code comment's own cost figures near-exactly
+(list 57.7ms/390.6KB vs. claimed 56ms/391KB; dict 132.7ms/~1.46MB vs. claimed
+132ms/~1.37MB; flat 189.9ms/~3.03MB vs. claimed 192ms/~3.18MB) — proving the comment's
+numbers are genuine re-measurements, not fabricated; the exact-count test's
+`visits[0] == 200001` reproduced directly; depth/node-cap composition, cross-call
+isolation, and the `visits=None` default path all reproduced. Ran its own break-the-fix
+mutation (neutralizing the cap check) confirming all 4 cap-dependent tests fail loudly
+without the fix, then restored and reran the full suite (542 passed on that commit) and
+mypy (clean) itself. Confirmed via `git grep` that only the 4 known production callers
+(`delegation.py`, `fields.py`, `jws.py`, `minter.py`) touch `jcs.dumps`/`canonicalize`,
+and `_serialize` has exactly one production caller (`dumps`). Confirmed
+`test_kat.py::test_jcs_canonical_and_sha256` passes unchanged (zero output-content
+change for legitimate values). Confirmed no doc drift and that `PROGRESS.md`/
+`CHANGELOG.md`/the plan's own "Plan review" section all accurately match the diff. One
+non-blocking note: no test pins which cap's message wins if `_MAX_DEPTH` and
+`_MAX_NODES_VISITED` could fire on the same value (ordering is correct and documented in
+code; both orderings raise `JcsError` regardless, and the composition test already
+proves non-shadowing at the depth cap). Moving to `/ship`.
