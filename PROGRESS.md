@@ -2577,3 +2577,5 @@ new/modified tests directly, confirmed `ASSUMPTIONS.md` has zero entries for thi
 from, confirmed `PROGRESS.md`/`CHANGELOG.md` match the diff exactly (independently
 reproduced 535 on `main` vs. 539 on this branch), and re-ran the full suite (539 passed)
 and mypy (clean) itself. Same two non-blocking notes carried forward, no new gaps.
+- pushed fix/rsa-minimal-encoding b9a9371
+- PR #56 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/56
