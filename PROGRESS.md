@@ -2579,3 +2579,11 @@ reproduced 535 on `main` vs. 539 on this branch), and re-ran the full suite (539
 and mypy (clean) itself. Same two non-blocking notes carried forward, no new gaps.
 - pushed fix/rsa-minimal-encoding b9a9371
 - PR #56 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/56
+- CI green on all 8 required jobs (build+smoke-test, conformance+tests+types on Python
+  3.11/3.12/3.13/3.14, declared-floors install, cross-platform macOS + Windows).
+  `mergeStateStatus: CLEAN`, `mergeable: MERGEABLE`.
+- **merged #56** (squash, `ba0a963`, branch `fix/rsa-minimal-encoding` deleted both
+  remote and local). Closes issue #52.
+- **Next:** issue #54 is still in progress on branch `fix/jcs-node-visit-bound`
+  (implementation done, verification gate spawned) — the last of the two remaining
+  follow-up issues (#52, #54) the user asked to plan/implement/ship this session.
