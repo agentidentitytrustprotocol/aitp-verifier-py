@@ -1246,24 +1246,67 @@ def test_issuer_key_from_jwk_rsa_n_at_length_cap_reaches_decode() -> None:
     assert "exceeds the maximum encoded length" not in str(exc_info.value)
 
 
-def test_issuer_key_from_jwk_rsa_n_at_length_cap_zero_padded_still_parses() -> None:
-    """An at-cap `n` is not necessarily malformed: `crypto.py`'s
-    `bit_length()` check strips leading zero bytes for free, so a value
-    consisting mostly of `\\x00` padding around a genuine small modulus
-    decodes to an in-range bit length and parses successfully -- it is not
-    a candidate `issuer_keys_from`'s fail-fast (issue #47) would ever stop
-    on. This is the mechanism behind issue #52 (found during #50's own
-    `/ship` gate): the shared, generous member-length cap does not, by
-    itself, bound the total decode work a JWKS of many such candidates
-    costs the same way the existing per-candidate downstream checks bound a
-    genuinely malformed one. Pinned here as known, accepted behavior --
-    tracked for tightening in #52, not a regression to guard against."""
+def test_issuer_key_from_jwk_rsa_n_at_length_cap_zero_padded_is_rejected() -> None:
+    """Issue #52's own fix: an at-cap `n` consisting mostly of `\\x00`
+    padding around a genuine small modulus decodes to an in-range
+    `bit_length()`, but is not *minimally* encoded (RFC 7518 §2's
+    `Base64urlUInt`, and §6.3.1.1 names this exact bug class) -- rejected by
+    `crypto.py::from_rsa_numbers`'s new leading-zero-byte check, not merely
+    accepted because its bit length happens to be in range. Formerly pinned
+    as known-but-accepted behavior (see issue #52); this test flips that
+    pin to the fix."""
     real_modulus = (1 << 2047) | 1  # exactly 2048 bits
     real_bytes = real_modulus.to_bytes(256, "big")
     zero_padded_n = b64url_encode(b"\x00" * (6144 - 256) + real_bytes)
     assert len(zero_padded_n) == _MAX_B64_MEMBER_CHARS
-    parsed = issuer_key_from_jwk({"kty": "RSA", "n": zero_padded_n, "e": _SMALL_E_B64U})
-    assert parsed.jose_alg == "RS256"
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "RSA", "n": zero_padded_n, "e": _SMALL_E_B64U})
+    assert "not minimally encoded" in str(exc_info.value)
+    assert "leading zero byte" in str(exc_info.value)
+
+
+def test_issuer_key_from_jwk_rsa_e_zero_padded_is_rejected() -> None:
+    """Sibling of the `n` test above, for `e`: the same minimal-encoding
+    check applies independently to the public exponent, not only the
+    modulus."""
+    zero_padded_e = b64url_encode(b"\x00" * 10 + bytes.fromhex("010001"))
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "RSA", "n": b64url_encode(_N_BYTES), "e": zero_padded_e})
+    assert "not minimally encoded" in str(exc_info.value)
+    assert "leading zero byte" in str(exc_info.value)
+
+
+def test_issuer_key_from_jwk_rsa_n_single_zero_byte_not_treated_as_padding() -> None:
+    """The minimal-encoding check's `len(n) > 1` guard is deliberate, not an
+    oversight: a single `0x00` byte is itself the minimal encoding of the
+    integer `0`, so it must not trip the new check -- it is still rejected,
+    but by the pre-existing floor check ("got 0"), unchanged from before
+    issue #52."""
+    with pytest.raises(ValueError) as exc_info:
+        issuer_key_from_jwk({"kty": "RSA", "n": b64url_encode(b"\x00"), "e": _SMALL_E_B64U})
+    assert "RSA modulus must be between" in str(exc_info.value)
+    assert "got 0" in str(exc_info.value)
+    assert "not minimally encoded" not in str(exc_info.value)
+
+
+def test_issuer_keys_from_jwks_stops_at_first_zero_padded_rsa_candidate() -> None:
+    """The cumulative-cost hazard issue #52 describes: before this fix, a
+    JWKS of up to `_MAX_CANDIDATES` zero-padded-but-in-range RSA entries
+    would parse (and pay decode cost for) all of them, since none were
+    malformed. After the fix, entry 0 is malformed, so `issuer_keys_from`'s
+    existing fail-fast (issue #47) stops the walk there -- the reachable
+    cumulative cost drops from ~`_MAX_CANDIDATES`x a single candidate's
+    decode cost back down to ~1x it. Proven behaviorally (raises on the
+    very first entry), not via a timing assertion."""
+    real_modulus = (1 << 2047) | 1
+    real_bytes = real_modulus.to_bytes(256, "big")
+    zero_padded_n = b64url_encode(b"\x00" * (6144 - 256) + real_bytes)
+    bad_rsa_jwk = {"kty": "RSA", "n": zero_padded_n, "e": _SMALL_E_B64U}
+    ed_jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(_issuer_pub("EdDSA"))}
+    value = {"keys": [bad_rsa_jwk] + [ed_jwk] * (_MAX_CANDIDATES - 1)}
+    with pytest.raises(ValueError) as exc_info:
+        issuer_keys_from(value)
+    assert "not minimally encoded" in str(exc_info.value)
 
 
 # --- Phase 1 x Phase 2 seam: a JWKS mixing both bounds (issue #47, finalization) --

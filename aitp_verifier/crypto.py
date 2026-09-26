@@ -28,7 +28,12 @@ for free, so both independent implementations accept the same issuer keys —
 and, for the ceiling and the exponent bound (issue #47), so this
 implementation never accepts an RSA key the companion implementation would
 refuse to verify against. Both bounds are checked from the raw ``n``/``e``
-bytes before a key object is ever constructed.
+bytes before a key object is ever constructed. Each is also required to be
+minimally encoded, i.e. carry no leading zero byte (issue #52): a
+zero-padded value still satisfies these bounds (leading zero bytes are free
+under ``bit_length()``) while forcing this module's caller (``jwk.py``) to
+pay a much larger base64url decode cost per key than a real, minimally
+encoded key ever would.
 """
 
 from __future__ import annotations
@@ -115,7 +120,15 @@ class PublicKey:
         object for it (issue #47) so an out-of-range value costs a
         ``bit_length()`` call, not a full RSA public-key construction. Both
         bounds match ``ring``'s own enforced range/ceiling in the companion
-        Rust implementation.
+        Rust implementation. Also rejects a non-minimally-encoded ``n``/``e``
+        (a leading zero byte in more than one byte of input) once its range
+        has already been judged in-bounds (issue #52): ``bit_length()``
+        strips leading zero bytes for free, so a zero-padded value can carry
+        an in-range bit length while still costing ``jwk.py``'s full
+        ``_MAX_B64_MEMBER_CHARS`` decode budget -- RFC 7518 SS2's
+        ``Base64urlUInt`` already requires the minimum number of octets, and
+        SS6.3.1.1 names this exact bug class, so this is spec-compliance, not
+        an invented restriction.
         """
         n_int = int.from_bytes(n, "big")
         bits = n_int.bit_length()
@@ -124,12 +137,22 @@ class PublicKey:
                 f"RSA modulus must be between {_MIN_RSA_MODULUS_BITS} and "
                 f"{_MAX_RSA_MODULUS_BITS} bits, got {bits}"
             )
+        if len(n) > 1 and n[0] == 0:
+            raise ValueError(
+                f"RSA modulus 'n' is not minimally encoded (leading zero byte), "
+                f"got {len(n)} bytes for a {bits}-bit value"
+            )
         e_int = int.from_bytes(e, "big")
         e_bits = e_int.bit_length()
         if e_bits > _MAX_RSA_EXPONENT_BITS:
             raise ValueError(
                 f"RSA public exponent must be at most {_MAX_RSA_EXPONENT_BITS} bits, "
                 f"got {e_bits}"
+            )
+        if len(e) > 1 and e[0] == 0:
+            raise ValueError(
+                f"RSA public exponent 'e' is not minimally encoded (leading zero byte), "
+                f"got {len(e)} bytes for a {e_bits}-bit value"
             )
         public_numbers = rsa.RSAPublicNumbers(e_int, n_int)
         return cls(ALG_RSA, public_numbers.public_key())
