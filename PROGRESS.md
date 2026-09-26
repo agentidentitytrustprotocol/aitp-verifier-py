@@ -2587,3 +2587,98 @@ and mypy (clean) itself. Same two non-blocking notes carried forward, no new gap
 - **Next:** issue #54 is still in progress on branch `fix/jcs-node-visit-bound`
   (implementation done, verification gate spawned) — the last of the two remaining
   follow-up issues (#52, #54) the user asked to plan/implement/ship this session.
+
+## issue #54 — jcs.py::_serialize node-visit bound
+
+User asked to plan/implement/ship both remaining open follow-up issues (#52, #54) and
+wrap up the repo. Plan written at `plans/issue-54-jcs-node-visit-bound.md`, grounded
+directly in the code (`jcs.py` read in full, `jwk.py`'s #49 mechanism it mirrors,
+`tests/test_fields.py`/`test_kat.py` for existing test-home confirmation) rather than
+re-derived from the issue text alone.
+
+**PR strategy: separate PR from #52** (decided alongside #52's own plan — the two fixes
+touch disjoint modules with no shared code, mirroring how #49 and #50 each shipped
+separately despite being found together). Single-phase plan, implemented on branch
+`fix/jcs-node-visit-bound`, forked from `main` independently of `fix/rsa-minimal-encoding`
+so the two PRs stay fully independent.
+
+Plan-review pass (fresh Opus, mandatory before implementation): **REVISE**, round 1.
+Mechanism/ordering/safety reasoning confirmed sound, but the cap-cost estimate had
+extrapolated only from list-aliasing when dict-aliasing (the case this issue is actually
+about — the reviewer measured it 2-3x more expensive) needed to drive the number; plus
+two test-coverage gaps against the plan's own acceptance criteria and three citation
+slips. All applied directly to the plan (cost range restated from direct at-cap
+measurement of both container shapes, "fixed multiplier" softened to "bounded" with the
+dict branch's uncached `sorted()` cost named explicitly, two tests added, citations
+fixed, a memoization-alternative sentence added) — no second round needed, since nothing
+touched the core approach. Plan finalized SOUND-after-revision.
+
+**Implemented.** `jcs.py::_serialize` now threads a `visits` counter (mirroring `jwk.py`'s
+`_visit`/`issuer_keys_from` mechanism from #49), checked at entry before the existing
+depth check; `dumps` initializes a fresh `[0]` per call. `_MAX_NODES_VISITED = 200000`,
+per the plan's revised calibration (no schema-level array-size cap exists anywhere in
+this codebase or the sibling spec repo to calibrate tightly against). Live-verified via
+`uv run python3` before writing tests: normal documents unaffected, list-aliased and
+dict-aliased fanout-2/depth-20 structures both now raise (dict costing measurably more,
+confirming the plan review's finding), a flat value of `_MAX_NODES_VISITED + 10` elements
+raises, a value at exactly `_MAX_DEPTH` well under the node cap still serializes, two
+near-cap `dumps` calls in sequence don't leak state, and `_serialize`'s own `visits=None`
+default path works standalone. Tests added to `tests/test_fields.py` (the actual home of
+`jcs.py`'s unit tests — no dedicated `test_jcs.py` exists): a constant-pin test, a
+deterministic exact-count test, list- and dict-aliased tests, a depth/node-cap
+composition test, a default-path test, and a cross-call-isolation test (7 new tests).
+Break-the-fix mutation performed via a safe text-substitution round-trip (not `git
+checkout`, which would discard an uncommitted fix): confirms the exact-count and both
+aliasing tests fail loudly with the cap neutralized, proving them non-vacuous. `jcs.py`
+module docstring and `CHANGELOG.md` updated. 542 passed (535 baseline + 7 new), mypy
+clean (37 files). No `ASSUMPTIONS.md` entries — both Open-questions calls (node-visit cap
+alone vs. a separate output-size cap; where `visits` gets initialized) were resolved
+directly in the plan per the Autonomy ladder. Single-phase plan — no separate
+finalization-verify pass needed (same precedent as #50/#49/#52). Spawning the
+implementation verification gate next.
+
+**Implementation verification gate: PASS** (fresh Opus agent, worked in an isolated git
+worktree pinned to the fix commit — the shared working directory moved out from under it
+mid-run, since the concurrent #52 session switched branches there; the agent detected
+this via `git reflog`, redid all checks isolated, and confirmed the shared repo's
+`jcs.py` was never touched). Independently re-verified all core claims live: 5 legitimate
+documents serialize unchanged; both aliased shapes raise; a clean subprocess-isolated
+re-measurement at the cap reproduced the code comment's own cost figures near-exactly
+(list 57.7ms/390.6KB vs. claimed 56ms/391KB; dict 132.7ms/~1.46MB vs. claimed
+132ms/~1.37MB; flat 189.9ms/~3.03MB vs. claimed 192ms/~3.18MB) — proving the comment's
+numbers are genuine re-measurements, not fabricated; the exact-count test's
+`visits[0] == 200001` reproduced directly; depth/node-cap composition, cross-call
+isolation, and the `visits=None` default path all reproduced. Ran its own break-the-fix
+mutation (neutralizing the cap check) confirming all 4 cap-dependent tests fail loudly
+without the fix, then restored and reran the full suite (542 passed on that commit) and
+mypy (clean) itself. Confirmed via `git grep` that only the 4 known production callers
+(`delegation.py`, `fields.py`, `jws.py`, `minter.py`) touch `jcs.dumps`/`canonicalize`,
+and `_serialize` has exactly one production caller (`dumps`). Confirmed
+`test_kat.py::test_jcs_canonical_and_sha256` passes unchanged (zero output-content
+change for legitimate values). Confirmed no doc drift and that `PROGRESS.md`/
+`CHANGELOG.md`/the plan's own "Plan review" section all accurately match the diff. One
+non-blocking note: no test pins which cap's message wins if `_MAX_DEPTH` and
+`_MAX_NODES_VISITED` could fire on the same value (ordering is correct and documented in
+code; both orderings raise `JcsError` regardless, and the composition test already
+proves non-shadowing at the depth cap). Moving to `/ship`.
+
+**`/ship`: rebased `fix/jcs-node-visit-bound` onto post-#52 `main`** (`3cb0a93`, which
+includes #52's own merge `ba0a963`) before shipping — a conflict in `PROGRESS.md` (both
+branches had appended independent sections) resolved by concatenating both sections in
+order; `CHANGELOG.md` auto-merged cleanly. Re-ran the full suite post-rebase: 546 passed
+(539 on post-#52 `main` + 7 new), mypy clean (37 files). Linear rebase, no merge commit
+(`main` confirmed a clean ancestor of the branch tip).
+
+**`/ship` pre-merge gate: PASS** (fresh Opus verifier, worked in its own isolated
+worktree). Independently re-verified the aliased-dict/list cases live (dict timing
+132.6ms matched the code comment's ~132ms almost exactly), a legitimate document's
+sorted-key output, cross-call isolation, and the exact-count proof; ran its own
+break-the-fix mutation (`_MAX_NODES_VISITED = 10**18`) confirming all 6 cap-dependent
+tests fail loudly (one hit a raw `MemoryError` before the cap logic even ran — the
+unbounded hazard reproduced directly); ran `test_kat.py`'s spec-pinned known-answer
+vectors directly, confirming zero output-content change for legitimate values; confirmed
+zero `ASSUMPTIONS.md` entries for this plan and no `docs/`/`CLAUDE.md` to drift from; and
+re-ran the full suite (546 passed) and mypy (clean) itself. Same non-blocking notes
+carried forward, no new gaps.
+- pushed fix/jcs-node-visit-bound 5938ac8
+- PR #57 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/57
