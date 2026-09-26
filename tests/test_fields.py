@@ -21,7 +21,7 @@ from aitp_verifier import fields
 from aitp_verifier.b64 import b64url_encode
 from aitp_verifier.errors import AitpError
 from aitp_verifier.fields import canonical_bytes, check_types, decode_b64url, describe_value, require_members
-from aitp_verifier.jcs import _MAX_DEPTH, JcsError, canonicalize
+from aitp_verifier.jcs import _MAX_DEPTH, _MAX_NODES_VISITED, JcsError, _serialize, canonicalize, dumps
 
 
 def _deep_dict(n: int, leaf: Any = 1) -> Any:
@@ -296,6 +296,127 @@ def test_canonical_bytes_converts_recursionerror_to_aitperror(monkeypatch: pytes
         canonical_bytes({"a": 1}, shape_code="MY_CODE", what="obj")
     assert exc.value.code == "MY_CODE"
     assert exc.value.message == "value is too deeply nested to canonicalize"
+
+
+# ── node-visit bound (issue #54) ──────────────────────────────────────────
+#
+# `_MAX_DEPTH` above bounds nesting *depth* only. It does nothing for a
+# candidate-free-analogue value (a long flat list, no nesting) and, worse,
+# for an *aliased* Python value -- the same dict/list object referenced more
+# than once inside its own containing structure, unreachable via JSON,
+# reachable only from a direct Python caller -- the walk is exponential, not
+# merely unbounded, the same primitive issue #49 closed for jwk.py's
+# list-only walk. Unlike jwk.py, `_serialize` recurses into both dicts and
+# lists and allocates output per node, so aliasing here costs real,
+# non-deduplicated memory, not just CPU time.
+
+
+def _aliased_list(fanout: int, depth: int) -> Any:
+    """*depth* levels of a list holding *fanout* references to the SAME
+    next-level list object (not *fanout* separate copies) -- the exponential
+    primitive: total `_serialize` calls are `sum(fanout**i for i in
+    range(depth + 1))`, from only `O(depth * fanout)` actual allocated
+    objects, since every level's `fanout` slots share one object."""
+    node: Any = [1]
+    for _ in range(depth):
+        node = [node] * fanout
+    return node
+
+
+def _aliased_dict(fanout: int, depth: int) -> Any:
+    """The dict twin of `_aliased_list` above: *depth* levels of a dict
+    holding *fanout* keys, all pointing at the SAME next-level dict object.
+    Reachable only through `_serialize`'s dict branch, which `jwk.py`'s own
+    walk has no equivalent of (a dict is always a terminal leaf there) --
+    this is the shape that makes issue #54 "arguably worse than #49": the
+    aliasing primitive is reachable through either container type, and the
+    dict branch's own per-visit cost (`sorted(value.keys(), ...)`) is higher
+    than the list branch's."""
+    node: Any = {"leaf": 1}
+    for _ in range(depth):
+        node = {f"k{i}": node for i in range(fanout)}
+    return node
+
+
+def test_max_nodes_visited_is_200000() -> None:
+    """Pins the exact constant so the tests below keep meaning what their
+    names say if it's ever recalibrated."""
+    assert _MAX_NODES_VISITED == 200000
+
+
+def test_serialize_flat_list_past_node_cap_raises_exact_count() -> None:
+    """Deterministic, non-vacuous proof (an exact count, not a timing
+    assertion): a flat list of exactly `_MAX_NODES_VISITED` scalar elements
+    -- no aliasing, no nesting past depth 1 -- makes exactly
+    `_MAX_NODES_VISITED + 1` total `_serialize` calls (one for the list
+    itself, one per element), so the counter is caught raising at exactly
+    one past the cap, not merely "eventually." Also the flat,
+    candidate-free-analogue proof issue #54's own acceptance criteria name:
+    a huge but non-aliased, non-deeply-nested value is caught too, not only
+    the exponential aliased case below."""
+    visits = [0]
+    value: Any = list(range(_MAX_NODES_VISITED))
+    with pytest.raises(JcsError) as exc_info:
+        _serialize(value, [], 0, visits)
+    assert visits[0] == _MAX_NODES_VISITED + 1
+    assert f"visits more than {_MAX_NODES_VISITED} nodes" in str(exc_info.value)
+
+
+def test_serialize_aliased_list_past_node_cap_raises() -> None:
+    """The exponential case, list-shaped: fanout 2, depth 20 makes
+    `sum(2**i for i in range(21))` ~= 2.1M total `_serialize` calls, far past
+    the cap, from `_aliased_list`'s `O(20*2)` actual allocated list objects."""
+    with pytest.raises(JcsError) as exc_info:
+        dumps(_aliased_list(2, 20))
+    assert f"visits more than {_MAX_NODES_VISITED} nodes" in str(exc_info.value)
+
+
+def test_serialize_aliased_dict_past_node_cap_raises() -> None:
+    """The exponential case, dict-shaped -- the detail that makes issue #54
+    worse than #49: `jwk.py`'s walk never recurses into a dict's values as
+    containers again, so it has no dict-aliasing analogue at all. Same
+    fanout/depth as the list-aliased test above, through the dict branch
+    instead."""
+    with pytest.raises(JcsError) as exc_info:
+        dumps(_aliased_dict(2, 20))
+    assert f"visits more than {_MAX_NODES_VISITED} nodes" in str(exc_info.value)
+
+
+def test_serialize_at_max_depth_well_under_node_cap_still_serializes() -> None:
+    """Cap composition, no shadowing: a value at exactly `_MAX_DEPTH`
+    nesting (257 total `_serialize` calls -- far under `_MAX_NODES_VISITED`)
+    still serializes normally, proving the new node-visit counter doesn't
+    fire for any legitimately-shaped value the existing depth cap already
+    admits. Same "seam" proof style #47/#49 used for `jwk.py`'s caps."""
+    out_dict = canonicalize(_deep_dict(_MAX_DEPTH))
+    out_list = canonicalize(_deep_list(_MAX_DEPTH))
+    assert out_dict.count(b"{") == 256
+    assert out_list == b"[" * 256 + b"1" + b"]" * 256
+
+
+def test_serialize_default_visits_argument_still_enforces_cap() -> None:
+    """`_serialize`'s own `visits=None` default (a belt-and-suspenders
+    safety net for any direct caller other than `dumps`, which always passes
+    an explicit counter -- see `jcs.py`'s comment) is exercised directly here,
+    not only transitively through `dumps`, so this branch doesn't ship
+    uncovered."""
+    out: list[str] = []
+    _serialize({"a": 1}, out)  # no visits argument -- exercises the default
+    assert "".join(out) == '{"a":1}'
+    huge: Any = list(range(_MAX_NODES_VISITED))
+    with pytest.raises(JcsError):
+        _serialize(huge, [])  # no visits argument here either
+
+
+def test_dumps_does_not_leak_node_visit_state_across_calls() -> None:
+    """`dumps` initializes a fresh counter every call (the same per-call
+    scoping `jwk.py`'s `issuer_keys_from` established for its own counter) --
+    proven by two sequential near-cap calls, neither of which should
+    spuriously fail from state left over by the other."""
+    near_cap: Any = list(range(_MAX_NODES_VISITED - 10))
+    first = dumps(near_cap)
+    second = dumps(near_cap)
+    assert first == second
 
 
 # ── decode_b64url ────────────────────────────────────────────────────────

@@ -248,3 +248,26 @@ here, so a future integrator has one place to check before upgrading.
   containers) needs on the order of tens of nodes — ~40-60x headroom under the new cap.
   Converges on the same `AitpError("KEY_RESOLUTION_FAILED")` as every other malformed-
   `resolved_issuer_keys` hazard, through the same unmodified call site. (issue #49)
+- **`jcs.py::_serialize`'s canonicalization walk now bounds the total number of nodes
+  visited** (`_MAX_NODES_VISITED = 200000`), the same primitive issue #49 closed for
+  `jwk.py`'s walk, found during that issue's own plan review (issue #54). Previously, only
+  nesting *depth* was bounded (`_MAX_DEPTH = 256`); an *aliased* Python value — the same
+  dict/list object referenced more than once inside its own containing structure,
+  unreachable via JSON but reachable from a direct Python caller constructing the value
+  in-process — caused exponential node visits, worse here than in `#49`'s `jwk.py` walk in
+  two ways: `_serialize` recurses into both dicts and lists (`jwk.py`'s dict branch is
+  always a terminal leaf), so the aliasing primitive is reachable through either container
+  type, and `_serialize` allocates real output per node, so an aliased input costs
+  non-deduplicated memory, not merely CPU time (measured pre-fix: a fanout-2, depth-20
+  aliased list cost 0.56s CPU / ~4.2MB output; the dict-shaped equivalent cost more —
+  1.32s CPU / ~14MB — from ~1.4KB of actual allocated objects either way). A new counter,
+  checked at the top of every walk step before any further recursion or output
+  allocation, closes this: an oversized or aliased value is rejected after at most 200,000
+  total walk steps (measured worst case at the cap: 56ms-192ms CPU, 0.4-3.2MB output,
+  depending on shape). Every legitimate document (real AITP artifacts nest only 3-5
+  levels) needs orders of magnitude fewer nodes. `dumps`/`canonicalize`'s public
+  signatures are unchanged; every existing caller (`delegation.py`, `jws.py`, `fields.py`,
+  `minter.py`) is affected only for a pathological (aliased) input none of them
+  constructs, converging on the same `JcsError` — and, through `fields.py::canonical_bytes`,
+  the same `AitpError` — every other malformed-input hazard in this module already used.
+  (issue #54)
