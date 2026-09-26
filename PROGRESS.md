@@ -2661,3 +2661,22 @@ non-blocking note: no test pins which cap's message wins if `_MAX_DEPTH` and
 `_MAX_NODES_VISITED` could fire on the same value (ordering is correct and documented in
 code; both orderings raise `JcsError` regardless, and the composition test already
 proves non-shadowing at the depth cap). Moving to `/ship`.
+
+**`/ship`: rebased `fix/jcs-node-visit-bound` onto post-#52 `main`** (`3cb0a93`, which
+includes #52's own merge `ba0a963`) before shipping — a conflict in `PROGRESS.md` (both
+branches had appended independent sections) resolved by concatenating both sections in
+order; `CHANGELOG.md` auto-merged cleanly. Re-ran the full suite post-rebase: 546 passed
+(539 on post-#52 `main` + 7 new), mypy clean (37 files). Linear rebase, no merge commit
+(`main` confirmed a clean ancestor of the branch tip).
+
+**`/ship` pre-merge gate: PASS** (fresh Opus verifier, worked in its own isolated
+worktree). Independently re-verified the aliased-dict/list cases live (dict timing
+132.6ms matched the code comment's ~132ms almost exactly), a legitimate document's
+sorted-key output, cross-call isolation, and the exact-count proof; ran its own
+break-the-fix mutation (`_MAX_NODES_VISITED = 10**18`) confirming all 6 cap-dependent
+tests fail loudly (one hit a raw `MemoryError` before the cap logic even ran — the
+unbounded hazard reproduced directly); ran `test_kat.py`'s spec-pinned known-answer
+vectors directly, confirming zero output-content change for legitimate values; confirmed
+zero `ASSUMPTIONS.md` entries for this plan and no `docs/`/`CLAUDE.md` to drift from; and
+re-ran the full suite (546 passed) and mypy (clean) itself. Same non-blocking notes
+carried forward, no new gaps.
