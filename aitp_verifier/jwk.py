@@ -38,7 +38,11 @@ Two directions live here:
   member it decodes (OKP ``x``; EC ``x``/``y``; RSA ``n``/``e``) is length-
   checked against ``_MAX_B64_MEMBER_CHARS`` *before* decoding, not only
   after (issue #50), so an oversized value is rejected in O(1) rather than
-  paying decode cost proportional to its size, and the walk's own total
+  paying decode cost proportional to its size; RSA ``n``/``e`` are further
+  required to be minimally encoded, since ``crypto.py``'s ``bit_length()``
+  range check strips leading zero bytes for free and would otherwise accept
+  a zero-padded value that still costs the full decode budget across every
+  candidate in a JWKS (issue #52); and the walk's own total
   node count is bounded (``_MAX_NODES_VISITED``, issue #49), independent of
   whether any candidate is ever produced — closing both a candidate-free
   value (linear, unbounded) and an *aliased* Python value (the same list

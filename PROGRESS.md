@@ -2502,3 +2502,80 @@ merged #53
 - **Next:** none — this was the second and last of the two open issues (#50, #49) the
   user asked to ship this session. Follow-ups #52 and #54 remain open, filed
   deliberately as out-of-scope residuals, not part of this session's scope.
+
+## issue #52 — jwk.py RSA n/e minimal-encoding check, and issue #54 — jcs.py node-visit bound
+
+User asked to plan/implement/ship both remaining open follow-up issues (#52, #54) and
+wrap up the repo. Plans written: `plans/issue-52-rsa-minimal-encoding.md`,
+`plans/issue-54-jcs-node-visit-bound.md`. Both grounded directly in the code (not
+re-derived from the issue text alone) — read `jwk.py`, `crypto.py`, `jcs.py`,
+`test_identity_oidc.py`, `test_fields.py`, `test_kat.py` in full before writing.
+
+**PR strategy: two separate PRs, one per issue.** Decided (Autonomy ladder,
+consequential-but-decidable): the two fixes touch disjoint modules (`crypto.py`/`jwk.py`
+for #52, `jcs.py` for #54) with no shared code or dependency between them, mirroring how
+#49 and #50 — also independent, also found together — each shipped as their own PR.
+Each is a single-phase plan (no internal phase seams) — a single verification gate per
+plan, per #50's own single-phase precedent, not a full per-phase loop.
+
+**Order: #52 first, then #54.** #52 is the more surgical, already-deeply-understood fix
+(one boundary function, `crypto.py::from_rsa_numbers`); #54 opens new module territory
+(`jcs.py` has no dedicated test file — its tests live in `test_fields.py`) and benefits
+from #52's implementation being fresh context first.
+
+Plan-review pass (fresh Opus, mandatory before implementation) run for both plans in
+parallel:
+- **#52: SOUND**, round 1. Every claim independently verified live (byte-level RSA
+  decode tracing, RFC 7518 fetched directly). Only cosmetic nits (a line citation, an
+  RFC section citation, an `e`-asymmetry note) — applied directly, no second round.
+- **#54: REVISE**, round 1. Mechanism/ordering/safety reasoning confirmed sound, but the
+  cap-cost estimate had extrapolated only from list-aliasing when dict-aliasing (the
+  case this issue is actually about) measures 2-3x higher; plus two test-coverage gaps
+  (`_serialize`'s `visits=None` default path, cross-call counter isolation) and three
+  citation slips. All applied directly to the plan (cost range restated from direct
+  at-cap measurement of both container shapes, "fixed multiplier" softened to "bounded"
+  with the dict branch's uncached `sorted()` cost named explicitly, two tests added to
+  Files/Acceptance criteria, citations fixed, memoization-alternative sentence added) —
+  no second round needed, since nothing touched the core approach.
+
+Both plans finalized. Starting implementation: #52 first (single-phase), then #54.
+
+**#52 implemented** on branch `fix/rsa-minimal-encoding`. `crypto.py::from_rsa_numbers`
+now rejects a non-minimally-encoded `n`/`e` (decoded length > 1 byte, leading byte
+`0x00`), checked after each member's own existing `bit_length()` range check (preserves
+the existing all-zero-`n` test's "got 0" message unchanged, as the plan requires) — live
+byte-tracing confirmed via `uv run python3` before committing to tests: all-zero `n` still
+"got 0", zero-padded-but-in-range `n` now rejected with the new message, single-`0x00`-byte
+`n` still falls through to the floor check unaffected, padded `e` rejected independently,
+and a minimal valid key still parses. `jwk.py` module docstring and `crypto.py` module
+docstring both updated to name the new check. Tests: replaced the "still parses" pin with
+one asserting rejection, plus 3 new tests (`e`-sibling, single-zero-byte boundary,
+JWKS-fail-fast-at-candidate-0) in `test_identity_oidc.py`, plus 1 new e2e test in
+`test_unknown_fields.py` mirroring the existing #47 RSA e2e siblings. `CHANGELOG.md`
+entry added between #50's and #49's own entries (dependency order). 539 passed (535 + 4
+new tests), mypy clean (37 files). No `ASSUMPTIONS.md` entries — every design decision
+was resolved directly in the plan's own Approach/Open questions per the Autonomy ladder.
+Single-phase plan — no separate finalization-verify pass needed (same precedent as #50/
+#49). Spawning the implementation verification gate next.
+
+**Implementation verification gate: PASS** (fresh Opus agent, worked in an isolated git
+worktree to avoid disturbing the concurrent #54 session). Independently re-verified all 5
+behavioral cases live against `from_rsa_numbers`, ran its own mutation test confirming all
+4 new/modified tests fail loudly without the fix (including the e2e test failing on a
+*different*, non-vacuous assertion), confirmed no bypass path exists for RSA `PublicKey`
+construction anywhere in the codebase, confirmed no doc drift, independently recounted
+test totals via `grep` rather than trusting the commit message, and re-ran the full suite
+(539 passed) and mypy (clean) itself. Two non-blocking notes carried forward (not gaps):
+e2e coverage for padded `n` only, not `e` (a deliberate, plan-scoped choice); and a named,
+already-accepted RFC-7518-documented interop risk against any real issuer with the
+"extra zero-valued octet" JWK-producer bug. Moving to `/ship`.
+
+**`/ship` pre-merge gate: PASS** (fresh Opus verifier, worked in its own isolated
+worktree). Independently re-probed the 5 core behavioral cases live, ran the 5
+new/modified tests directly, confirmed `ASSUMPTIONS.md` has zero entries for this plan
+(`grep` returned nothing), confirmed no `docs/`/`CLAUDE.md` exists in this repo to drift
+from, confirmed `PROGRESS.md`/`CHANGELOG.md` match the diff exactly (independently
+reproduced 535 on `main` vs. 539 on this branch), and re-ran the full suite (539 passed)
+and mypy (clean) itself. Same two non-blocking notes carried forward, no new gaps.
+- pushed fix/rsa-minimal-encoding b9a9371
+- PR #56 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/56

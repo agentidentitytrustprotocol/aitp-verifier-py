@@ -211,6 +211,22 @@ here, so a future integrator has one place to check before upgrading.
   decode work per verification call, an increase over a tighter per-member cap but still a
   strict improvement over the unbounded pre-fix cost — is tracked in issue #52, found
   during this fix's own pre-merge review)
+- **`crypto.py::from_rsa_numbers` now rejects a non-minimally-encoded RSA `n`/`e`** (a
+  decoded value more than one byte long whose leading byte is `0x00`), closing the residual
+  issue #50 left open (issue #52). Previously, the existing `bit_length()` range checks
+  (issue #47) judged only the *value* of `n`/`e`, not their encoding: `bit_length()` strips
+  leading zero bytes for free, so an at-cap `n` consisting mostly of `\x00` padding around a
+  genuine small modulus decoded to an in-range bit length and parsed successfully — it was
+  not malformed, so `issuer_keys_from`'s fail-fast (issue #47) never stopped a JWKS
+  presenting up to 64 such candidates, each paying close to the full `_MAX_B64_MEMBER_CHARS`
+  decode cost (issue #50). RFC 7518 §2's `Base64urlUInt` already requires minimal encoding,
+  and §6.3.1.1 names this exact bug class, so this is spec-compliance, not an invented
+  restriction: a real OIDC provider's own key material was never affected (every existing
+  passing RSA test in the suite already used a minimally-encoded `n`/`e`). Fail-fast now
+  stops a JWKS presenting a padded candidate at the first one, dropping the reachable
+  cumulative decode cost across a whole call from ~64x a single candidate's cost back to
+  ~1x it. Converges on the same `AitpError("KEY_RESOLUTION_FAILED")` as every other
+  malformed-JWK hazard, through the same unmodified call site.
 - **`issuer_keys_from`'s list walk now bounds the total number of nodes visited**
   (`_MAX_NODES_VISITED = 4096`), independent of whether any candidate is ever produced.
   Previously, a *candidate-free* value (e.g. a long list of `None`, or `{"keys": []}`

@@ -2437,6 +2437,28 @@ def test_handshake_rsa_exponent_over_ceiling_resolved_issuer_key_is_key_resoluti
     assert exc.value.code == "KEY_RESOLUTION_FAILED"
 
 
+def test_handshake_rsa_zero_padded_modulus_resolved_issuer_key_is_key_resolution_failed_not_a_crash(
+    spec_dir: Path,
+) -> None:
+    """Sibling hazard, issue #52 (a follow-up to #50): an at-cap `n`
+    consisting mostly of `\\x00` padding around a genuine 2048-bit modulus
+    decodes to an in-range `bit_length()`, so it was not malformed before
+    this fix -- it parsed successfully rather than resolving to
+    `KEY_RESOLUTION_FAILED`. `from_rsa_numbers`'s new minimal-encoding check
+    (RFC 7518 §2/§6.3.1.1) now rejects it, replacing the fixture's single
+    resolved key."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    issuer = minted["envelope"]["payload"]["identity"]["issuer"]
+    real_modulus = (1 << 2047) | 1  # exactly 2048 bits
+    real_bytes = real_modulus.to_bytes(256, "big")
+    zero_padded_n = b64url_encode(b"\x00" * (6144 - 256) + real_bytes)
+    minted["resolved_issuer_keys"][issuer] = {"kty": "RSA", "n": zero_padded_n, "e": "AQAB"}
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "KEY_RESOLUTION_FAILED"
+
+
 def test_handshake_jwks_within_candidate_cap_with_over_ceiling_rsa_candidate_is_key_resolution_failed(
     spec_dir: Path,
 ) -> None:
