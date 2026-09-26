@@ -2569,3 +2569,11 @@ test totals via `grep` rather than trusting the commit message, and re-ran the f
 e2e coverage for padded `n` only, not `e` (a deliberate, plan-scoped choice); and a named,
 already-accepted RFC-7518-documented interop risk against any real issuer with the
 "extra zero-valued octet" JWK-producer bug. Moving to `/ship`.
+
+**`/ship` pre-merge gate: PASS** (fresh Opus verifier, worked in its own isolated
+worktree). Independently re-probed the 5 core behavioral cases live, ran the 5
+new/modified tests directly, confirmed `ASSUMPTIONS.md` has zero entries for this plan
+(`grep` returned nothing), confirmed no `docs/`/`CLAUDE.md` exists in this repo to drift
+from, confirmed `PROGRESS.md`/`CHANGELOG.md` match the diff exactly (independently
+reproduced 535 on `main` vs. 539 on this branch), and re-ran the full suite (539 passed)
+and mypy (clean) itself. Same two non-blocking notes carried forward, no new gaps.
