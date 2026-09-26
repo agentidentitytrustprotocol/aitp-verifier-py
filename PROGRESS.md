@@ -2680,3 +2680,5 @@ vectors directly, confirming zero output-content change for legitimate values; c
 zero `ASSUMPTIONS.md` entries for this plan and no `docs/`/`CLAUDE.md` to drift from; and
 re-ran the full suite (546 passed) and mypy (clean) itself. Same non-blocking notes
 carried forward, no new gaps.
+- pushed fix/jcs-node-visit-bound 5938ac8
+- PR #57 opened: https://github.com/agentidentitytrustprotocol/aitp-verifier-py/pull/57
