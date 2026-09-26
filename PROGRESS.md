@@ -2557,3 +2557,15 @@ new tests), mypy clean (37 files). No `ASSUMPTIONS.md` entries — every design 
 was resolved directly in the plan's own Approach/Open questions per the Autonomy ladder.
 Single-phase plan — no separate finalization-verify pass needed (same precedent as #50/
 #49). Spawning the implementation verification gate next.
+
+**Implementation verification gate: PASS** (fresh Opus agent, worked in an isolated git
+worktree to avoid disturbing the concurrent #54 session). Independently re-verified all 5
+behavioral cases live against `from_rsa_numbers`, ran its own mutation test confirming all
+4 new/modified tests fail loudly without the fix (including the e2e test failing on a
+*different*, non-vacuous assertion), confirmed no bypass path exists for RSA `PublicKey`
+construction anywhere in the codebase, confirmed no doc drift, independently recounted
+test totals via `grep` rather than trusting the commit message, and re-ran the full suite
+(539 passed) and mypy (clean) itself. Two non-blocking notes carried forward (not gaps):
+e2e coverage for padded `n` only, not `e` (a deliberate, plan-scoped choice); and a named,
+already-accepted RFC-7518-documented interop risk against any real issuer with the
+"extra zero-valued octet" JWK-producer bug. Moving to `/ship`.

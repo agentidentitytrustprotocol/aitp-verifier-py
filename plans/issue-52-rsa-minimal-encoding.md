@@ -275,3 +275,24 @@ re-review round needed — citation/doc-only, no design change): the
 on `e`'s asymmetric single-zero-byte edge case (no floor check on `e` exists,
 so it's rejected downstream by `cryptography` itself, unaffected either way).
 No second round needed.
+
+## Implementation verification
+
+Fresh Opus agent, mandatory gate (`/implement` §2): **PASS**. Worked in an isolated git
+worktree to avoid disturbing the concurrent #54 session in the shared working directory.
+Every claim independently re-verified live (not diff-trusted): all 5 behavioral cases
+(all-zero `n`, zero-padded-in-range `n`, single-zero-byte `n`, padded `e`, minimal valid
+key) reproduced directly against `from_rsa_numbers`; a mutation test (both new checks
+neutralized) confirmed all 4 new/modified tests fail loudly without the fix, including
+the e2e test failing on a *different* assertion (`IDENTITY_FAILED` vs
+`KEY_RESOLUTION_FAILED`) that proves it's genuinely tied to this check, not passing for
+an unrelated reason. Confirmed no bypass path exists (`from_rsa_numbers` is the only RSA
+`PublicKey` construction site in the whole codebase). Confirmed no doc drift and that
+`PROGRESS.md`/`CHANGELOG.md` accurately match the diff (test counts independently
+recounted via `grep`, not trusted from the commit message). Re-ran the full suite (539
+passed) and mypy (clean, 37 files) independently. Two non-blocking notes carried forward,
+not gaps: the e2e suite covers a padded `n` but not a padded `e` at that layer (a
+deliberate, plan-scoped choice — this plan's own Files section names only one e2e test,
+for `n`); and the fix accepts a known, RFC-7518-§6.3.1.1-documented interop risk against
+any real issuer whose JWK-producer code has the "extra zero-valued octet" bug — already
+named and accepted in this plan's own Long-term posture section, not a new gap.
