@@ -1497,7 +1497,7 @@ def _single_hop_revoked_input(
     assert inp["self_aid"] == ISSUER
     assert inp["delegation_token_claims"]["voucher_claims"]["src_jti"] == DEL_001_SRC_JTI
     # `policy` is now mandatory (a revocation decision is required -- see
-    # `/reconcile` on `plans/hardening-issues-30-31.md`). Every test built on
+    # `/reconcile` on `plans/archive/hardening-issues-30-31.md`). Every test built on
     # this helper supplies genuine, present deny-list data and is testing
     # whether it's consulted correctly, not the absence case -- `fail_open`
     # is inert here, the same as any other mode would be.
