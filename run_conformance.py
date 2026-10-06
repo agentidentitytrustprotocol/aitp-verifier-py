@@ -135,7 +135,7 @@ def run_fixture(fixture: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str
     # `verify_tct`/`verify_delegation_token` require a top-level `policy` key
     # (a revocation decision is mandatory, not optional -- a caller must say
     # explicitly how to treat absent revocation data, per `/reconcile` on
-    # `plans/hardening-issues-30-31.md`). This runner is a deployment, the
+    # `plans/archive/hardening-issues-30-31.md`). This runner is a deployment, the
     # same role it already plays via `_feature` above, and most conformance
     # fixtures predate `policy` entirely: supply the pack's own long-standing
     # default (`fail_open`, i.e. run the fixture as every implementation ran

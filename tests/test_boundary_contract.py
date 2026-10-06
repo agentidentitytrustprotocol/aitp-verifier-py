@@ -224,7 +224,7 @@ def _sweep(spec_dir: Path, op: str) -> list[str]:
                     continue
                 # `verify_tct`/`verify_delegation_token` require a top-level
                 # `policy` key (a revocation decision is mandatory -- see
-                # `/reconcile` on `plans/hardening-issues-30-31.md`), which is
+                # `/reconcile` on `plans/archive/hardening-issues-30-31.md`), which is
                 # a Python-calling-convention argument this harness's own
                 # documented scope deliberately never mutates or deletes (see
                 # module docstring). Supply the harness's own default so every
