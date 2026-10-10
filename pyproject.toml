@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "aitp-verifier"
 version = "0.1.0"
-description = "Independent Python implementation of the AITP verification core (second implementation for spec Final promotion)"
+description = "Independent Python implementation of the AITP verification core (second, spec-only implementation that cross-checks the reference one)"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

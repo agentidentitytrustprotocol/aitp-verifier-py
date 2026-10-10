@@ -1,28 +1,38 @@
 # aitp-verifier-py
 
-An **independent Python implementation of the AITP verification core** — the
-second implementation the AITP spec requires before its Draft trust surfaces
-can be promoted to Final. The first implementation is
+An **independent Python implementation of the AITP verification core** — a
+second implementation, written from the spec alone, that cross-checks the
+reference one. The first implementation is
 [`aitp-rs`](https://github.com/agentidentitytrustprotocol/aitp-rs); its
 Python/Node bindings wrap the same Rust core and therefore do **not** count as
-independent.
+independent. How implementations feed RFC promotion is defined by the spec, not
+here: see [`governance/RFC-PROCESS.md`](https://github.com/agentidentitytrustprotocol/agentidentitytrustprotocol/blob/main/governance/RFC-PROCESS.md)
+and [`VERSIONING.md`](https://github.com/agentidentitytrustprotocol/agentidentitytrustprotocol/blob/main/VERSIONING.md).
+Status of each RFC: [`rfcs/README.md`](https://github.com/agentidentitytrustprotocol/agentidentitytrustprotocol/blob/main/rfcs/README.md).
 
 ## Independence claim
 
 This codebase was implemented **from the RFC-AITP texts and JSON schemas only**
-(`rfcs/RFC-AITP-0001…0013`, `schemas/json/*`, and the conformance pack's pinned
+([RFC-AITP-0001…0013](https://github.com/agentidentitytrustprotocol/agentidentitytrustprotocol/tree/main/rfcs),
+`schemas/json/*`, and the conformance pack's pinned
 *expectations* under `schemas/conformance/`). No algorithmic code was read
 from, ported from, or shared with `aitp-rs`, and nothing shells out to any Rust
 binary. The two implementations meet only at the conformance pack's byte-pinned
 golden vectors (`known-answer/`) — which is the point: cross-verifying the same
-vectors from two independently written codebases is what the promotion gate
-tests (AITP `VERSIONING.md` — a surface goes Final once "two independent
-implementations interoperate").
+vectors from two independently written codebases is what makes the check
+meaningful.
 
 ## Scope
 
 A **verification library plus a conformance-fixture runner** — not an agent, not
 an HTTP client, not a registry. No network I/O exists anywhere in this codebase.
+
+Implemented: RFC-AITP-0001–0006, 0008, 0010, 0011. RFC-AITP-0007 (key resolution)
+is covered only as far as verifying with caller-supplied keys (`jwk`, `identity`) —
+nothing is fetched. RFC-AITP-0009 is a
+[security RFC](https://github.com/agentidentitytrustprotocol/agentidentitytrustprotocol/blob/main/rfcs/RFC-AITP-0009-security.md)
+and has no module of its own. RFC-AITP-0012 (extensions) is honored only as the
+opaque `extensions` slot (`fields`); RFC-AITP-0013 (TCT renewal) is not implemented.
 
 | Module | Covers |
 |---|---|
@@ -39,6 +49,13 @@ an HTTP client, not a registry. No network I/O exists anywhere in this codebase.
 | `aitp_verifier.revocation` | Revocation-snapshot freshness / signature / fail-mode (RFC-AITP-0008) |
 | `aitp_verifier.identity` | OIDC + pinned-key identity bindings, incl. the five-field pinned-key proof (RFC-AITP-0002) |
 | `aitp_verifier.handshake` | Mutual-handshake payload verification: Manifest, identity, nonce echo, round-2 PoP, embedded TCT (RFC-AITP-0004) |
+| `aitp_verifier.fields` | Closed-field-set enforcement: unknown fields → `UNKNOWN_FIELD`; `extensions` contents are never inspected (RFC-AITP-0012 §1) |
+| `aitp_verifier.sigfield` | Algorithm-tagged (`ed25519.`/`p256.`) JCS-profile signature fields (RFC-AITP-0001 §5.4.3) |
+| `aitp_verifier.keys` | Loads the pinned known-answer keypairs for the minter / runner |
+| `aitp_verifier.errors` | `AitpError` and the typed error-code vocabulary |
+| `aitp_verifier.verify` | Operation registry: maps a fixture `input.operation` to its verifier |
+| `aitp_verifier.minter` | Conformance-fixture minter: fills `__PLACEHOLDER__` values with the pinned KAT keys (signs; the verification core never does) |
+| `aitp_verifier.b64`, `aitp_verifier.timeutil` | base64url helpers; the reference-clock constant |
 | `aitp_verifier.sessionbundle` | Session Trust Bundle: envelope shape, expiry-before-signature, expiry-window invariant, coordinator signature, per-participant TCT, self-membership (RFC-AITP-0010) |
 
 ## Conformance coverage
@@ -50,7 +67,7 @@ keypairs and runs it against this implementation:
 python run_conformance.py --spec-dir ../agentidentitytrustprotocol
 ```
 
-Current status: **68 fixtures pass, 0 fail, 1 skipped** — the entire re-mintable v0.2 pack
+Current status (the runner prints the live number; the pack grows with the spec): **71 fixtures pass, 0 fail, 1 skipped** — the entire re-mintable v0.2 pack
 plus both Draft opt-ins (`experimental-multihop-delegation`,
 `experimental-session-bundle`) and all multi-step sequences (PoP
 challenge/response `tct-006`/`tct-007`, handshake replay `mh-001`). The surface — envelope, TCT (incl.
@@ -72,6 +89,29 @@ PLACEHOLDERS.md §"Operation key"):
 Every other required-for-v0.2 fixture, both Draft opt-ins, and all multi-step
 sequences pass.
 
+## Usage and error contract
+
+Every verifier entry point returns normally on success and raises `AitpError`
+(`aitp_verifier.errors`) on rejection; malformed remote input never escapes as a
+raw `KeyError`/`TypeError`/`RecursionError`. Caller bugs are the exception: a
+missing revocation `policy` (on `verify_tct`, also no `issuer_revocation_list.fail_mode`
+fallback) or a missing required argument raises a plain `KeyError`
+(see [CHANGELOG.md](CHANGELOG.md)).
+`jcs` raises `JcsError` and `minter` raises `MinterError` — they are not
+verifier entry points. Error codes and their meaning are defined by the spec's
+[error-code registry](https://github.com/agentidentitytrustprotocol/agentidentitytrustprotocol/blob/main/registries/error-codes.md),
+not restated here. Security-relevant behavior changes are tracked in
+[CHANGELOG.md](CHANGELOG.md).
+
+## Cross-implementation checks
+
+`aitp-rs` mints artifacts that this repo verifies, and verifies a session bundle
+this repo minted (committed in aitp-rs's `tests/xcheck-fixtures/`) — see aitp-rs
+[testing § cross-implementation acceptance](https://github.com/agentidentitytrustprotocol/aitp-rs/blob/main/docs/testing.md#cross-implementation-acceptance-xcheck)
+and [conformance](https://github.com/agentidentitytrustprotocol/aitp-rs/blob/main/docs/conformance.md).
+That job pins this repo at a specific commit (`tests/AITP_VERIFIER_PY_VERSION` in
+aitp-rs), so it does not track `main` here.
+
 ## Development
 
 ```
@@ -80,9 +120,10 @@ pytest          # KAT re-derivation, signed-example verify, full pack has no FAI
 mypy            # --strict, clean
 ```
 
-Requires Python ≥ 3.11 and `cryptography`. Point the tests/runner at a spec
-checkout via `--spec-dir` or `$AITP_SPEC` — `pytest` fails loudly if neither resolves one
-(set `AITP_SPEC=none` to deliberately run only the spec-independent subset instead).
+Requires Python ≥ 3.11 and `cryptography`. The runner takes `--spec-dir`; `pytest` resolves the spec checkout from
+`$AITP_SPEC`, then a sibling `agentidentitytrustprotocol/` directory, and fails
+loudly if neither exists (set `AITP_SPEC=none` to deliberately run only the
+spec-independent subset instead).
 
 ## License
 

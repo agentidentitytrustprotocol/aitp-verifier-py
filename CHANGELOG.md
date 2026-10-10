@@ -8,6 +8,12 @@ here, so a future integrator has one place to check before upgrading.
 
 ### Security-relevant
 
+- **Seven verifier entry points now convert malformed remote input to `AitpError`** instead
+  of letting raw `KeyError`/`TypeError`/`AttributeError`, `JcsError`/`ValueError` or
+  `binascii.Error` (from `parse_aid` and base64url decoding) escape, so callers can rely on a
+  single exception type at the verification boundary. (issue #23)
+- **A Manifest whose `identity_hint` is of type `oidc` and carries `public_key` is now
+  rejected**; it was previously accepted (RFC-AITP-0003 §3.1).
 - **`verify_tct` / `verify_delegation_token` now hard-reject a malformed embedded
   revocation snapshot** instead of silently treating it as "nothing revoked." Previously,
   if a revocation record's `snapshot` sub-field was absent, `None`, non-dict, or missing
