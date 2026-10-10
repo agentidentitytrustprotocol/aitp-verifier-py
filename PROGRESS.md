@@ -2691,3 +2691,4 @@ carried forward, no new gaps.
   are shipped and merged. `gh issue list --state open` and `gh pr list --state open` both
   return empty — no open issues or PRs remain in this repo. `ASSUMPTIONS.md` has zero
   entries for any of #49/#50/#52/#54 — `/reconcile` is not needed.
+pushed docs/refresh-readme-2026-10
