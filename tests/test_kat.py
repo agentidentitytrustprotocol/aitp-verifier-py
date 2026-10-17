@@ -173,7 +173,7 @@ def _vector(spec_dir: Path, vid: str) -> dict[str, Any]:
     v = {v["id"]: v for v in _ka(spec_dir, "jcs-sha256.json")["vectors"]}.get(vid)
     if v is None:
         pytest.skip(f"{vid} not in this spec revision")
-    return v
+    return cast("dict[str, Any]", v)
 
 
 def test_pop_signature_vector(spec_dir: Path) -> None:
