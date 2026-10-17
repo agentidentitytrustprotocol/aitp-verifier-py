@@ -23,12 +23,15 @@ Two binding types feed the mutual handshake:
   caller/resolver-supplied, not schema-validated), is
   ``KEY_RESOLUTION_FAILED``; an untrusted issuer is
   ``INCOMPATIBLE_TRUST_ANCHORS``.
-* **pinned_key** — an Ed25519 proof over the five-field input
+* **pinned_key** — an Ed25519 or P-256 proof (proposal
+  agentidentitytrustprotocol#72 Item 2) over the five-field input
   ``"aitp-pinned-key-v1\\0" + sender \\0 + receiver \\0 + message_id \\0 +
   ascii(timestamp)\\0 + decode(pop_nonce)`` (§3.1). The verifier always
   reconstructs the five-field input, so a legacy two-field proof or a
-  cross-peer-captured proof fails to verify. The pinned key MUST be in the
-  local trust store.
+  cross-peer-captured proof fails to verify. ``public_key`` MUST be the
+  sender AID's own key, the ``(algorithm, key)`` pair MUST be in the local
+  trust store, and the proof is an algorithm-tagged JCS-profile signature
+  under the sender's algorithm.
 """
 
 from __future__ import annotations
@@ -42,6 +45,7 @@ from .errors import AitpError
 from .fields import describe_value, reject_unknown_fields
 from .jwk import IssuerKey, issuer_keys_from, thumbprint
 from .jws import parse_compact
+from .sigfield import decode_tagged_signature
 
 __all__ = ["pinned_key_proof_input", "verify_identity"]
 
@@ -286,39 +290,72 @@ def _select_issuer_key(candidates: list[IssuerKey], kid: Any) -> IssuerKey:
     return candidates[0]
 
 
+def _pinned_entry(entry: Any) -> tuple[str, bytes] | None:
+    """A trust-store entry as its ``(algorithm, raw key)`` pair.
+
+    Entries are full AIDs (``aid:pubkey:...``) or bare identifiers. A bare
+    identifier's algorithm follows from its length exactly as the AID
+    grammar fixes it (RFC-AITP-0001 §5.3): 43 chars is ``ed25519``, 44 is
+    ``p256``. Unparseable entries never match.
+    """
+    if not isinstance(entry, str):
+        return None
+    try:
+        if entry.startswith("aid:"):
+            a = parse_aid(entry)
+        elif len(entry) == 44:
+            a = parse_aid(f"aid:pubkey:p256:{entry}")
+        else:
+            a = parse_aid(f"aid:pubkey:{entry}")
+    except (ValueError, TypeError):
+        return None
+    return (a.alg, a.raw_key)
+
+
 def _verify_pinned_key(
     identity: dict[str, Any],
     envelope: dict[str, Any],
     self_aid: str,
     trust_store: list[str] | None,
 ) -> None:
-    from .crypto import PublicKey
+    """RFC-AITP-0002 §3.2 as amended by proposal agentidentitytrustprotocol#72
+    Item 2: algorithm-agile (Ed25519 and P-256), steps 1-3 before any
+    signature work.
 
-    pub = identity.get("public_key", "")
-    # `identity.public_key`/`identity.proof` are RFC-AITP-0002 §1's own
-    # payload -- unconstrained-type at the schema level like every other
-    # signed-object member, so nothing upstream has confirmed they are even
-    # strings yet. Building the five-field proof input, decoding either
-    # base64url value, and constructing the raw public key can each raise a
-    # different stdlib exception (AttributeError from `.encode()` on a
-    # non-string `message_id`, TypeError/ValueError/OverflowError from
-    # `int(timestamp)` or a non-string `b64url_decode` argument,
-    # binascii.Error from malformed base64) for a mistyped/malformed value at
-    # any of these fields -- none of them AitpError, so all would otherwise
-    # escape this module's caller. This module's own OIDC docstring already
-    # states the operative rule for every claim/structural failure here:
-    # IDENTITY_FAILED. `KeyError` is caught too, as defense in depth: this
-    # function's own caller (`handshake.py::_verify_bootstrap`) now guards
-    # `payload["pop_nonce"]`'s presence before calling here, but this
-    # function is reachable on its own via the public `verify_identity` too,
-    # with no such guarantee from that caller.
+    1. ``type`` is ``pinned_key`` (the caller dispatched on it).
+    2. ``public_key`` is the sender AID's own identifier form for its
+       algorithm (43 chars Ed25519, 44 chars SEC1-compressed P-256),
+       byte-equal to the key in ``sender.agent_id``.
+    3. ``(algorithm, key)`` is in ``trust_store`` -- the pair, never the
+       raw bytes alone.
+    4. Rebuild the five-field ``proof_input`` (§3.1).
+    5. Verify ``proof`` as a JCS-profile signature (RFC-AITP-0001 §5.4.3,
+       §5.4.6, §5.4.7) under the sender's algorithm: a ``p256`` sender's
+       proof MUST be ``p256.``-tagged and low-S.
+
+    ``trust_store=None`` skips step 3, as before; callers that want the
+    pinned-key profile's trust decision MUST pass one.
+    """
+    # `identity.public_key`/`identity.proof` and the envelope members are
+    # unconstrained at this point: anything that is not the expected shape
+    # is a malformed descriptor -> IDENTITY_FAILED, never a stray stdlib
+    # exception escaping to the caller.
     try:
-        # Trust-store gate runs first: an unknown key is rejected before
-        # crypto. `pub not in pinned` needs `pub` hashable -- inside the try
-        # for the same reason as everything below it.
+        pub = identity.get("public_key")
+        if not isinstance(pub, str):
+            raise AitpError("IDENTITY_FAILED", "pinned_key descriptor has no string public_key")
+        sender = parse_aid(str(envelope["sender"]["agent_id"]))
+        expected_len = 43 if sender.alg == "ed25519" else 44
+        if len(pub) != expected_len or b64url_decode(pub) != sender.raw_key:
+            raise AitpError(
+                "IDENTITY_FAILED",
+                f"pinned_key public_key is not the sender AID's {sender.alg} key",
+            )
+
         if trust_store is not None:
-            pinned = {a.split(":")[-1] for a in trust_store}  # tolerate full-AID or bare-key entries
-            if pub not in pinned and pub not in trust_store:
+            if not isinstance(trust_store, list) or (sender.alg, sender.raw_key) not in {
+                e for e in map(_pinned_entry, trust_store) if e is not None
+            }:
                 raise AitpError("IDENTITY_FAILED", "pinned key not in trust store")
 
         proof_input = pinned_key_proof_input(
@@ -328,11 +365,10 @@ def _verify_pinned_key(
             int(envelope["timestamp"]),
             envelope["payload"]["pop_nonce"],
         )
-        key = PublicKey.from_raw("ed25519", b64url_decode(pub))
-        sig = b64url_decode(identity.get("proof", ""))
+        sig = decode_tagged_signature(identity.get("proof"), sender, sig_err="IDENTITY_FAILED")
     except AitpError:
         raise
     except (TypeError, ValueError, AttributeError, OverflowError, KeyError) as exc:
         raise AitpError("IDENTITY_FAILED", f"pinned-key identity is malformed: {exc}") from exc
-    if len(sig) != 64 or not key.verify_digest(sha256(proof_input), sig):
+    if not sender.public_key.verify_digest(sha256(proof_input), sig):
         raise AitpError("IDENTITY_FAILED", "pinned-key proof does not verify (five-field input)")

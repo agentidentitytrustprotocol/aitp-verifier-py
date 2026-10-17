@@ -67,23 +67,46 @@ _MAX_RSA_MODULUS_BITS = 8192
 # `ring`'s and is not a substitute for this bound.
 _MAX_RSA_EXPONENT_BITS = 33
 
-__all__ = ["ALG_ED25519", "ALG_P256", "ALG_RSA", "PublicKey", "PrivateKey", "sha256"]
+__all__ = ["ALG_ED25519", "ALG_P256", "ALG_RSA", "P256_N", "PublicKey", "PrivateKey", "sha256"]
 
 
 def sha256(data: bytes) -> bytes:
     return hashlib.sha256(data).digest()
 
 
+# P-256 group order n (SEC 2 §2.4.2).
+P256_N = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+
+
 def _p256_raw_to_der(sig: bytes) -> bytes:
+    """Convert a raw ``R||S`` P-256 signature to DER, enforcing §5.4.7.
+
+    RFC-AITP-0001 §5.4.7 (proposal agentidentitytrustprotocol#72 Item 4):
+    verifiers MUST reject ``R`` or ``S`` equal to 0 or ``>= n``, and the
+    high-S form ``S > n/2``. ``(r, s)`` and ``(r, n - s)`` are both valid
+    ECDSA signatures, so without the last rule every P-256 signature has a
+    second, distinct wire form. pyca/cryptography (OpenSSL) accepts high-S,
+    so the check is done here, before the library is called. It applies to
+    the JWS profile too, which makes it stricter than RFC 7518 -- the same
+    rule aitp-rs's ``verify``/``verify_raw`` enforce for every P-256 key,
+    OIDC issuer keys included.
+    """
     if len(sig) != 64:
         raise ValueError(f"ES256 signature must be 64 raw bytes, got {len(sig)}")
     r = int.from_bytes(sig[:32], "big")
     s = int.from_bytes(sig[32:], "big")
+    if not (0 < r < P256_N and 0 < s < P256_N):
+        raise ValueError("P-256 signature R or S is out of range")
+    if s > P256_N // 2:
+        raise ValueError("P-256 signature is high-S (S > n/2)")
     return encode_dss_signature(r, s)
 
 
 def _p256_der_to_raw(der: bytes) -> bytes:
+    """DER -> raw ``R||S``, normalised to low-S (§5.4.7: signers MUST)."""
     r, s = decode_dss_signature(der)
+    if s > P256_N // 2:
+        s = P256_N - s
     return r.to_bytes(32, "big") + s.to_bytes(32, "big")
 
 
