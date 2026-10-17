@@ -47,6 +47,7 @@ claims-shape check, in the identical position, instead of each duplicating
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .aid import parse_aid
@@ -67,6 +68,12 @@ __all__ = ["verify_tct", "TCT_CLAIM_FIELDS", "TCT_CNF_FIELDS", "check_tct_claims
 # `structural_code` convention jws.parse_compact already applies.
 TCT_CLAIM_FIELDS = frozenset({"ver", "jti", "iss", "sub", "aud", "iat", "exp", "grants", "cnf", "ext"})
 TCT_CNF_FIELDS = frozenset({"jkt"})
+
+# RFC-AITP-0005 §2.2: lowercase, hyphenated, version nibble 4, variant 10.
+_JTI_V4 = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+
+# RFC-AITP-0005 §5.3: confers no capability; never valid in a grant context.
+ATTESTATION_MARKER = "aitp.attestation"
 # aitp-tct.schema.json `required`. Every one of these is dereferenced
 # unguarded downstream -- by this module's own verify_tct (`int(claims["exp"])`,
 # `claims["sub"]`), by handshake.py's embedded-TCT check in _verify_commit
@@ -104,6 +111,21 @@ def check_tct_claims_shape(claims: dict[str, Any], *, shape_code: str) -> None:
         raise AitpError(shape_code, "TCT claims.grants must be an array of strings")
     reject_unknown_fields(claims, TCT_CLAIM_FIELDS, shape_code=shape_code, what="TCT claims")
     reject_unknown_fields(claims["cnf"], TCT_CNF_FIELDS, shape_code=shape_code, what="TCT claims.cnf")
+    # §7.2 step 1 checks `jti` here, before the signature (tct-013, tct-014).
+    if not _JTI_V4.fullmatch(claims["jti"]):
+        raise AitpError(shape_code, "TCT claims.jti is not a lowercase UUID v4 (RFC-AITP-0005 §2.2)")
+
+
+def check_grant_context(claims: dict[str, Any], *, code: str = "TCT_SIGNATURE_INVALID") -> None:
+    """RFC-AITP-0005 §5.3 / §7.2 step 5: a TCT evaluated as a capability
+    grant MUST NOT be self-issued and MUST NOT carry the attestation marker,
+    alone or beside other grants (``tct-015``, ``tct-016``, ``tct-018``).
+    Runs after the signature has verified.
+    """
+    if claims["iss"] == claims["sub"]:
+        raise AitpError(code, "self-issued TCT (iss == sub) in a grant context")
+    if ATTESTATION_MARKER in claims["grants"]:
+        raise AitpError(code, f"TCT carries the {ATTESTATION_MARKER} marker in a grant context")
 
 
 def verify_tct(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any]:
@@ -128,6 +150,8 @@ def verify_tct(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any
 
     if now >= int(claims["exp"]):
         raise AitpError("TCT_EXPIRED", "TCT exp is in the past")
+
+    check_grant_context(claims)
 
     # cnf.jkt MUST equal the thumbprint of the key in the subject AID.
     try:

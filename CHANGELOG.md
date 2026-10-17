@@ -8,6 +8,29 @@ here, so a future integrator has one place to check before upgrading.
 
 ### Security-relevant
 
+- **Proposal agentidentitytrustprotocol#72, as merged into the spec (through #80).**
+  Conformance against spec main moves from 74 passed / 9 failed to 83 passed / 0 failed.
+  Previously accepted, now rejected:
+  - **P-256 strictness (RFC-AITP-0001 §5.4.7).** P-256 rejects high-S and R/S of 0 or
+    >= n on every AITP signing input. An IdP's OIDC ID token is exempt from the high-S
+    rule, per §5.4.7 "Scope".
+  - **Algorithm tag (§5.4.3).** An untagged signature under a `p256` AID is an algorithm
+    mismatch.
+  - **pinned_key (RFC-AITP-0002 §1, §3.2).**
+    - It works for both Ed25519 and P-256.
+    - `public_key` must be the sender AID's key, and the trust store is matched on
+      (algorithm, key).
+    - A descriptor that carries `issuer` is rejected (id-018).
+  - **TCT (RFC-AITP-0005 §2.2, §5.3, §7.2).**
+    - `jti` must be a lowercase UUID v4, checked before the signature (tct-013,
+      tct-014).
+    - A grant context (`verify_tct` and the handshake commit TCT) rejects a self-issued
+      TCT, and any TCT whose `grants` contain `aitp.attestation` (tct-015, tct-016,
+      tct-018).
+  - **Minter.** It no longer mints a valid pinned-key proof for an unknown placeholder
+    name, which had let id-006 pass falsely. It now tags every P-256 JCS-profile
+    signature.
+
 - **Seven verifier entry points now convert malformed remote input to `AitpError`** instead
   of letting raw `KeyError`/`TypeError`/`AttributeError`, `JcsError`/`ValueError` or
   `binascii.Error` (from `parse_aid` and base64url decoding) escape, so callers can rely on a

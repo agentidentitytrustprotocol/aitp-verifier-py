@@ -157,3 +157,12 @@ def test_ed25519_pinned_key_still_accepts_both_wire_forms() -> None:
     for tag in (None, "ed25519"):
         identity, envelope = _pinned(ED, ED_AID, tag=tag)
         _verify(identity, envelope, [ED_AID])
+
+
+def test_issuer_member_is_rejected() -> None:
+    # RFC-AITP-0002 §1: `issuer` MUST be absent for pinned_key (id-018).
+    identity, envelope = _pinned(ED, ED_AID, tag=None)
+    identity["issuer"] = "https://auth.example.test"
+    with pytest.raises(AitpError, match="issuer") as exc:
+        _verify(identity, envelope, [ED_AID])
+    assert exc.value.code == "IDENTITY_FAILED"

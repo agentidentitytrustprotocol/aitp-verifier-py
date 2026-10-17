@@ -143,13 +143,13 @@ def _sign_manifest(man: dict[str, Any], keys: dict[str, PrivateKey]) -> None:
     key = keys[man["aid"]]
     pop = man.get("proof_of_possession")
     if pop and pop.get("signature") == "__VALID_POP_SIG__":
-        pop["signature"] = b64url_encode(key.sign_digest(sha256(b64url_decode(pop["challenge"]))))
+        pop["signature"] = _env_wire_sig(key, sha256(b64url_decode(pop["challenge"])))
     elif pop and pop.get("signature") == "__INVALID_POP_SIG__":
         # Sign the wrong digest so the PoP check fails at the crypto layer.
-        pop["signature"] = b64url_encode(key.sign_digest(sha256(b"aitp-invalid-pop")))
+        pop["signature"] = _env_wire_sig(key, sha256(b"aitp-invalid-pop"))
     if man.get("signature") in ("__VALID_MANIFEST_SIG__", "__TAMPERED_SIGNATURE__"):
         body = {k: v for k, v in man.items() if k != "signature"}
-        sig = b64url_encode(key.sign_digest(sha256(canonicalize(body))))
+        sig = _env_wire_sig(key, sha256(canonicalize(body)))
         man["signature"] = _tamper_sig_str(sig) if man["signature"] == "__TAMPERED_SIGNATURE__" else sig
 
 
@@ -166,7 +166,7 @@ def _sign_revocation(snapshot: dict[str, Any], keys: dict[str, PrivateKey]) -> N
         return
     body = snapshot["revocation_list"]
     key = keys[body["issuer"]]
-    snapshot["signature"] = b64url_encode(key.sign_digest(sha256(canonicalize(body))))
+    snapshot["signature"] = _env_wire_sig(key, sha256(canonicalize(body)))
 
 
 # --- handshake payload minting ----------------------------------------------
@@ -256,11 +256,16 @@ def _mint_pinned_proof(placeholder: str, identity: dict[str, Any], env: dict[str
         )
     elif placeholder == "__LEGACY_PINNED_PROOF__":
         data = f"{mid}|{ts}".encode()  # pre-v0.1 two-field input — must fail five-field reconstruction
-    elif placeholder == "__INVALID_POP_SIG_OVER_WRONG_NONCE__":
+    elif placeholder in ("__PINNED_PROOF_OVER_WRONG_NONCE__", "__INVALID_POP_SIG_OVER_WRONG_NONCE__"):
+        # The second spelling is the pre-#80 name of the same placeholder.
         data = pinned_key_proof_input(sender, self_aid, mid, ts, _WRONG_NONCE)
-    else:
+    elif placeholder == "__VALID_PINNED_PROOF__":
         data = pinned_key_proof_input(sender, self_aid, mid, ts, nonce)
-    return b64url_encode(sk.sign_digest(sha256(data)))
+    else:
+        # Minting a valid proof for a name we do not know would turn a
+        # negative fixture into a false pass.
+        raise MinterError(f"unknown pinned-key proof placeholder {placeholder}")
+    return _env_wire_sig(sk, sha256(data))
 
 
 def _mint_pop_signature(payload: dict[str, Any], sender: str, self_nonce: str | None, keys: dict[str, PrivateKey]) -> None:
@@ -324,7 +329,7 @@ def _mint_bundle(outer: dict[str, Any], keys: dict[str, PrivateKey], now: int) -
     if body.get("signature") == "__VALID_A_SIG__":
         key = keys[body["coordinator"]]
         signing_body = {k: v for k, v in body.items() if k != "signature"}
-        body["signature"] = b64url_encode(key.sign_digest(sha256(canonicalize(signing_body))))
+        body["signature"] = _env_wire_sig(key, sha256(canonicalize(signing_body)))
 
 
 def _peer_nonce(self_aid: str) -> str:

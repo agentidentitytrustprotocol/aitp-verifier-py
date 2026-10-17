@@ -324,6 +324,9 @@ def _verify_pinned_key(
     Item 2: algorithm-agile (Ed25519 and P-256), steps 1-3 before any
     signature work.
 
+    0. ``issuer`` MUST be absent (RFC-AITP-0002 §1): the trust anchor is
+       the local store, so an ``issuer`` member is a schema-invalid
+       descriptor, never ignored (fixture id-018).
     1. ``type`` is ``pinned_key`` (the caller dispatched on it).
     2. ``public_key`` is the sender AID's own identifier form for its
        algorithm (43 chars Ed25519, 44 chars SEC1-compressed P-256),
@@ -338,6 +341,8 @@ def _verify_pinned_key(
     ``trust_store=None`` skips step 3, as before; callers that want the
     pinned-key profile's trust decision MUST pass one.
     """
+    if "issuer" in identity:
+        raise AitpError("IDENTITY_FAILED", "pinned_key descriptor MUST NOT carry `issuer` (RFC-AITP-0002 §1)")
     # `identity.public_key`/`identity.proof` and the envelope members are
     # unconstrained at this point: anything that is not the expected shape
     # is a malformed descriptor -> IDENTITY_FAILED, never a stray stdlib

@@ -28,7 +28,7 @@ from .jwk import thumbprint
 from .jws import parse_compact, verify_jws
 from .manifest import verify_manifest
 from .sigfield import decode_tagged_signature
-from .tct import check_tct_claims_shape
+from .tct import check_grant_context, check_tct_claims_shape
 from .timeutil import REFERENCE_CLOCK
 
 __all__ = ["verify_handshake_payload"]
@@ -170,6 +170,8 @@ def _verify_commit(
         raise AitpError("AUDIENCE_MISMATCH", "TCT aud != self AID")
     if now >= int(claims["exp"]):
         raise AitpError("TCT_EXPIRED", "TCT expired")
+    # The commit TCT is a capability grant (RFC-AITP-0005 §5.3).
+    check_grant_context(claims)
     try:
         sub_aid = parse_aid(str(claims["sub"]))
     except ValueError as exc:
