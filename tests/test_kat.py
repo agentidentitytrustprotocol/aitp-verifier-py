@@ -19,7 +19,7 @@ from aitp_verifier.crypto import PrivateKey, sha256
 
 
 def _ka(spec_dir: Path, name: str) -> dict[str, Any]:
-    return cast("dict[str, Any]", json.loads((spec_dir / "schemas/conformance/known-answer" / name).read_text()))
+    return cast("dict[str, Any]", json.loads((spec_dir / "schemas/conformance/known-answer" / name).read_text(encoding="utf-8")))
 
 
 def test_keypairs_derive_aids(spec_dir: Path) -> None:
@@ -153,7 +153,7 @@ def test_pinned_key_proof_input_matches_golden(spec_dir: Path) -> None:
     fixtures = list((spec_dir / "schemas/conformance").glob("id-007*.json"))
     if not fixtures:
         return
-    inp = json.loads(fixtures[0].read_text())["input"]
+    inp = json.loads(fixtures[0].read_text(encoding="utf-8"))["input"]
     identity = inp["envelope"]["payload"]["identity"]
     from aitp_verifier.crypto import PublicKey
     from aitp_verifier.identity import pinned_key_proof_input

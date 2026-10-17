@@ -18,7 +18,7 @@ def test_conformance_pack_has_no_failures(spec_dir: Path) -> None:
     conf = spec_dir / "schemas/conformance"
     passed = failures = 0
     for path in sorted(conf.glob("*.json")):
-        fixture = json.loads(path.read_text())
+        fixture = json.loads(path.read_text(encoding="utf-8"))
         if "id" not in fixture or "input" not in fixture:
             continue
         if not fixture.get("required_for_v0_2", False) and fixture.get("feature") not in SUPPORTED_FEATURES:

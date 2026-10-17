@@ -31,7 +31,7 @@ from aitp_verifier.timeutil import REFERENCE_CLOCK
 
 def _minted_bundle_input(spec_dir: Path) -> dict[str, Any]:
     """A fully-minted, valid `bundle-001` input (real coordinator signature)."""
-    fixture = json.loads((spec_dir / "schemas/conformance/bundle-001-success.json").read_text())
+    fixture = json.loads((spec_dir / "schemas/conformance/bundle-001-success.json").read_text(encoding="utf-8"))
     keys = load_kat_keys(spec_dir)
     return mint_input(fixture["input"], REFERENCE_CLOCK, keys)
 
@@ -154,7 +154,7 @@ def test_participant_tct_claims_unknown_field_rejected(spec_dir: Path) -> None:
     claims check and correctly reports `UNKNOWN_FIELD`, because RFC-AITP-0004
     has no equivalent collapsing clause -- filed upstream for confirmation.
     """
-    fixture = json.loads((spec_dir / "schemas/conformance/bundle-001-success.json").read_text())
+    fixture = json.loads((spec_dir / "schemas/conformance/bundle-001-success.json").read_text(encoding="utf-8"))
     tampered = copy.deepcopy(fixture["input"])
     tampered["session_bundle"]["session_bundle"]["participants"][0]["tct_claims"]["routing_hint"] = "x"
     keys = load_kat_keys(spec_dir)
@@ -183,7 +183,7 @@ def test_participant_tct_combined_unknown_claim_and_bad_alg_reports_bundle_code(
     `ES256`, which mismatches kat-keypair-001's actual Ed25519 AID -- the
     same technique `tct-009`-style alg-mismatch fixtures use.
     """
-    fixture = json.loads((spec_dir / "schemas/conformance/bundle-001-success.json").read_text())
+    fixture = json.loads((spec_dir / "schemas/conformance/bundle-001-success.json").read_text(encoding="utf-8"))
     tampered = copy.deepcopy(fixture["input"])
     participant = tampered["session_bundle"]["session_bundle"]["participants"][0]
     participant["tct"] = "__JWS_TCT_WRONG_ALG__"

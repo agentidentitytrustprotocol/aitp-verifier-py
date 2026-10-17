@@ -176,7 +176,7 @@ def _load_fixtures(spec_dir: Path) -> list[dict[str, Any]]:
     conf_dir = spec_dir / "schemas/conformance"
     out = []
     for path in sorted(conf_dir.glob("*.json")):
-        d = json.loads(path.read_text())
+        d = json.loads(path.read_text(encoding="utf-8"))
         if "id" in d and "input" in d:
             out.append(d)
     return out

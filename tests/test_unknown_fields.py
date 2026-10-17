@@ -1348,7 +1348,7 @@ def _load_conformance_input(spec_dir: Path, fixture_id: str) -> dict[str, Any]:
     """
     conf_dir = spec_dir / "schemas/conformance"
     for path in conf_dir.glob("*.json"):
-        d = json.loads(path.read_text())
+        d = json.loads(path.read_text(encoding="utf-8"))
         if d.get("id") == fixture_id:
             inp: dict[str, Any] = copy.deepcopy(d["input"])
             inp["_feature"] = d.get("feature")

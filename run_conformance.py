@@ -180,7 +180,7 @@ def main() -> int:
     counts: Counter[str] = Counter()
     rows: list[tuple[str, str, str]] = []
     for path in sorted(conf_dir.glob("*.json")):
-        fixture = json.loads(path.read_text())
+        fixture = json.loads(path.read_text(encoding="utf-8"))
         if "id" not in fixture or "input" not in fixture:
             continue  # not a scenario fixture (e.g. a schema helper)
         fid = fixture["id"]

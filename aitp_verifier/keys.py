@@ -22,7 +22,7 @@ __all__ = ["load_kat_keys"]
 def load_kat_keys(spec_dir: Path) -> dict[str, PrivateKey]:
     """Return a mapping of AID string -> signing key from the spec's KATs."""
     path = spec_dir / "schemas/conformance/known-answer/keypairs.json"
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     keys: dict[str, PrivateKey] = {}
     for vec in data["vectors"]:
         if vec.get("algorithm") == "p256":

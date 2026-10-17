@@ -28,7 +28,7 @@ from aitp_verifier.sigfield import decode_tagged_signature
 
 def _se(spec_dir: Path, rel: str) -> dict[str, Any]:
     path = spec_dir / "schemas/conformance/known-answer/signed-examples" / rel
-    return cast("dict[str, Any]", json.loads(path.read_text()))
+    return cast("dict[str, Any]", json.loads(path.read_text(encoding="utf-8")))
 
 
 def test_tct_verifies_and_remints(spec_dir: Path) -> None:
