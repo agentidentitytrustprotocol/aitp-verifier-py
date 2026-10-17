@@ -69,6 +69,7 @@ _ARTIFACT_ROOTS: dict[str, str] = {
     "verify_envelope": "envelope",
     "verify_manifest": "manifest",
     "verify_tct": "tct_token_claims",
+    "verify_attestation": "tct_token_claims",
     "verify_grant_voucher": "voucher_token_claims",
     "verify_delegation_token": "delegation_token_claims",
     "verify_revocation_snapshot": "snapshot.revocation_list",
@@ -230,7 +231,7 @@ def _sweep(spec_dir: Path, op: str) -> list[str]:
                 # module docstring). Supply the harness's own default so every
                 # mutation still reaches the wire-artifact field under test,
                 # the same role `run_conformance.py` plays for its fixtures.
-                if op in ("verify_tct", "verify_delegation_token"):
+                if op in ("verify_tct", "verify_attestation", "verify_delegation_token"):
                     minted.setdefault("policy", {"fail_mode": "fail_open"})
                 try:
                     OPERATIONS[op](minted)

@@ -53,6 +53,7 @@ from typing import Any
 from .aid import parse_aid
 from .errors import AitpError
 from .fields import check_types, reject_unknown_fields, require_members
+from .identity import trust_store_entry
 from .jwk import thumbprint
 from .jws import parse_compact, verify_jws
 from .revocation import resolve_fail_mode, snapshot_is_stale, verify_snapshot_trust
@@ -174,6 +175,71 @@ def verify_tct(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any
 
     _check_revocation(claims, inp, now)
     return {"grants": claims["grants"]}
+
+
+def verify_attestation(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any]:
+    """Relying-party verification of a self-attestation (RFC-AITP-0005 §5.3
+    "Verification"). Not a grant context: ``aud`` need not be this party's
+    AID, and ``iss == sub`` is the required shape.
+
+    Runs §7.2 steps 1-4 and 6 unchanged. In place of step 5 it checks
+    ``ver``, ``exp``, ``cnf.jkt``, ``iss == sub == aud``, that ``grants`` is
+    exactly ``["aitp.attestation"]``, and that ``ext`` carries
+    ``expected_ext_key`` (``tct-019``). Each shape defect is
+    ``TCT_SIGNATURE_INVALID``.
+
+    Issuer key resolution follows the §7.3 exception: ``iss`` MUST be in
+    ``trust_store``, the relying party's own record of keys trusted at
+    ``iat``. The Manifest-cap decision is mandatory: pass
+    ``issuer_manifest`` (§10.4 applies) or ``waive_manifest_cap: True``
+    (the issuer publishes none). Omitting both is a caller error
+    (``ValueError``), never a silent waiver.
+    """
+    token = inp["tct_token"]
+    statement_key = inp["expected_ext_key"]
+    issuer_manifest = inp.get("issuer_manifest")
+    if issuer_manifest is None and inp.get("waive_manifest_cap") is not True:
+        raise ValueError("verify_attestation: pass issuer_manifest or waive_manifest_cap; the Manifest-cap decision is mandatory")
+
+    iss = parse_compact(token, structural_code="TCT_SIGNATURE_INVALID").claims.get("iss")
+    claims = verify_jws(
+        token,
+        iss_aid=str(iss),
+        expected_typ="aitp-tct+jwt",
+        typ_err="TOKEN_TYP_MISMATCH",
+        alg_err="TOKEN_ALG_MISMATCH",
+        sig_err="TCT_SIGNATURE_INVALID",
+        after_typ_check=lambda c: _attestation_pre_signature(c, inp.get("trust_store")),
+    )
+
+    if claims["ver"] != "aitp/0.2":
+        raise AitpError("UNKNOWN_VERSION", f"unknown ver {claims['ver']!r}")
+    if now >= int(claims["exp"]):
+        raise AitpError("TCT_EXPIRED", "attestation exp is in the past")
+    if not (claims["iss"] == claims["sub"] == claims["aud"]):
+        raise AitpError("TCT_SIGNATURE_INVALID", "attestation is not iss == sub == aud")
+    if claims["grants"] != [ATTESTATION_MARKER]:
+        raise AitpError("TCT_SIGNATURE_INVALID", f"attestation grants must be exactly [{ATTESTATION_MARKER!r}]")
+    if claims["cnf"].get("jkt") != thumbprint(parse_aid(str(claims["sub"]))):
+        raise AitpError("TCT_SIGNATURE_INVALID", "attestation cnf.jkt does not bind the issuer key")
+    ext = claims.get("ext")
+    if not isinstance(ext, dict) or statement_key not in ext:
+        raise AitpError("TCT_SIGNATURE_INVALID", f"attestation ext lacks {statement_key!r}")
+    if issuer_manifest is not None and int(claims["exp"]) > int(issuer_manifest["expires_at"]):
+        raise AitpError("TCT_EXPIRES_AFTER_MANIFEST", "attestation outlives the issuer Manifest")
+
+    _check_revocation(claims, inp, now)
+    return {"statement": ext[statement_key]}
+
+
+def _attestation_pre_signature(claims: dict[str, Any], trust_store: Any) -> None:
+    check_tct_claims_shape(claims, shape_code="TCT_SIGNATURE_INVALID")
+    # §7.3 exception: without a Manifest to resolve, the issuer key must be
+    # one the relying party already records as trusted.
+    issuer = trust_store_entry(claims.get("iss"))
+    trusted = {e for e in map(trust_store_entry, trust_store or []) if e is not None}
+    if issuer is None or issuer not in trusted:
+        raise AitpError("TCT_SIGNATURE_INVALID", "attestation issuer is not in trust_store")
 
 
 def _effective_fail_mode(inp: dict[str, Any], revlist: Any) -> str:

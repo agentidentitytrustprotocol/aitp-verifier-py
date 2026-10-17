@@ -47,7 +47,7 @@ from .jwk import IssuerKey, issuer_keys_from, thumbprint
 from .jws import parse_compact
 from .sigfield import decode_tagged_signature
 
-__all__ = ["pinned_key_proof_input", "verify_identity"]
+__all__ = ["pinned_key_proof_input", "trust_store_entry", "verify_identity"]
 
 _ALLOWED_OIDC_ALGS = {"EdDSA", "ES256", "RS256"}
 _FORBIDDEN_HEADER_PARAMS = {"jwk", "jku", "x5u", "x5c", "crit"}
@@ -292,7 +292,7 @@ def _select_issuer_key(candidates: list[IssuerKey], kid: Any) -> IssuerKey:
     return candidates[0]
 
 
-def _pinned_entry(entry: Any) -> tuple[str, bytes] | None:
+def trust_store_entry(entry: Any) -> tuple[str, bytes] | None:
     """A trust-store entry as its ``(algorithm, raw key)`` pair.
 
     Entries are full AIDs (``aid:pubkey:...``) or bare identifiers. A bare
@@ -361,7 +361,7 @@ def _verify_pinned_key(
 
         if trust_store is not None:
             if not isinstance(trust_store, list) or (sender.alg, sender.raw_key) not in {
-                e for e in map(_pinned_entry, trust_store) if e is not None
+                e for e in map(trust_store_entry, trust_store) if e is not None
             }:
                 raise AitpError("IDENTITY_FAILED", "pinned key not in trust store")
 

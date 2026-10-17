@@ -19,6 +19,7 @@ OPERATIONS: dict[str, Verifier] = {
     "verify_envelope": envelope.verify_envelope,
     "verify_manifest": manifest.verify_manifest,
     "verify_tct": tct.verify_tct,
+    "verify_attestation": tct.verify_attestation,
     "verify_grant_voucher": voucher.verify_grant_voucher,
     "verify_delegation_token": delegation.verify_delegation_token,
     "verify_revocation_snapshot": revocation.verify_revocation_snapshot,

@@ -9,7 +9,7 @@ here, so a future integrator has one place to check before upgrading.
 ### Security-relevant
 
 - **Proposal agentidentitytrustprotocol#72, as merged into the spec (through #80).**
-  Conformance against spec main moves from 74 passed / 9 failed to 83 passed / 0 failed.
+  Conformance against spec main moves from 74 passed / 9 failed to 85 passed / 0 failed.
   Previously accepted, now rejected:
   - **P-256 strictness (RFC-AITP-0001 §5.4.7).** P-256 rejects high-S and R/S of 0 or
     >= n on every AITP signing input. An IdP's OIDC ID token is exempt from the high-S
@@ -27,6 +27,13 @@ here, so a future integrator has one place to check before upgrading.
     - A grant context (`verify_tct` and the handshake commit TCT) rejects a self-issued
       TCT, and any TCT whose `grants` contain `aitp.attestation` (tct-015, tct-016,
       tct-018).
+  - **Self-attestation (RFC-AITP-0005 §5.3 "Verification").** A new operation,
+    `verify_attestation`, does relying-party verification. It is not a grant context:
+    it requires `iss == sub == aud`, `grants` exactly `["aitp.attestation"]`, `cnf.jkt`
+    bound to the issuer, the `expected_ext_key` statement in `ext` (tct-019), and the
+    issuer in `trust_store` (§7.3 exception). The Manifest-cap decision is mandatory
+    (`issuer_manifest` or `waive_manifest_cap`). The runner now claims
+    `feature: aitp-self-attestation` (tct-019, tct-020).
   - **Minter.** It no longer mints a valid pinned-key proof for an unknown placeholder
     name, which had let id-006 pass falsely. It now tags every P-256 JCS-profile
     signature.

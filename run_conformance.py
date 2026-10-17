@@ -34,7 +34,7 @@ PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 # Draft opt-in features this implementation now exercises. A non-required
 # fixture is run when its `feature` is one of these; otherwise it is out of
 # scope (Draft not-yet-implemented, or a v0.1-frozen fixture).
-SUPPORTED_FEATURES = {"experimental-multihop-delegation", "experimental-session-bundle"}
+SUPPORTED_FEATURES = {"experimental-multihop-delegation", "experimental-session-bundle", "aitp-self-attestation"}
 
 
 class _SeqState:
@@ -143,7 +143,7 @@ def run_fixture(fixture: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str
     # real deployment would supply its own configured policy rather than
     # leaving the decision unmade. A fixture that DOES carry a `policy`
     # always wins -- `setdefault` only fills the gap, never overrides.
-    if op in ("verify_tct", "verify_delegation_token"):
+    if op in ("verify_tct", "verify_attestation", "verify_delegation_token"):
         minted.setdefault("policy", {"fail_mode": "fail_open"})
 
     try:

@@ -90,3 +90,92 @@ def test_self_issued_tct_is_rejected_in_a_grant_context() -> None:
 @pytest.mark.parametrize("grants", [["aitp.attestation"], ["read_data", "aitp.attestation"]])
 def test_attestation_marker_is_rejected_in_a_grant_context(grants: list[str]) -> None:
     assert _code(_claims(grants=grants)) == "TCT_SIGNATURE_INVALID"
+
+
+# --- relying-party attestation verification (§5.3 "Verification") ----------
+
+KAT_KEY = "io.agentidentitytrustprotocol.kat"
+RP_AID = ISS_AID  # a third party: neither the attestation's iss nor its aud
+
+
+def _attestation(**over: Any) -> dict[str, Any]:
+    c = _claims(
+        iss=SUB_AID,
+        grants=["aitp.attestation"],
+        exp=4_867_660_000,
+        ext={KAT_KEY: {"statement": "archival attestation"}},
+    )
+    c.update(over)
+    return c
+
+
+def _attest(claims: dict[str, Any], **inp: Any) -> dict[str, Any]:
+    from aitp_verifier.tct import verify_attestation
+
+    token = encode_jws("aitp-tct+jwt", claims, SUBJECT, alg="EdDSA")
+    args: dict[str, Any] = {
+        "tct_token": token,
+        "self_aid": RP_AID,
+        "expected_ext_key": KAT_KEY,
+        "trust_store": [SUB_AID],
+        "waive_manifest_cap": True,
+        "policy": {"fail_mode": "fail_open"},
+    }
+    args.update(inp)
+    return verify_attestation(args, NOW)
+
+
+def _attest_code(claims: dict[str, Any], **inp: Any) -> str:
+    with pytest.raises(AitpError) as exc:
+        _attest(claims, **inp)
+    return exc.value.code
+
+
+def test_attestation_verifies_for_a_third_party() -> None:
+    out = _attest(_attestation())
+    assert out["statement"] == {"statement": "archival attestation"}
+
+
+def test_attestation_is_rejected_by_verify_tct() -> None:
+    token = encode_jws("aitp-tct+jwt", _attestation(), SUBJECT, alg="EdDSA")
+    with pytest.raises(AitpError) as exc:
+        verify_tct({"tct_token": token, "expected_audience": SUB_AID, "policy": {"fail_mode": "fail_open"}}, NOW)
+    assert exc.value.code == "TCT_SIGNATURE_INVALID"
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"aud": ISS_AID},  # iss == sub != aud
+        {"grants": ["aitp.attestation", "read_data"]},
+        {"grants": ["read_data"]},
+        {"ext": {"com.example.note": {"statement": "x"}}},  # tct-019
+        {"jti": "01928f3e-8c00-7a5b-9c3d-4e5f60713013"},
+    ],
+    ids=["aud", "marker-beside-grant", "no-marker", "ext-key-missing", "jti-v7"],
+)
+def test_attestation_shape_defects_are_rejected(over: dict[str, Any]) -> None:
+    assert _attest_code(_attestation(**over)) == "TCT_SIGNATURE_INVALID"
+
+
+def test_attestation_issuer_must_be_in_the_relying_partys_records() -> None:
+    assert _attest_code(_attestation(), trust_store=[ISS_AID]) == "TCT_SIGNATURE_INVALID"
+
+
+def test_attestation_manifest_cap_decision_is_mandatory() -> None:
+    with pytest.raises(ValueError, match="Manifest"):
+        _attest(_attestation(), waive_manifest_cap=False)
+    code = _attest_code(_attestation(), waive_manifest_cap=False, issuer_manifest={"expires_at": NOW + 10})
+    assert code == "TCT_EXPIRES_AFTER_MANIFEST"
+
+
+def test_attestation_wrong_typ_is_type_confusion() -> None:
+    from aitp_verifier.tct import verify_attestation
+
+    token = encode_jws("aitp-voucher+jwt", _attestation(), SUBJECT, alg="EdDSA")
+    with pytest.raises(AitpError) as exc:
+        verify_attestation(
+            {"tct_token": token, "expected_ext_key": KAT_KEY, "trust_store": [SUB_AID], "waive_manifest_cap": True},
+            NOW,
+        )
+    assert exc.value.code == "TOKEN_TYP_MISMATCH"
