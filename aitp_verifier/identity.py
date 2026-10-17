@@ -338,8 +338,8 @@ def _verify_pinned_key(
        §5.4.6, §5.4.7) under the sender's algorithm: a ``p256`` sender's
        proof MUST be ``p256.``-tagged and low-S.
 
-    ``trust_store=None`` skips step 3, as before; callers that want the
-    pinned-key profile's trust decision MUST pass one.
+    ``trust_store=None`` is an empty store, so step 3 rejects every key
+    (RFC-AITP-0002 §3; issue #61). It never skips the trust gate.
     """
     if "issuer" in identity:
         raise AitpError("IDENTITY_FAILED", "pinned_key descriptor MUST NOT carry `issuer` (RFC-AITP-0002 §1)")
@@ -359,11 +359,9 @@ def _verify_pinned_key(
                 f"pinned_key public_key is not the sender AID's {sender.alg} key",
             )
 
-        if trust_store is not None:
-            if not isinstance(trust_store, list) or (sender.alg, sender.raw_key) not in {
-                e for e in map(trust_store_entry, trust_store) if e is not None
-            }:
-                raise AitpError("IDENTITY_FAILED", "pinned key not in trust store")
+        store = trust_store if isinstance(trust_store, list) else []
+        if (sender.alg, sender.raw_key) not in {e for e in map(trust_store_entry, store) if e is not None}:
+            raise AitpError("IDENTITY_FAILED", "pinned key not in trust store")
 
         proof_input = pinned_key_proof_input(
             envelope["sender"]["agent_id"],

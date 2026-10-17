@@ -21,6 +21,8 @@ here, so a future integrator has one place to check before upgrading.
     - `public_key` must be the sender AID's key, and the trust store is matched on
       (algorithm, key).
     - A descriptor that carries `issuer` is rejected (id-018).
+    - `trust_store=None` is an empty store, so every pinned key is rejected. It used to skip
+      the trust gate (RFC-AITP-0002 §3; issue #61).
   - **TCT (RFC-AITP-0005 §2.2, §5.3, §7.2).**
     - `jti` must be a lowercase UUID v4, checked before the signature (tct-013,
       tct-014).

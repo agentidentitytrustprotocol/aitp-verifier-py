@@ -166,3 +166,14 @@ def test_issuer_member_is_rejected() -> None:
     with pytest.raises(AitpError, match="issuer") as exc:
         _verify(identity, envelope, [ED_AID])
     assert exc.value.code == "IDENTITY_FAILED"
+
+
+@pytest.mark.parametrize("store", [None, []], ids=["none", "empty"])
+def test_absent_trust_store_is_an_empty_store(store: list[str] | None) -> None:
+    # RFC-AITP-0002 §3 (issue #61): no store means no trusted key, so a
+    # correctly signed pinned_key presentation still fails closed.
+    for key, aid, tag in ((ED, ED_AID, None), (P256, P256_AID, "p256")):
+        identity, envelope = _pinned(key, aid, tag=tag)
+        with pytest.raises(AitpError, match="not in trust store") as exc:
+            _verify(identity, envelope, store)
+        assert exc.value.code == "IDENTITY_FAILED"
