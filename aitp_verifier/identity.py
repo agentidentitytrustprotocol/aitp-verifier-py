@@ -235,7 +235,9 @@ def _verify_oidc(
     resolved = _select_issuer_key(candidates, kid)
     if resolved.jose_alg != alg:
         raise AitpError("IDENTITY_FAILED", f"OIDC JWT alg {alg!r} != resolved key alg {resolved.jose_alg!r}")
-    if not resolved.public_key.verify_jose(parsed.signing_input, parsed.signature):
+    # An IdP's token, not an AITP signing input: §5.4.7 low-S does not
+    # apply (RFC-AITP-0001 §5.4.7 "Scope").
+    if not resolved.public_key.verify_jose(parsed.signing_input, parsed.signature, idp_token=True):
         raise AitpError("IDENTITY_FAILED", "OIDC JWT signature invalid")
 
     # --- nothing above this line ran without a just-verified signature. ---

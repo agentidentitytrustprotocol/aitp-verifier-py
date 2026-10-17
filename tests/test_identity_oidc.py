@@ -383,6 +383,45 @@ def test_flipped_signature_byte() -> None:
     assert _err(exc_info) == "IDENTITY_FAILED"
 
 
+def _es256_with_s(jwt: str, high: bool) -> str:
+    from aitp_verifier.crypto import P256_N
+
+    header_b64, payload_b64, sig_b64 = jwt.split(".")
+    raw = b64url_decode(sig_b64)
+    s = int.from_bytes(raw[32:], "big")
+    if (s > P256_N // 2) != high:
+        s = P256_N - s
+    return f"{header_b64}.{payload_b64}.{b64url_encode(raw[:32] + s.to_bytes(32, 'big'))}"
+
+
+def test_es256_high_s_idp_token_is_accepted() -> None:
+    # RFC-AITP-0001 §5.4.7 "Scope": an IdP's ID token is verified per RFC
+    # 7515/7518, and a verifier MUST NOT reject it solely for high-S.
+    identity = _identity()
+    env = _envelope()
+    jwt = _mint(identity, env, self_aid=SENDER_AID, alg="ES256")
+    issuer_key = b64url_encode(_issuer_pub("ES256"))
+    for high in (False, True):
+        identity["proof"] = _es256_with_s(jwt, high)
+        _verify(identity, env, self_aid=SENDER_AID, issuer_keys={ISSUER: issuer_key})
+
+
+@pytest.mark.parametrize("which", ["r", "s"])
+def test_es256_idp_token_with_zero_scalar_is_rejected(which: str) -> None:
+    # Lax on high-S only: R or S of zero is not a valid ECDSA signature.
+    identity = _identity()
+    env = _envelope()
+    jwt = _mint(identity, env, self_aid=SENDER_AID, alg="ES256")
+    header_b64, payload_b64, sig_b64 = jwt.split(".")
+    raw = b64url_decode(sig_b64)
+    raw = bytes(32) + raw[32:] if which == "r" else raw[:32] + bytes(32)
+    identity["proof"] = f"{header_b64}.{payload_b64}.{b64url_encode(raw)}"
+    issuer_key = b64url_encode(_issuer_pub("ES256"))
+    with pytest.raises(AitpError) as exc_info:
+        _verify(identity, env, self_aid=SENDER_AID, issuer_keys={ISSUER: issuer_key})
+    assert _err(exc_info) == "IDENTITY_FAILED"
+
+
 # --- claim gates --------------------------------------------------------------
 
 
