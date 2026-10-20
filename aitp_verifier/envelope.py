@@ -9,10 +9,17 @@ so ``version``, ``message_type`` and ``extensions`` are all authenticated.
 Replay controls (timestamp window, message-id dedup) run before all three
 (RFC-AITP-0009 §3.1); capability policy and simulated key-resolution
 scenarios are dispatched from the fixture input shape.
+
+The signature string is not canonical (RFC-AITP-0001 §5.4.3): an Ed25519
+signature verifies both untagged and as ``ed25519.<sig>``, and a relay can
+switch forms without breaking it. This module keeps no replay or dedup state;
+a caller that does MUST key it on ``message_id`` (RFC-AITP-0009 §1.2), never
+on the raw envelope bytes or a hash of them.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .aid import parse_aid
@@ -45,6 +52,12 @@ _ENVELOPE_TYPES: dict[str, tuple[type, ...]] = {
     "version": (str,), "message_type": (str,), "message_id": (str,), "timestamp": (int,),
     "sender": (dict,), "payload": (dict,), "signature": (str,), "extensions": (dict,),
 }
+# aitp-envelope.schema.json `signature` pattern: an optional algorithm tag
+# (RFC-AITP-0001 §5.4.3) then exactly 86 unpadded base64url characters (64 raw
+# bytes). A string outside it is a structural defect (INVALID_ENVELOPE), ahead
+# of the signature step; the tag-vs-AID-algorithm rule stays a signature-step
+# failure in `decode_tagged_signature` (aitp-rs #262 parity).
+_SIGNATURE_PATTERN = re.compile(r"((ed25519|p256)\.)?[A-Za-z0-9_-]{86}")
 _REQUIRED_SENDER_FIELDS = ("agent_id",)
 _SENDER_TYPES: dict[str, tuple[type, ...]] = {"agent_id": (str,)}
 
@@ -92,6 +105,12 @@ def validate_envelope_shape(env: Any) -> dict[str, Any]:
     require_members(env, _REQUIRED_ENVELOPE_FIELDS, shape_code="INVALID_ENVELOPE", what="envelope")
     check_types(env, _ENVELOPE_TYPES, shape_code="INVALID_ENVELOPE", what="envelope")
     reject_unknown_fields(env, _ENVELOPE_FIELDS, shape_code="INVALID_ENVELOPE", what="envelope")
+    # Schema rules the type check alone does not carry: `timestamp` is
+    # `minimum: 0`, `signature` has a pattern (aitp-rs #262 parity).
+    if env["timestamp"] < 0:
+        raise AitpError("INVALID_ENVELOPE", f"envelope timestamp must be >= 0, got {env['timestamp']}")
+    if _SIGNATURE_PATTERN.fullmatch(env["signature"]) is None:
+        raise AitpError("INVALID_ENVELOPE", "envelope signature must be an optional ed25519./p256. tag and 86 base64url characters")
     require_members(env["sender"], _REQUIRED_SENDER_FIELDS, shape_code="INVALID_ENVELOPE", what="envelope.sender")
     check_types(env["sender"], _SENDER_TYPES, shape_code="INVALID_ENVELOPE", what="envelope.sender")
     reject_unknown_fields(env["sender"], _SENDER_FIELDS, shape_code="INVALID_ENVELOPE", what="envelope.sender")

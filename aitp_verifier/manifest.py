@@ -24,7 +24,7 @@ from .sigfield import decode_tagged_signature
 from .timeutil import REFERENCE_CLOCK
 from .version import PROTOCOL_VERSION
 
-__all__ = ["verify_manifest", "resolve_key_from_manifests"]
+__all__ = ["verify_manifest", "resolve_key_from_manifests", "resolve_manifest"]
 
 # aitp-manifest.schema.json's `manifest` body and `proof_of_possession`
 # sub-object are both additionalProperties: false. Structural rejection maps to
@@ -209,9 +209,10 @@ def verify_manifest(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str
     return {"aid": man["aid"]}
 
 
-def resolve_key_from_manifests(aid: str, manifests: Any, now: int) -> Aid:
+def resolve_manifest(aid: str, manifests: Any, now: int) -> tuple[Aid, dict[str, Any]]:
     """Resolve *aid*'s key from the caller's own Manifest source (RFC-AITP-0006
-    §4 step 1, RFC-AITP-0010 §5 step 5, RFC-AITP-0011 §3 step 1).
+    §4 step 1, RFC-AITP-0010 §5 step 5, RFC-AITP-0011 §3 step 1), returning
+    the key and the verified Manifest that designated it.
 
     *manifests* is every Manifest the verifier holds for its peers; nothing is
     derived from the AID string in place of a missing one. The Manifest whose
@@ -226,9 +227,14 @@ def resolve_key_from_manifests(aid: str, manifests: Any, now: int) -> Aid:
             continue
         try:
             verify_manifest({"manifest": man, "now": now}, now)
-            return parse_aid(aid)
+            return parse_aid(aid), man
         except (AitpError, ValueError) as exc:
             raise AitpError(
                 "KEY_RESOLUTION_FAILED", f"Manifest for {aid} does not verify: {exc}", retryable=True,
             ) from exc
     raise AitpError("KEY_RESOLUTION_FAILED", f"no supplied Manifest designates a key for {aid}", retryable=True)
+
+
+def resolve_key_from_manifests(aid: str, manifests: Any, now: int) -> Aid:
+    """:func:`resolve_manifest`, for a caller that needs only the key."""
+    return resolve_manifest(aid, manifests, now)[0]

@@ -233,7 +233,6 @@ def test_rs256_jwk_dict() -> None:
 
 
 def test_jwks_multiple_keys_selected_by_kid() -> None:
-    from aitp_verifier.minter import _issuer_key
 
     identity = _identity()
     env = _envelope()

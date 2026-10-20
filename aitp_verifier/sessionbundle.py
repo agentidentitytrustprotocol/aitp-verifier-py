@@ -51,9 +51,9 @@ from .crypto import sha256
 from .errors import AitpError
 from .fields import canonical_bytes, check_types, reject_unknown_fields, require_members
 from .jws import parse_compact, verify_jws
-from .manifest import resolve_key_from_manifests
+from .manifest import resolve_manifest
 from .sigfield import decode_tagged_signature
-from .tct import check_tct_claims_shape
+from .tct import check_tct_claims_shape, outlives_manifest
 from .version import PROTOCOL_VERSION
 
 __all__ = ["verify_session_bundle"]
@@ -199,8 +199,9 @@ def verify_session_bundle(inp: dict[str, Any], now: int | None = None) -> dict[s
     # RFC-AITP-0010 §5 step 5: when the caller supplies its Manifest source,
     # the coordinator's key comes from the Manifest designating that AID, not
     # from the AID string -- before the signature is checked (bundle-007).
+    coord_manifest: dict[str, Any] | None = None
     if "coordinator_manifest" in inp:
-        coord = resolve_key_from_manifests(coordinator, inp["coordinator_manifest"], now)
+        coord, coord_manifest = resolve_manifest(coordinator, inp["coordinator_manifest"], now)
     signature = body["signature"]
     signing_body = {k: v for k, v in body.items() if k != "signature"}
     raw = decode_tagged_signature(signature, coord, sig_err="BUNDLE_INVALID_SIGNATURE")
@@ -249,6 +250,11 @@ def verify_session_bundle(inp: dict[str, Any], now: int | None = None) -> dict[s
             if exc.code != "UNKNOWN_FIELD":
                 raise
             raise AitpError("BUNDLE_PARTICIPANT_TCT_INVALID", exc.message) from exc
+        # The coordinator issued every participant TCT, so its verified
+        # Manifest's `expires_at` caps each one's `exp` (RFC-AITP-0005 §10.4,
+        # aitp-rs 0.16). No Manifest supplied means no cap.
+        if coord_manifest is not None and outlives_manifest(claims, coord_manifest):
+            raise AitpError("BUNDLE_PARTICIPANT_TCT_INVALID", "participant TCT outlives the coordinator Manifest")
         if claims.get("iss") != coordinator:
             raise AitpError("BUNDLE_COORDINATOR_ISSUER_MISMATCH", "participant TCT iss != coordinator")
         if claims.get("aud") != p["aid"]:

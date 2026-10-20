@@ -60,7 +60,7 @@ from .revocation import resolve_fail_mode, snapshot_is_stale, verify_snapshot_tr
 from .timeutil import REFERENCE_CLOCK
 from .version import PROTOCOL_VERSION
 
-__all__ = ["verify_tct", "TCT_CLAIM_FIELDS", "TCT_CNF_FIELDS", "check_tct_claims_shape"]
+__all__ = ["verify_tct", "TCT_CLAIM_FIELDS", "TCT_CNF_FIELDS", "check_tct_claims_shape", "outlives_manifest"]
 
 # aitp-tct.schema.json: additionalProperties: false. `ext` is the
 # RFC-AITP-0012 §1.1 extensions slot on this claims object -- listing it here
@@ -171,11 +171,17 @@ def verify_tct(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any
 
     # §10.4 conditional bound: only when the issuer Manifest is supplied.
     issuer_manifest = inp.get("issuer_manifest")
-    if issuer_manifest is not None and int(claims["exp"]) > int(issuer_manifest["expires_at"]):
+    if issuer_manifest is not None and outlives_manifest(claims, issuer_manifest):
         raise AitpError("TCT_EXPIRES_AFTER_MANIFEST", "TCT outlives the issuer Manifest")
 
     _check_revocation(claims, inp, now)
     return {"grants": claims["grants"]}
+
+
+def outlives_manifest(claims: dict[str, Any], manifest: dict[str, Any]) -> bool:
+    """RFC-AITP-0005 §10.4: a token MUST NOT outlive its issuer's Manifest.
+    Equal is within the bound. Shared by every Manifest-capped check."""
+    return int(claims["exp"]) > int(manifest["expires_at"])
 
 
 def verify_attestation(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any]:
@@ -226,7 +232,7 @@ def verify_attestation(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[
     ext = claims.get("ext")
     if not isinstance(ext, dict) or statement_key not in ext:
         raise AitpError("TCT_SIGNATURE_INVALID", f"attestation ext lacks {statement_key!r}")
-    if issuer_manifest is not None and int(claims["exp"]) > int(issuer_manifest["expires_at"]):
+    if issuer_manifest is not None and outlives_manifest(claims, issuer_manifest):
         raise AitpError("TCT_EXPIRES_AFTER_MANIFEST", "attestation outlives the issuer Manifest")
 
     _check_revocation(claims, inp, now)

@@ -354,3 +354,130 @@ def test_envelope_signature_covers_every_member(member: str, value: Any, spec_di
     with pytest.raises(AitpError) as exc:
         verify_envelope(minted)
     assert exc.value.code == "INVALID_SIGNATURE"
+
+
+# ── schema rules beyond the type check (aitp-rs #262 parity) ────────────
+#
+# `tolerance_seconds` is widened so the RFC-AITP-0009 §3.1 window, which runs
+# first, lets the envelope reach the structural step under test.
+
+_WINDOW_OFF = 10**12
+
+
+@pytest.mark.parametrize("payload", [[], None, "x", 1])
+def test_envelope_non_object_payload_is_invalid_envelope(payload: Any, spec_dir: Path) -> None:
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_envelope_input(), REFERENCE_CLOCK, keys)
+    minted["envelope"]["payload"] = payload
+    with pytest.raises(AitpError) as exc:
+        verify_envelope(minted)
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+def test_envelope_null_extensions_is_invalid_envelope(spec_dir: Path) -> None:
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_envelope_input(), REFERENCE_CLOCK, keys)
+    minted["envelope"]["extensions"] = None
+    with pytest.raises(AitpError) as exc:
+        verify_envelope(minted)
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+@pytest.mark.parametrize("ts", [-1, -1.0])
+def test_envelope_negative_timestamp_is_invalid_envelope(ts: Any, spec_dir: Path) -> None:
+    """`timestamp` is `minimum: 0`: a negative one is structural, ahead of
+    the signature step, so it is not INVALID_SIGNATURE."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_envelope_input(timestamp=-1), REFERENCE_CLOCK, keys)
+    minted["envelope"]["timestamp"] = ts
+    minted["tolerance_seconds"] = _WINDOW_OFF
+    with pytest.raises(AitpError) as exc:
+        verify_envelope(minted)
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+def test_envelope_negative_timestamp_under_default_window_is_timestamp_expired(spec_dir: Path) -> None:
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_envelope_input(timestamp=-1), REFERENCE_CLOCK, keys)
+    with pytest.raises(AitpError) as exc:
+        verify_envelope(minted)
+    assert exc.value.code == "TIMESTAMP_EXPIRED"
+
+
+def test_envelope_negative_timestamp_is_invalid_envelope_via_handshake(spec_dir: Path) -> None:
+    """The handshake path has no window, so this reaches the structural
+    check directly."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_hello_input(ISSUER, SUBJECT), REFERENCE_CLOCK, keys)
+    minted["envelope"]["timestamp"] = -1
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+@pytest.mark.parametrize("mangle", [
+    pytest.param(lambda s: s[:-1], id="short"),
+    pytest.param(lambda s: s + "A", id="long"),
+    pytest.param(lambda s: s[:-2] + "==", id="padded"),
+    pytest.param(lambda s: "+" + s[1:], id="plus"),
+    pytest.param(lambda s: "rsa." + s, id="unknown-tag"),
+    pytest.param(lambda s: "ed25519." + s[:-1], id="tagged-short"),
+    pytest.param(lambda s: "", id="empty"),
+])
+def test_envelope_signature_outside_schema_pattern_is_invalid_envelope(mangle: Any, spec_dir: Path) -> None:
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_envelope_input(), REFERENCE_CLOCK, keys)
+    minted["envelope"]["signature"] = mangle(minted["envelope"]["signature"])
+    with pytest.raises(AitpError) as exc:
+        verify_envelope(minted)
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+def test_envelope_signature_outside_schema_pattern_is_invalid_envelope_via_handshake(spec_dir: Path) -> None:
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_hello_input(ISSUER, SUBJECT), REFERENCE_CLOCK, keys)
+    minted["envelope"]["signature"] = minted["envelope"]["signature"][:-1]
+    with pytest.raises(AitpError) as exc:
+        verify_handshake_payload(minted)
+    assert exc.value.code == "INVALID_ENVELOPE"
+
+
+@pytest.mark.parametrize("mangle", [
+    pytest.param(lambda s: ("B" if s[0] != "B" else "C") + s[1:], id="wrong-bytes"),
+    pytest.param(lambda s: "p256." + s, id="tag-vs-aid-alg"),
+])
+def test_envelope_well_formed_wrong_signature_is_still_invalid_signature(mangle: Any, spec_dir: Path) -> None:
+    """Inside the pattern, a bad signature, or a tag that disagrees with the
+    sender AID's algorithm, is still a signature-step failure."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_envelope_input(), REFERENCE_CLOCK, keys)
+    minted["envelope"]["signature"] = mangle(minted["envelope"]["signature"])
+    with pytest.raises(AitpError) as exc:
+        verify_envelope(minted)
+    assert exc.value.code == "INVALID_SIGNATURE"
+
+
+@pytest.mark.parametrize("version", ["aitp/0.2", "aitp/9.9"])
+def test_envelope_unknown_version_outranks_schema_rules(version: str, spec_dir: Path) -> None:
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_envelope_input(), REFERENCE_CLOCK, keys)
+    minted["envelope"].update(version=version, rogue=1, signature="x")
+    with pytest.raises(AitpError) as exc:
+        verify_envelope(minted)
+    assert exc.value.code == "UNKNOWN_VERSION"
+
+
+def test_envelope_signature_string_is_not_canonical(spec_dir: Path) -> None:
+    """RFC-AITP-0001 §5.4.3: the same Ed25519 envelope verifies untagged and
+    tagged, so its raw bytes differ while its signed content does not --
+    which is why replay and dedup key on `message_id`, never raw bytes."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_envelope_input(), REFERENCE_CLOCK, keys)
+    sig = minted["envelope"]["signature"]
+    bare = sig.partition(".")[2] if "." in sig else sig
+    forms = []
+    for form in (bare, "ed25519." + bare):
+        minted["envelope"]["signature"] = form
+        assert verify_envelope(minted) == {"ok": True}
+        forms.append(json.dumps(minted["envelope"], sort_keys=True))
+    assert forms[0] != forms[1]

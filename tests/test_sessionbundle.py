@@ -378,3 +378,38 @@ def test_bundle_malformed_coordinator_does_not_crash(spec_dir: Path) -> None:
     with pytest.raises(AitpError) as exc_info:
         verify_session_bundle(minted)
     assert exc_info.value.code == "SESSION_BUNDLE_INVALID"
+
+
+# ── coordinator Manifest caps participant TCTs (RFC-AITP-0005 §10.4) ─────
+
+
+def _bundle_001_with_manifest_expiry(spec_dir: Path, delta: int | None) -> dict[str, Any]:
+    """bundle-001, its coordinator Manifest's `expires_at` set to the
+    participant TCTs' `exp` plus *delta* (``None`` drops the Manifest),
+    minted after the edit so the Manifest signature stays valid."""
+    fixture = json.loads((spec_dir / "schemas/conformance/bundle-001-success.json").read_text(encoding="utf-8"))
+    inp = copy.deepcopy(fixture["input"])
+    tct_exp = max(p["tct_claims"]["exp"] for p in inp["session_bundle"]["session_bundle"]["participants"])
+    if delta is None:
+        del inp["coordinator_manifest"]
+    else:
+        inp["coordinator_manifest"]["expires_at"] = tct_exp + delta
+    return mint_input(inp, REFERENCE_CLOCK, load_kat_keys(spec_dir))
+
+
+def test_participant_tct_outliving_coordinator_manifest_is_rejected(spec_dir: Path) -> None:
+    minted = _bundle_001_with_manifest_expiry(spec_dir, -1)
+    with pytest.raises(AitpError) as exc:
+        verify_session_bundle(minted)
+    assert exc.value.code == "BUNDLE_PARTICIPANT_TCT_INVALID"
+    assert "outlives the coordinator Manifest" in exc.value.message
+
+
+def test_participant_tct_expiring_with_coordinator_manifest_is_accepted(spec_dir: Path) -> None:
+    assert verify_session_bundle(_bundle_001_with_manifest_expiry(spec_dir, 0))["ok"] is True
+
+
+def test_no_coordinator_manifest_means_no_cap(spec_dir: Path) -> None:
+    """Manifests stay OPTIONAL: without one the key comes from the AID and no
+    cap applies (aitp-rs xcheck-verify.py relies on this)."""
+    assert verify_session_bundle(_bundle_001_with_manifest_expiry(spec_dir, None))["ok"] is True

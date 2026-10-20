@@ -22,7 +22,7 @@ from .b64 import b64url_decode, b64url_encode
 from .crypto import PrivateKey, sha256
 from .envelope import envelope_signing_input
 from .identity import pinned_key_proof_input
-from .jcs import canonicalize, dumps
+from .jcs import canonicalize
 from .jwk import thumbprint
 from .jws import encode_jws
 

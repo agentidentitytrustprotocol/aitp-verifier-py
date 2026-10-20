@@ -64,10 +64,19 @@ opaque `extensions` slot (`fields`); RFC-AITP-0013 (TCT renewal) is not implemen
 keypairs and runs it against this implementation:
 
 ```
-python run_conformance.py --spec-dir ../agentidentitytrustprotocol
+python run_conformance.py --spec-dir ../agentidentitytrustprotocol [--profile v0.2|v0.1]
 ```
 
-Current status at spec `bf00e75` (`aitp/0.3`; the runner prints the live number, and the pack grows with the spec): **93 fixtures pass, 0 fail, 9 skipped**. All 78 core fixtures pass (the core tier is still keyed `required_for_v0_2` in the fixtures, deliberately not renamed). So do both Draft opt-ins (`experimental-multihop-delegation`,
+The run exits nonzero on any FAIL. `--profile` (default `v0.2`, the fixture key the spec
+keeps for the `aitp/0.3` core tier) also gates on the spec's runner enforcement rules: a
+`status: core` fixture required by the profile MUST execute, so a SKIP of one fails the run
+too (RFC-AITP-0001 §10 item 9). A missing `required_for_v0_N` flag counts as required.
+The one exemption is a fixture outside the current core tier whose assertion an implemented
+feature negates, and the runner prints it on stderr: under `v0.1`, `del-004` expects
+`DELEGATION_MULTIHOP_NOT_SUPPORTED`, and this verifier implements multi-hop delegation.
+Core fixtures run with no feature opted in, so `del-007` is executed, not exempted.
+
+Current status at spec `d719b64` (`aitp/0.3`; the runner prints the live number, and the pack grows with the spec): **93 fixtures pass, 0 fail, 9 skipped**. All 78 core fixtures pass (the core tier is still keyed `required_for_v0_2` in the fixtures, deliberately not renamed). So do both Draft opt-ins (`experimental-multihop-delegation`,
 `experimental-session-bundle`), the `aitp-self-attestation` extension, and all multi-step sequences (PoP
 challenge/response `tct-006`/`tct-007`, handshake replay `mh-001`). The surface — envelope, TCT (incl.
 `alg:none`, alg-confusion, `typ`-confusion, expiry-after-Manifest,

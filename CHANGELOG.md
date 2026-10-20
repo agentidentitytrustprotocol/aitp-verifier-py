@@ -8,6 +8,44 @@ here, so a future integrator has one place to check before upgrading.
 
 ### Security-relevant
 
+- **Envelope schema rules (aitp-rs #262 parity).** Two structural rules of
+  `aitp-envelope.schema.json` are now enforced in `validate_envelope_shape`, so they
+  apply to `verify_envelope` and to the handshake's envelope check. They run after the
+  member set and before the signature, keeping the §5.4 order.
+  - A negative `timestamp` (`minimum: 0`) is `INVALID_ENVELOPE`. It used to reach the
+    signature step and report `INVALID_SIGNATURE`. Under `verify_envelope`'s default
+    window the window fires first (`TIMESTAMP_EXPIRED`); the handshake path has no window.
+  - A `signature` outside `^((ed25519|p256)\.)?[A-Za-z0-9_-]{86}$` (short, long, padded,
+    `+`/`/`, an unknown tag such as `rsa.`) changes from `INVALID_SIGNATURE` to
+    `INVALID_ENVELOPE`. A well-formed signature that does not verify, or whose tag
+    disagrees with the sender AID's algorithm, is still `INVALID_SIGNATURE`.
+  - A non-object `payload` and `"extensions": null` were already `INVALID_ENVELOPE`;
+    both are now pinned by tests.
+- **Participant TCTs capped at the coordinator Manifest (RFC-AITP-0005 §10.4; aitp-rs
+  0.16).** When `coordinator_manifest` is supplied to `verify_session_bundle`, a
+  participant TCT whose `exp` is later than that Manifest's `expires_at` is rejected with
+  `BUNDLE_PARTICIPANT_TCT_INVALID`. Equal is accepted. Without a Manifest there is no cap.
+  The comparison is shared with `verify_tct`'s issuer-Manifest cap
+  (`aitp_verifier.tct.outlives_manifest`), and `manifest.resolve_manifest` returns the
+  verified Manifest alongside the key.
+- **Signature strings are not canonical (RFC-AITP-0001 §5.4.3, spec 597efbd).** Audited:
+  this package keeps no replay, dedup, cache or audit state keyed on raw object bytes.
+  The runner's dedup keys on `message_id`. A caller that adds such state MUST key it the
+  same way, since an Ed25519 envelope verifies both untagged and `ed25519.`-tagged (now
+  pinned by a test).
+
+### Other changes
+
+- **Conformance runner profile gate.** `run_conformance.py --profile {v0.2,v0.1}`
+  (default `v0.2`). A SKIP of a core fixture the profile requires now fails the run;
+  before, only FAIL did. A missing `required_for_v0_N` flag counts as required (it used to
+  be read as not required). Exemptions by feature negation (`del-004` under `v0.1`) are
+  printed on stderr. CI invocations are unchanged.
+- **Open: coordinator and issuer Manifests stay OPTIONAL.** Making them mandatory
+  (aitp-rs 0.16 requires them in its bindings) would break aitp-rs's
+  `scripts/xcheck-verify.py`, which verifies a bundle without one. That needs a
+  coordinated aitp-rs change first.
+
 - **Protocol revision `aitp/0.3` (spec bf00e75; issue #64).** Strict cutover: every
   artifact whose `version`/`ver` is `aitp/0.2` is now rejected with its unknown-version
   code (`UNKNOWN_VERSION`, `MANIFEST_VERSION_UNKNOWN`, `REVOCATION_SNAPSHOT_INVALID`, …).
