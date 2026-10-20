@@ -1,13 +1,14 @@
 """Envelope verification (RFC-AITP-0001 §5.4 / §5.5, JCS profile).
 
-Shape runs first, as elsewhere in this verifier (see ``manifest.py``): every
-required member and its declared type are confirmed, then the member set,
-before anything is dereferenced. The envelope signature covers
-``sha256(sig_input)`` where
-``sig_input = message_id | timestamp | sender.agent_id | hex(sha256(JCS(payload)))``.
-Replay controls (timestamp window, message-id dedup) run first; capability
-policy and simulated key-resolution scenarios are dispatched from the fixture
-input shape.
+The envelope check order is RFC-AITP-0001 §5.4's: ``version`` first
+(``UNKNOWN_VERSION``), then the member set and structure (``UNKNOWN_FIELD`` /
+``INVALID_ENVELOPE``), then the signature (``INVALID_SIGNATURE``). The
+signature covers ``sha256(sig_input_v2)`` where
+``sig_input_v2 = "aitp-envelope-v2" || 0x00 || JCS(envelope minus signature)``,
+so ``version``, ``message_type`` and ``extensions`` are all authenticated.
+Replay controls (timestamp window, message-id dedup) run before all three
+(RFC-AITP-0009 §3.1); capability policy and simulated key-resolution
+scenarios are dispatched from the fixture input shape.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from .fields import canonical_bytes, check_types, reject_unknown_fields, require
 from .jws import parse_compact
 from .sigfield import decode_tagged_signature
 from .timeutil import REFERENCE_CLOCK
+from .version import PROTOCOL_VERSION
 
 __all__ = ["verify_envelope", "envelope_signing_input", "validate_envelope_shape"]
 
@@ -47,10 +49,17 @@ _REQUIRED_SENDER_FIELDS = ("agent_id",)
 _SENDER_TYPES: dict[str, tuple[type, ...]] = {"agent_id": (str,)}
 
 
+# RFC-AITP-0001 §5.4: 16 ASCII bytes then one 0x00, so the envelope's signing
+# input is never the bare JCS form another JCS-profile artifact signs.
+ENVELOPE_DOMAIN_TAG = b"aitp-envelope-v2\x00"
+
+
 def envelope_signing_input(env: dict[str, Any]) -> bytes:
-    payload_hex = sha256(canonical_bytes(env["payload"], shape_code="INVALID_ENVELOPE", what="envelope.payload")).hex()
-    sig_input = f"{env['message_id']}|{env['timestamp']}|{env['sender']['agent_id']}|{payload_hex}"
-    return sig_input.encode("utf-8")
+    """``sig_input_v2`` (RFC-AITP-0001 §5.4): the domain tag, then the JCS form
+    of the received envelope with only ``signature`` removed. Every other
+    member is kept as received -- nothing is dropped or rebuilt."""
+    unsigned = {k: v for k, v in env.items() if k != "signature"}
+    return ENVELOPE_DOMAIN_TAG + canonical_bytes(unsigned, shape_code="INVALID_ENVELOPE", what="envelope")
 
 
 def validate_envelope_shape(env: Any) -> dict[str, Any]:
@@ -58,7 +67,8 @@ def validate_envelope_shape(env: Any) -> dict[str, Any]:
     rev-007's same rationale): every member below was read unguarded before
     this, reachable from unauthenticated remote input via handshake.py's own
     inline envelope parsing as much as via this module's own ``verify_envelope``.
-    Presence -> type -> member-set, per object, mirroring manifest.py's
+    ``version`` is checked first (RFC-AITP-0001 §5.4), then
+    presence -> type -> member-set, per object, mirroring manifest.py's
     ``_shape`` ordering (not revocation.py's deferred one) since this
     validates one flat object (plus its one nested ``sender``) rather than a
     tree.
@@ -75,6 +85,10 @@ def validate_envelope_shape(env: Any) -> dict[str, Any]:
     """
     if not isinstance(env, dict):
         raise AitpError("INVALID_ENVELOPE", f"envelope is {type(env).__name__}, not an object")
+    # RFC-AITP-0001 §5.4 check order, step 1: `version` before the member set
+    # and the signature (env-010, env-011). Absent counts as unknown.
+    if env.get("version") != PROTOCOL_VERSION:
+        raise AitpError("UNKNOWN_VERSION", f"unknown envelope version {env.get('version')!r}")
     require_members(env, _REQUIRED_ENVELOPE_FIELDS, shape_code="INVALID_ENVELOPE", what="envelope")
     check_types(env, _ENVELOPE_TYPES, shape_code="INVALID_ENVELOPE", what="envelope")
     reject_unknown_fields(env, _ENVELOPE_FIELDS, shape_code="INVALID_ENVELOPE", what="envelope")
@@ -96,11 +110,16 @@ def verify_envelope(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str
             raise AitpError("POLICY_VIOLATION", "requested capability not granted by the active TCT")
         return {"ok": True}
 
-    env = validate_envelope_shape(inp["envelope"])
-
+    # The timestamp window precedes the §5.4 version/structure checks
+    # (RFC-AITP-0009 §3.1). It can only run once `timestamp` is an integer; a
+    # missing or mistyped one is a structural defect reported just below.
+    raw_env = inp["envelope"]
+    ts = raw_env.get("timestamp") if isinstance(raw_env, dict) else None
     tolerance = int(inp.get("tolerance_seconds", 300))
-    if abs(now - int(env["timestamp"])) > tolerance:
+    if isinstance(ts, int) and not isinstance(ts, bool) and abs(now - ts) > tolerance:
         raise AitpError("TIMESTAMP_EXPIRED", "envelope timestamp outside tolerance window")
+
+    env = validate_envelope_shape(raw_env)
 
     try:
         aid = parse_aid(env["sender"]["agent_id"])

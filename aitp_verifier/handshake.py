@@ -30,6 +30,7 @@ from .manifest import verify_manifest
 from .sigfield import decode_tagged_signature
 from .tct import check_grant_context, check_tct_claims_shape
 from .timeutil import REFERENCE_CLOCK
+from .version import PROTOCOL_VERSION
 
 __all__ = ["verify_handshake_payload"]
 
@@ -164,7 +165,7 @@ def _verify_commit(
         typ_err="TOKEN_TYP_MISMATCH", alg_err="TOKEN_ALG_MISMATCH", sig_err="TCT_SIGNATURE_INVALID",
         after_typ_check=lambda c: check_tct_claims_shape(c, shape_code="TCT_SIGNATURE_INVALID"),
     )
-    if claims.get("ver") != "aitp/0.2":
+    if claims.get("ver") != PROTOCOL_VERSION:
         raise AitpError("UNKNOWN_VERSION", f"unknown ver {claims.get('ver')!r}")
     if self_aid is not None and claims.get("aud") != self_aid:
         raise AitpError("AUDIENCE_MISMATCH", "TCT aud != self AID")

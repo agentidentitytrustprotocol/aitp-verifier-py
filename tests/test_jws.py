@@ -182,7 +182,7 @@ def test_deeply_nested_typ_via_grant_voucher() -> None:
 
 
 _TCT_CLAIMS: dict[str, Any] = {
-    "ver": "aitp/0.2",
+    "ver": "aitp/0.3",
     "jti": "6f1f0e4e-2b1a-4a44-9f7f-0c4a4d3a3f11",
     "iss": ISSUER,
     "sub": ISSUER,

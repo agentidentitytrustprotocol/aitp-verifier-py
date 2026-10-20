@@ -38,10 +38,10 @@ opaque `extensions` slot (`fields`); RFC-AITP-0013 (TCT renewal) is not implemen
 |---|---|
 | `aitp_verifier.jcs` | RFC 8785 JSON canonicalization (own implementation) |
 | `aitp_verifier.crypto` | Ed25519 + ECDSA-P256, the JCS-profile vs JOSE signing split (RFC-AITP-0001 §5.4) |
-| `aitp_verifier.aid` | AID parsing + self-certifying key derivation (§5.3), incl. the v0.2 `p256` tag |
+| `aitp_verifier.aid` | AID parsing + self-certifying key derivation (§5.3), incl. the `p256` tag |
 | `aitp_verifier.jwk` | RFC 7638 JWK thumbprints for the `cnf.jkt` binding (§5.4.4) |
 | `aitp_verifier.jws` | Strict compact-JWS profile: `typ`/`alg` pinning, no `alg:none`, exact-bytes verify (§5.4.5) |
-| `aitp_verifier.envelope` | Envelope signature + replay controls (§5.4/§5.5) |
+| `aitp_verifier.envelope` | Envelope check order (version → member set → signature), `aitp-envelope-v2` signing input, replay controls (§5.4/§5.5) |
 | `aitp_verifier.manifest` | Agent Manifest: version, expiry, PoP, signature (RFC-AITP-0003) |
 | `aitp_verifier.tct` | Trust Context Token verification incl. §10.4 Manifest-expiry bound + revocation ordering (RFC-AITP-0005) |
 | `aitp_verifier.voucher` | Grant-voucher verification (RFC-AITP-0005 §8) |
@@ -67,27 +67,24 @@ keypairs and runs it against this implementation:
 python run_conformance.py --spec-dir ../agentidentitytrustprotocol
 ```
 
-Current status (the runner prints the live number; the pack grows with the spec): **71 fixtures pass, 0 fail, 1 skipped** — the entire re-mintable v0.2 pack
-plus both Draft opt-ins (`experimental-multihop-delegation`,
-`experimental-session-bundle`) and all multi-step sequences (PoP
+Current status at spec `bf00e75` (`aitp/0.3`; the runner prints the live number, and the pack grows with the spec): **93 fixtures pass, 0 fail, 9 skipped**. All 78 core fixtures pass (the core tier is still keyed `required_for_v0_2` in the fixtures, deliberately not renamed). So do both Draft opt-ins (`experimental-multihop-delegation`,
+`experimental-session-bundle`), the `aitp-self-attestation` extension, and all multi-step sequences (PoP
 challenge/response `tct-006`/`tct-007`, handshake replay `mh-001`). The surface — envelope, TCT (incl.
 `alg:none`, alg-confusion, `typ`-confusion, expiry-after-Manifest,
 revocation-ordering), grant voucher, single- **and multi-hop** delegation,
-Manifest, revocation snapshots, and the full mutual-handshake / identity family
+Manifest, revocation snapshots, session bundles, and the full mutual-handshake / identity family
 (OIDC and pinned-key bindings, nonce echo, round-2 PoP, embedded peer-issued
 TCT) — is validated byte-for-byte against `known-answer/keypairs.json`,
-`jwk-thumbprints.json`, `jcs-sha256.json`, the `signed-examples/` compact-JWS
-artifacts, and the id-007 pinned-key proof vector.
+`jwk-thumbprints.json`, `jcs-sha256.json`, the `signed-examples/` artifacts
+(including both envelope KATs, `kat-envelope-001-p256` and `kat-envelope-002-ed25519`), and the id-007 pinned-key proof vector.
 
-Exactly **one** fixture is skipped, for a structural reason rather than missing
-verification logic (SKIP is reported explicitly — never a silent pass, per
-PLACEHOLDERS.md §"Operation key"):
+The skips are reported explicitly, never as a silent pass (PLACEHOLDERS.md §"Operation key"):
 
 - **`del-004`** — frozen in the retired v0.1 object wire shape
-  (`required_for_v0_1` only); a v0.2 implementation legitimately does not run it.
-
-Every other required-for-v0.2 fixture, both Draft opt-ins, and all multi-step
-sequences pass.
+  (`required_for_v0_1` only); a current implementation legitimately does not run it.
+- **`id-013`…`id-016`, `id-019`…`id-022`** — the optional pinned-admission profile
+  (RFC-AITP-0002 §3.4, `feature: aitp-pinned-admission`), which this verifier does not
+  claim.
 
 ## Usage and error contract
 

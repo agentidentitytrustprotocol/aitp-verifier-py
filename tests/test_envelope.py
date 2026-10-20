@@ -58,7 +58,7 @@ def _deep_dict(n: int, leaf: Any = 1) -> Any:
 
 def _envelope_input(**env_extra: Any) -> dict[str, Any]:
     env = {
-        "version": "aitp/0.2",
+        "version": "aitp/0.3",
         "message_type": "mutual_hello",
         "message_id": str(uuid.uuid4()),
         "timestamp": NOW,
@@ -76,7 +76,7 @@ def _hello_input(self_aid: str, sender_aid: str) -> dict[str, Any]:
     """
     bare_key = sender_aid.split(":")[-1]
     manifest = {
-        "version": "aitp/0.2",
+        "version": "aitp/0.3",
         "aid": sender_aid,
         "handshake_endpoint": "https://x.example/handshake",
         "accepted_trust_anchors": [],
@@ -97,7 +97,7 @@ def _hello_input(self_aid: str, sender_aid: str) -> dict[str, Any]:
         "extensions": {"a": 1},
     }
     env = {
-        "version": "aitp/0.2",
+        "version": "aitp/0.3",
         "message_type": "mutual_hello",
         "message_id": str(uuid.uuid4()),
         "timestamp": NOW,
@@ -112,7 +112,7 @@ def _hello_input(self_aid: str, sender_aid: str) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize("dropped", [
-    "version", "message_type", "message_id", "timestamp", "sender", "payload", "signature",
+    "message_type", "message_id", "timestamp", "sender", "payload", "signature",
 ])
 def test_envelope_every_required_member_is_enforced(dropped: str, spec_dir: Path) -> None:
     """Each schema `required` member is independently pinned -- before this
@@ -293,3 +293,64 @@ def test_envelope_malformed_sender_agent_id_does_not_crash(spec_dir: Path) -> No
     with pytest.raises(AitpError) as exc:
         verify_envelope(minted)
     assert exc.value.code == "INVALID_ENVELOPE"
+
+
+# ── RFC-AITP-0001 §5.4 check order and sig_input_v2 coverage ─────────────
+
+
+def test_envelope_missing_version_is_unknown_version(spec_dir: Path) -> None:
+    """Step 1 treats an absent `version` as unknown, ahead of the
+    required-member check that would otherwise report INVALID_ENVELOPE."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_envelope_input(), REFERENCE_CLOCK, keys)
+    del minted["envelope"]["version"]
+    with pytest.raises(AitpError) as exc:
+        verify_envelope(minted)
+    assert exc.value.code == "UNKNOWN_VERSION"
+
+
+def test_envelope_well_signed_previous_revision_is_unknown_version(spec_dir: Path) -> None:
+    """Strict cutover: an `aitp/0.2` envelope signed over its own bytes is
+    still rejected, and with UNKNOWN_VERSION, not INVALID_SIGNATURE."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_envelope_input(version="aitp/0.2"), REFERENCE_CLOCK, keys)
+    with pytest.raises(AitpError) as exc:
+        verify_envelope(minted)
+    assert exc.value.code == "UNKNOWN_VERSION"
+
+
+def test_envelope_unknown_version_outranks_unknown_member(spec_dir: Path) -> None:
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_envelope_input(), REFERENCE_CLOCK, keys)
+    minted["envelope"]["version"] = "aitp/9.9"
+    minted["envelope"]["rogue"] = 1
+    with pytest.raises(AitpError) as exc:
+        verify_envelope(minted)
+    assert exc.value.code == "UNKNOWN_VERSION"
+
+
+def test_envelope_timestamp_window_precedes_version(spec_dir: Path) -> None:
+    """RFC-AITP-0009 §3.1 runs the timestamp step before §5.4's steps 1-2."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_envelope_input(), REFERENCE_CLOCK, keys)
+    minted["envelope"]["version"] = "aitp/9.9"
+    with pytest.raises(AitpError) as exc:
+        verify_envelope(minted, now=REFERENCE_CLOCK + 10_000)
+    assert exc.value.code == "TIMESTAMP_EXPIRED"
+
+
+@pytest.mark.parametrize(("member", "value"), [
+    ("message_type", "mutual_hello_ack"),
+    ("extensions", {"com.example.k": 1}),
+    ("message_id", "00000000-0000-4000-8000-000000000000"),
+])
+def test_envelope_signature_covers_every_member(member: str, value: Any, spec_dir: Path) -> None:
+    """sig_input_v2 covers the whole envelope minus `signature`, so changing
+    or adding any member after signing breaks it (env-008/env-009)."""
+    keys = load_kat_keys(spec_dir)
+    minted = mint_input(_envelope_input(), REFERENCE_CLOCK, keys)
+    assert verify_envelope(minted) == {"ok": True}
+    minted["envelope"][member] = value
+    with pytest.raises(AitpError) as exc:
+        verify_envelope(minted)
+    assert exc.value.code == "INVALID_SIGNATURE"

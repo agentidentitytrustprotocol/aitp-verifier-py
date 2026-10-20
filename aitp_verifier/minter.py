@@ -20,6 +20,7 @@ from typing import Any, Callable, cast
 from .aid import parse_aid
 from .b64 import b64url_decode, b64url_encode
 from .crypto import PrivateKey, sha256
+from .envelope import envelope_signing_input
 from .identity import pinned_key_proof_input
 from .jcs import canonicalize, dumps
 from .jwk import thumbprint
@@ -128,9 +129,7 @@ def _env_wire_sig(key: PrivateKey, digest: bytes) -> str:
 
 def _sign_envelope(env: dict[str, Any], keys: dict[str, PrivateKey]) -> None:
     agent_id = env["sender"]["agent_id"]
-    payload_hex = sha256(canonicalize(env["payload"])).hex()
-    sig_input = f"{env['message_id']}|{env['timestamp']}|{agent_id}|{payload_hex}"
-    digest = sha256(sig_input.encode("utf-8"))
+    digest = sha256(envelope_signing_input(env))
     env["signature"] = _env_wire_sig(keys[agent_id], digest)
 
 
@@ -380,6 +379,13 @@ def mint_input(inp: dict[str, Any], now: int, keys: dict[str, PrivateKey]) -> di
 
     if isinstance(d.get("manifest"), dict):
         _sign_manifest(d["manifest"], keys)
+
+    # Manifest inputs (conformance README, "Manifest inputs"): the verifier's
+    # whole Manifest source for delegation issuers and the bundle coordinator.
+    held = d.get("issuer_manifests")
+    for man in [d.get("coordinator_manifest"), *(held if isinstance(held, list) else [])]:
+        if isinstance(man, dict):
+            _sign_manifest(man, keys)
 
     for snap_holder in ("snapshot", "issuer_revocation_list"):
         node = d.get(snap_holder)

@@ -54,7 +54,7 @@ SUBJECT = "aid:pubkey:A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
 
 def _manifest_input(**body_extra: Any) -> dict[str, Any]:
     man = {
-        "version": "aitp/0.2",
+        "version": "aitp/0.3",
         "aid": SUBJECT,
         "handshake_endpoint": "https://b.agents.example.com/aitp/handshake",
         "accepted_trust_anchors": [],
@@ -76,7 +76,7 @@ def _hello_input(self_aid: str, sender_aid: str) -> dict[str, Any]:
     """
     bare_key = sender_aid.split(":")[-1]
     manifest = {
-        "version": "aitp/0.2",
+        "version": "aitp/0.3",
         "aid": sender_aid,
         "handshake_endpoint": "https://x.example/handshake",
         "accepted_trust_anchors": [],
@@ -96,7 +96,7 @@ def _hello_input(self_aid: str, sender_aid: str) -> dict[str, Any]:
         "pop_nonce": b64url_encode(b"\x33" * 16),
     }
     env = {
-        "version": "aitp/0.2",
+        "version": "aitp/0.3",
         "message_type": "mutual_hello",
         "message_id": str(uuid.uuid4()),
         "timestamp": NOW,

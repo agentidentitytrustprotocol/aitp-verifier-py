@@ -8,6 +8,31 @@ here, so a future integrator has one place to check before upgrading.
 
 ### Security-relevant
 
+- **Protocol revision `aitp/0.3` (spec bf00e75; issue #64).** Strict cutover: every
+  artifact whose `version`/`ver` is `aitp/0.2` is now rejected with its unknown-version
+  code (`UNKNOWN_VERSION`, `MANIFEST_VERSION_UNKNOWN`, `REVOCATION_SNAPSHOT_INVALID`, …).
+  There is no dual-accept window. The literal lives in one place,
+  `aitp_verifier.version.PROTOCOL_VERSION`.
+  - **Envelope signing input v2 (RFC-AITP-0001 §5.4).** The signature now covers
+    `"aitp-envelope-v2" || 0x00 || JCS(envelope minus signature)`, so `version`,
+    `message_type` and `extensions` are authenticated. The pipe-composed
+    `message_id|timestamp|sender.agent_id|hex(sha256(JCS(payload)))` input is retired:
+    an envelope signed over it no longer verifies. This applies to `verify_envelope`
+    and to the handshake's envelope check, and the minter signs the same way.
+  - **Envelope check order (§5.4).** After the timestamp window (RFC-AITP-0009 §3.1):
+    `version` first (absent or not `aitp/0.3` is `UNKNOWN_VERSION`, even when the
+    signature would also fail), then the member set (`UNKNOWN_FIELD` /
+    `INVALID_ENVELOPE`), then the signature (`INVALID_SIGNATURE`). An envelope missing
+    `version` used to be `INVALID_ENVELOPE`.
+  - **Manifest-sourced key resolution (spec #86).** When a caller passes
+    `coordinator_manifest` to `verify_session_bundle` or `issuer_manifests` to
+    `verify_delegation_token`, the coordinator's / each hop issuer's key must come from a
+    supplied Manifest whose `aid` matches and which itself verifies; otherwise
+    `KEY_RESOLUTION_FAILED` (bundle-007, del-mh-005). Without those inputs the key is
+    still taken from the `aid:pubkey` AID, as before.
+  - Conformance at spec bf00e75: 93 passed / 0 failed / 9 skipped; all 78 core fixtures
+    pass, including env-007…env-011.
+
 - **Proposal agentidentitytrustprotocol#72, as merged into the spec (through #80).**
   Conformance against spec main moves from 74 passed / 9 failed to 85 passed / 0 failed.
   Previously accepted, now rejected:

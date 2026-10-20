@@ -17,6 +17,7 @@ import pytest
 from aitp_verifier.aid import parse_aid
 from aitp_verifier.b64 import b64url_encode
 from aitp_verifier.crypto import PrivateKey, sha256
+from aitp_verifier.envelope import envelope_signing_input, verify_envelope
 from aitp_verifier.errors import AitpError
 from aitp_verifier.jcs import canonicalize
 from aitp_verifier.jws import encode_jws, verify_jws
@@ -74,7 +75,7 @@ def test_voucher_and_delegation_verify(spec_dir: Path) -> None:
 #
 # Had this test existed, it would have failed the day the snapshot was
 # vendored -- which is exactly the point of `signed-examples/`. Its README:
-# these files "MUST verify under any conformant AITP v0.2 implementation,
+# these files "MUST verify under any conformant AITP v0.3 implementation,
 # byte-for-byte, without any placeholder substitution."
 #
 # Each case asserts both directions. A signature that verifies over the
@@ -265,3 +266,65 @@ def test_revocation_signed_example_runs_the_real_verifier(spec_dir: Path) -> Non
         }
     )
     assert out == {"revoked": False}
+
+
+# ── Envelope (RFC-AITP-0001 §5.4, sig_input_v2) ──────────────────────────
+#
+# Both envelope KATs pin the exact `sig_input_v2` bytes, not just a signature
+# that happens to verify: a verifier that dropped `extensions` or rebuilt the
+# object would still verify kat-envelope-001 (no `extensions`) but not
+# kat-envelope-002. Each also carries the retired v1 (pipe-composed)
+# signature, which MUST NOT verify; the P-256 one adds the double-hashed one.
+
+_ENVELOPE_KATS = [
+    "envelope/kat-keypair-005-envelope.json",  # kat-envelope-001-p256
+    "envelope/kat-keypair-001-envelope.json",  # kat-envelope-002-ed25519
+]
+
+
+@pytest.mark.parametrize("rel", _ENVELOPE_KATS)
+def test_envelope_kat_signing_input_is_byte_exact(rel: str, spec_dir: Path) -> None:
+    kat = _se(spec_dir, rel)
+    assert kat["signing_input"] == "sig_input_v2"
+    sig_input = envelope_signing_input(kat["envelope"])
+    assert sig_input.hex() == kat["sig_input_v2_hex"]
+    assert len(sig_input) == kat["sig_input_v2_len_bytes"]
+    assert sha256(sig_input).hex() == kat["sig_input_v2_sha256_hex"]
+
+
+@pytest.mark.parametrize("rel", _ENVELOPE_KATS)
+def test_envelope_kat_runs_the_real_verifier(rel: str, spec_dir: Path) -> None:
+    kat = _se(spec_dir, rel)
+    env = kat["envelope"]
+    assert verify_envelope({"envelope": env}, now=int(env["timestamp"])) == {"ok": True}
+
+
+@pytest.mark.parametrize("rel", _ENVELOPE_KATS)
+def test_envelope_kat_retired_signatures_do_not_verify(rel: str, spec_dir: Path) -> None:
+    kat = _se(spec_dir, rel)
+    env, negatives = kat["envelope"], kat["_must_not_verify"]
+    sender = parse_aid(env["sender"]["agent_id"])
+
+    # The v1 signature is genuine over the retired pipe-composed input, so
+    # this pins the input change, not a corrupted signature.
+    payload_hex = sha256(canonicalize(env["payload"])).hex()
+    v1_input = f"{env['message_id']}|{env['timestamp']}|{env['sender']['agent_id']}|{payload_hex}"
+    assert v1_input == negatives["v1_sig_input"]
+    v1_raw = decode_tagged_signature(negatives["v1_signature"], sender, sig_err="INVALID_SIGNATURE")
+    assert sender.public_key.verify_digest(sha256(v1_input.encode("utf-8")), v1_raw)
+
+    for key in ("v1_signature", "double_hash_signature"):
+        if key not in negatives:
+            continue
+        with pytest.raises(AitpError) as exc:
+            verify_envelope({"envelope": dict(env, signature=negatives[key])}, now=int(env["timestamp"]))
+        assert exc.value.code == "INVALID_SIGNATURE", key
+
+
+def test_envelope_ed25519_kat_remints(spec_dir: Path) -> None:
+    """Ed25519 is deterministic, so re-signing sig_input_v2 with
+    kat-keypair-001 reproduces the committed signature byte-for-byte."""
+    kat = _se(spec_dir, "envelope/kat-keypair-001-envelope.json")
+    env = kat["envelope"]
+    sk = PrivateKey.ed25519_from_seed(bytes.fromhex("00" * 32))  # kat-keypair-001
+    assert b64url_encode(sk.sign_digest(sha256(envelope_signing_input(env)))) == env["signature"]

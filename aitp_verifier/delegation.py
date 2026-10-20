@@ -64,8 +64,10 @@ from .errors import AitpError
 from .fields import check_types, reject_unknown_fields, require_members
 from .jcs import canonicalize
 from .jws import parse_compact, verify_jws
+from .manifest import resolve_key_from_manifests
 from .revocation import resolve_fail_mode, snapshot_is_stale, verify_snapshot_trust
 from .timeutil import REFERENCE_CLOCK
+from .version import PROTOCOL_VERSION
 from .voucher import check_voucher_claims_shape
 
 __all__ = ["verify_delegation_token", "compute_chain_hash"]
@@ -121,6 +123,15 @@ def compute_chain_hash(chain: list[str]) -> str:
     return b64url_encode(sha256(canonicalize(digests)))
 
 
+def _resolve_issuer(inp: dict[str, Any], iss: Any, now: int) -> None:
+    """RFC-AITP-0006 §4 step 1 / RFC-AITP-0011 §3 step 1: when the caller
+    supplies its Manifest source (``issuer_manifests``), each hop issuer's key
+    must be designated by one of those Manifests before its signature is
+    checked (del-mh-005). The key itself is the AID's for ``aid:pubkey``."""
+    if "issuer_manifests" in inp:
+        resolve_key_from_manifests(str(iss), inp["issuer_manifests"], now)
+
+
 def verify_delegation_token(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any]:
     self_aid = inp["self_aid"]
     token = inp["delegation_token"]
@@ -133,6 +144,7 @@ def verify_delegation_token(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> 
             raise AitpError("DELEGATION_MULTIHOP_NOT_SUPPORTED", "chain claim requires RFC-AITP-0011 opt-in")
         return {"grants": _verify_multihop(inp, token, outer, self_aid, now)}
 
+    _resolve_issuer(inp, outer.get("iss"), now)
     claims = verify_jws(
         token,
         iss_aid=str(outer.get("iss")),
@@ -434,13 +446,15 @@ def _verify_multihop(
     root_voucher: dict[str, Any] = {}
 
     for i, hop in enumerate(hops):
+        hop_iss = parse_compact(hop, structural_code="DELEGATION_INVALID_SIGNATURE").claims.get("iss")
+        _resolve_issuer(inp, hop_iss, now)
         hc = verify_jws(
-            hop, iss_aid=str(parse_compact(hop, structural_code="DELEGATION_INVALID_SIGNATURE").claims.get("iss")),
+            hop, iss_aid=str(hop_iss),
             expected_typ="aitp-delegation+jwt", typ_err="TOKEN_TYP_MISMATCH",
             alg_err="TOKEN_ALG_MISMATCH", sig_err="DELEGATION_INVALID_SIGNATURE",
         )
         _check_delegation_claims_shape(hc, shape_code="DELEGATION_INVALID_SIGNATURE")
-        if hc.get("ver") != "aitp/0.2":
+        if hc.get("ver") != PROTOCOL_VERSION:
             raise AitpError("UNKNOWN_VERSION", "unknown ver")
         if hc["iss"] == hc["sub"]:
             raise AitpError("DELEGATION_INVALID_SIGNATURE", "self-delegation")

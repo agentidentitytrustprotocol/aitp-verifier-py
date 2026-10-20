@@ -42,6 +42,7 @@ from .crypto import sha256
 from .errors import AitpError
 from .fields import canonical_bytes, check_types, reject_unknown_fields, require_members
 from .sigfield import decode_tagged_signature
+from .version import PROTOCOL_VERSION
 
 __all__ = [
     "verify_revocation_snapshot",
@@ -77,7 +78,7 @@ _REQUIRED_BODY_FIELDS = ("version", "issuer", "published_at", "expires_at", "ent
 _REQUIRED_ENTRY_FIELDS = ("jti", "revoked_at")
 
 _INVALID = "REVOCATION_SNAPSHOT_INVALID"
-_VERSION = "aitp/0.2"
+_VERSION = PROTOCOL_VERSION
 
 # RFC-AITP-0008 §3.1's three revocation-policy modes. This is the one place
 # they're defined -- `tct.py` and `delegation.py` each consume a revocation
@@ -168,10 +169,10 @@ def _validate_shape(snapshot: Any) -> dict[str, Any]:
     check_types(body, _BODY_TYPES, shape_code=_INVALID, what="revocation_list")
     if body["version"] != _VERSION:
         # §1.5: "every value inside its grammar". The schema pins
-        # `const: "aitp/0.2"`, and this is load-bearing rather than pedantic --
+        # `const: "aitp/0.3"`, and this is load-bearing rather than pedantic --
         # §1.5's migration note records that rc.3-era implementations signed
         # the WRAPPED form, so evaluating a body that declares an older version
-        # under v0.2 signing rules is a version-confusion surface.
+        # under current signing rules is a version-confusion surface.
         raise AitpError(_INVALID, f"revocation_list version is {body['version']!r}, not {_VERSION!r}")
 
     for i, entry in enumerate(body["entries"]):

@@ -51,8 +51,10 @@ from .crypto import sha256
 from .errors import AitpError
 from .fields import canonical_bytes, check_types, reject_unknown_fields, require_members
 from .jws import parse_compact, verify_jws
+from .manifest import resolve_key_from_manifests
 from .sigfield import decode_tagged_signature
 from .tct import check_tct_claims_shape
+from .version import PROTOCOL_VERSION
 
 __all__ = ["verify_session_bundle"]
 
@@ -149,7 +151,7 @@ def verify_session_bundle(inp: dict[str, Any], now: int | None = None) -> dict[s
         check_types(p, _PARTICIPANT_TYPES, shape_code="SESSION_BUNDLE_INVALID", what="participant entry")
         reject_unknown_fields(p, _PARTICIPANT_FIELDS, shape_code="SESSION_BUNDLE_INVALID", what="participant entry")
 
-    if body.get("version") != "aitp/0.2":
+    if body.get("version") != PROTOCOL_VERSION:
         raise AitpError("BUNDLE_VERSION_MISMATCH", f"unknown bundle version {body.get('version')!r}")
     # Expiry MUST run before the signature check (bundle-003).
     if now >= int(body["expires_at"]):
@@ -194,6 +196,11 @@ def verify_session_bundle(inp: dict[str, Any], now: int | None = None) -> dict[s
         # SESSION_BUNDLE_INVALID, matching manifest.py's/envelope.py's own
         # `parse_aid` guard.
         raise AitpError("SESSION_BUNDLE_INVALID", f"session bundle coordinator is not a valid AID: {exc}") from exc
+    # RFC-AITP-0010 §5 step 5: when the caller supplies its Manifest source,
+    # the coordinator's key comes from the Manifest designating that AID, not
+    # from the AID string -- before the signature is checked (bundle-007).
+    if "coordinator_manifest" in inp:
+        coord = resolve_key_from_manifests(coordinator, inp["coordinator_manifest"], now)
     signature = body["signature"]
     signing_body = {k: v for k, v in body.items() if k != "signature"}
     raw = decode_tagged_signature(signature, coord, sig_err="BUNDLE_INVALID_SIGNATURE")

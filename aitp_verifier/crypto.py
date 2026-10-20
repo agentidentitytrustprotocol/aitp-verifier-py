@@ -1,6 +1,6 @@
 """Ed25519 and ECDSA-P256 primitives for the two AITP signing profiles.
 
-AITP v0.2 mandates both algorithms (RFC-AITP-0001 §5.4.3). Two profiles hash
+AITP v0.3 mandates both algorithms (RFC-AITP-0001 §5.4.3). Two profiles hash
 their input differently, so verification is exposed as two operations:
 
 * ``verify_digest`` — JCS embedded-signature profile (envelope, Manifest,

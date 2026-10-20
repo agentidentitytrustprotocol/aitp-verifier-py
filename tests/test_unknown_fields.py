@@ -121,7 +121,7 @@ def test_reject_unknown_fields_tolerates_non_str_keys() -> None:
 
 def _tct_claims(**overrides: Any) -> dict[str, Any]:
     base = {
-        "ver": "aitp/0.2",
+        "ver": "aitp/0.3",
         "jti": str(uuid.uuid4()),
         "iss": ISSUER,
         "sub": SUBJECT,
@@ -234,7 +234,7 @@ def test_tct_typ_mismatch_still_wins_over_unknown_claim(spec_dir: Path) -> None:
 
 def _voucher_claims(**overrides: Any) -> dict[str, Any]:
     base = {
-        "ver": "aitp/0.2",
+        "ver": "aitp/0.3",
         "iss": ISSUER,
         "sub": SUBJECT,
         "grants": ["macp.mode.task.v1"],
@@ -272,7 +272,7 @@ def _mint_root_voucher(keys: dict[str, Any]) -> str:
 
 def _delegation_claims(voucher_token: str, **overrides: Any) -> dict[str, Any]:
     base = {
-        "ver": "aitp/0.2",
+        "ver": "aitp/0.3",
         "iss": SUBJECT,
         "sub": DELEGATE,
         "aud": ISSUER,
@@ -326,7 +326,7 @@ def test_delegation_embedded_voucher_unknown_claim_rejected(spec_dir: Path) -> N
 
 def _envelope_input(**payload_extra: Any) -> dict[str, Any]:
     env = {
-        "version": "aitp/0.2",
+        "version": "aitp/0.3",
         "message_type": "mutual_hello",
         "message_id": str(uuid.uuid4()),
         "timestamp": NOW,
@@ -370,7 +370,7 @@ def test_envelope_sender_unknown_field_rejected(spec_dir: Path) -> None:
 
 def _manifest_input(**body_extra: Any) -> dict[str, Any]:
     man = {
-        "version": "aitp/0.2",
+        "version": "aitp/0.3",
         "aid": SUBJECT,
         "handshake_endpoint": "https://b.agents.example.com/aitp/handshake",
         "accepted_trust_anchors": [],
@@ -535,7 +535,7 @@ def test_non_object_is_an_aitp_error_not_a_traceback(obj: Any) -> None:
 def _revocation_body(**overrides: Any) -> dict[str, Any]:
     """A well-formed `revocation_list` body, for mutating one member at a time."""
     body: dict[str, Any] = {
-        "version": "aitp/0.2",
+        "version": "aitp/0.3",
         "issuer": ISSUER,
         "published_at": NOW,
         "expires_at": NOW + 3600,
@@ -547,7 +547,7 @@ def _revocation_body(**overrides: Any) -> dict[str, Any]:
 
 def _revocation_input(**body_extra: Any) -> dict[str, Any]:
     body = {
-        "version": "aitp/0.2",
+        "version": "aitp/0.3",
         "issuer": ISSUER,
         "published_at": NOW,
         "expires_at": NOW + 3600,
@@ -2072,7 +2072,7 @@ def _hello_input(self_aid: str, sender_aid: str, **payload_extra: Any) -> dict[s
     bare_key = sender_aid.split(":")[-1]
     identity = {"type": "pinned_key", "subject": "worker", "public_key": bare_key, "proof": "__VALID_PINNED_PROOF__"}
     manifest = {
-        "version": "aitp/0.2",
+        "version": "aitp/0.3",
         "aid": sender_aid,
         "handshake_endpoint": "https://x.example/handshake",
         "accepted_trust_anchors": [],
@@ -2093,7 +2093,7 @@ def _hello_input(self_aid: str, sender_aid: str, **payload_extra: Any) -> dict[s
     }
     payload.update(payload_extra)
     env = {
-        "version": "aitp/0.2",
+        "version": "aitp/0.3",
         "message_type": "mutual_hello",
         "message_id": str(uuid.uuid4()),
         "timestamp": NOW,
@@ -2181,7 +2181,7 @@ def test_handshake_mistyped_envelope_is_a_structural_rejection(envelope: Any) ->
 
 def test_handshake_missing_message_type_is_a_structural_rejection() -> None:
     with pytest.raises(AitpError) as exc:
-        verify_handshake_payload({"self_aid": ISSUER, "envelope": {}})
+        verify_handshake_payload({"self_aid": ISSUER, "envelope": {"version": "aitp/0.3"}})
     assert exc.value.code == "INVALID_ENVELOPE"
 
 
@@ -2192,13 +2192,13 @@ def test_handshake_mistyped_message_type_is_a_structural_rejection(message_type:
     missing case -- both must be a structural `AitpError` now.
     """
     with pytest.raises(AitpError) as exc:
-        verify_handshake_payload({"self_aid": ISSUER, "envelope": {"message_type": message_type}})
+        verify_handshake_payload({"self_aid": ISSUER, "envelope": {"version": "aitp/0.3", "message_type": message_type}})
     assert exc.value.code == "INVALID_ENVELOPE"
 
 
 def test_handshake_hello_missing_payload_is_a_structural_rejection() -> None:
     with pytest.raises(AitpError) as exc:
-        verify_handshake_payload({"self_aid": ISSUER, "envelope": {"message_type": "mutual_hello"}})
+        verify_handshake_payload({"self_aid": ISSUER, "envelope": {"version": "aitp/0.3", "message_type": "mutual_hello"}})
     assert exc.value.code == "INVALID_ENVELOPE"
 
 
@@ -2209,7 +2209,7 @@ def test_handshake_commit_missing_payload_is_a_structural_rejection() -> None:
     not in `_verify_bootstrap`).
     """
     with pytest.raises(AitpError) as exc:
-        verify_handshake_payload({"self_aid": ISSUER, "envelope": {"message_type": "mutual_commit"}})
+        verify_handshake_payload({"self_aid": ISSUER, "envelope": {"version": "aitp/0.3", "message_type": "mutual_commit"}})
     assert exc.value.code == "INVALID_ENVELOPE"
 
 
@@ -2235,6 +2235,7 @@ def test_handshake_hello_payload_missing_manifest_is_a_structural_rejection() ->
         verify_handshake_payload({
             "self_aid": ISSUER,
             "envelope": {
+                "version": "aitp/0.3",
                 "message_type": "mutual_hello",
                 "sender": {"agent_id": SUBJECT},
                 "payload": {"identity": {}},

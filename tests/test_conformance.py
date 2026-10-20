@@ -30,4 +30,4 @@ def test_conformance_pack_has_no_failures(spec_dir: Path) -> None:
         elif status == PASS:
             passed += 1
     assert failures == 0
-    assert passed >= 51  # full re-mintable v0.2 + Draft surface
+    assert passed >= 93  # all 78 core + Draft opt-ins + self-attestation at spec bf00e75

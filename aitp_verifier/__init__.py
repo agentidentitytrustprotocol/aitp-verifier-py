@@ -1,4 +1,4 @@
-"""aitp-verifier — an independent Python implementation of the AITP v0.2
+"""aitp-verifier — an independent Python implementation of the AITP v0.3
 verification core.
 
 Written from the RFC-AITP specifications and JSON schemas only, to serve as a

@@ -31,7 +31,7 @@ NOW = 1_711_900_000
 
 def _claims(**over: Any) -> dict[str, Any]:
     c: dict[str, Any] = {
-        "ver": "aitp/0.2",
+        "ver": "aitp/0.3",
         "jti": "550e8400-e29b-41d4-a716-446655440000",
         "iss": ISS_AID,
         "sub": SUB_AID,

@@ -15,15 +15,16 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .aid import parse_aid
+from .aid import Aid, parse_aid
 from .b64 import b64url_decode
 from .crypto import sha256
 from .errors import AitpError
 from .fields import canonical_bytes, check_types, decode_b64url, reject_unknown_fields, require_members
 from .sigfield import decode_tagged_signature
 from .timeutil import REFERENCE_CLOCK
+from .version import PROTOCOL_VERSION
 
-__all__ = ["verify_manifest"]
+__all__ = ["verify_manifest", "resolve_key_from_manifests"]
 
 # aitp-manifest.schema.json's `manifest` body and `proof_of_possession`
 # sub-object are both additionalProperties: false. Structural rejection maps to
@@ -170,7 +171,7 @@ def verify_manifest(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str
         what="manifest.proof_of_possession.challenge",
     )
     now = int(inp.get("now", now))
-    supported = inp.get("supported_versions", ["aitp/0.2"])
+    supported = inp.get("supported_versions", [PROTOCOL_VERSION])
 
     if man.get("version") not in supported:
         raise AitpError("MANIFEST_VERSION_UNKNOWN", f"unsupported version {man.get('version')!r}")
@@ -206,3 +207,28 @@ def verify_manifest(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str
         raise AitpError("MANIFEST_SIGNATURE_INVALID", "manifest signature invalid")
 
     return {"aid": man["aid"]}
+
+
+def resolve_key_from_manifests(aid: str, manifests: Any, now: int) -> Aid:
+    """Resolve *aid*'s key from the caller's own Manifest source (RFC-AITP-0006
+    §4 step 1, RFC-AITP-0010 §5 step 5, RFC-AITP-0011 §3 step 1).
+
+    *manifests* is every Manifest the verifier holds for its peers; nothing is
+    derived from the AID string in place of a missing one. The Manifest whose
+    ``aid`` equals *aid* must itself verify (RFC-AITP-0003 §5). No such
+    Manifest, or one that does not verify, is a peer key resolution failure:
+    ``KEY_RESOLUTION_FAILED`` (RFC-AITP-0007 §1). For an ``aid:pubkey`` AID
+    the key a valid Manifest designates is the AID's own key.
+    """
+    candidates = manifests if isinstance(manifests, list) else [manifests]
+    for man in candidates:
+        if not isinstance(man, dict) or man.get("aid") != aid:
+            continue
+        try:
+            verify_manifest({"manifest": man, "now": now}, now)
+            return parse_aid(aid)
+        except (AitpError, ValueError) as exc:
+            raise AitpError(
+                "KEY_RESOLUTION_FAILED", f"Manifest for {aid} does not verify: {exc}", retryable=True,
+            ) from exc
+    raise AitpError("KEY_RESOLUTION_FAILED", f"no supplied Manifest designates a key for {aid}", retryable=True)

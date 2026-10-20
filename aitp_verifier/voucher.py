@@ -14,6 +14,7 @@ from .errors import AitpError
 from .fields import check_types, reject_unknown_fields, require_members
 from .jws import parse_compact, verify_jws
 from .timeutil import REFERENCE_CLOCK
+from .version import PROTOCOL_VERSION
 
 __all__ = ["verify_grant_voucher", "VOUCHER_CLAIM_FIELDS", "check_voucher_claims_shape"]
 
@@ -61,7 +62,7 @@ def verify_grant_voucher(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dic
         sig_err="DELEGATION_INVALID_VOUCHER",
     )
     check_voucher_claims_shape(claims, shape_code="DELEGATION_INVALID_VOUCHER")
-    if claims.get("ver") != "aitp/0.2":
+    if claims.get("ver") != PROTOCOL_VERSION:
         raise AitpError("UNKNOWN_VERSION", f"unknown ver {claims.get('ver')!r}")
     if not claims.get("grants"):
         raise AitpError("DELEGATION_INVALID_VOUCHER", "voucher grants must be non-empty")

@@ -186,7 +186,7 @@ def main() -> int:
         fid = fixture["id"]
         if not fixture.get("required_for_v0_2", False) and fixture.get("feature") not in SUPPORTED_FEATURES:
             counts[SKIP] += 1
-            rows.append((SKIP, fid, "not required for v0.2 (draft/extension/v0.1-frozen)"))
+            rows.append((SKIP, fid, "not core (draft/extension/v0.1-frozen)"))
             continue
         status, detail = run_fixture(fixture, keys)
         counts[status] += 1

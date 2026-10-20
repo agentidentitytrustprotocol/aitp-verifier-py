@@ -58,6 +58,7 @@ from .jwk import thumbprint
 from .jws import parse_compact, verify_jws
 from .revocation import resolve_fail_mode, snapshot_is_stale, verify_snapshot_trust
 from .timeutil import REFERENCE_CLOCK
+from .version import PROTOCOL_VERSION
 
 __all__ = ["verify_tct", "TCT_CLAIM_FIELDS", "TCT_CNF_FIELDS", "check_tct_claims_shape"]
 
@@ -142,7 +143,7 @@ def verify_tct(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any
         after_typ_check=lambda c: check_tct_claims_shape(c, shape_code="TCT_SIGNATURE_INVALID"),
     )
 
-    if claims.get("ver") != "aitp/0.2":
+    if claims.get("ver") != PROTOCOL_VERSION:
         raise AitpError("UNKNOWN_VERSION", f"unknown ver {claims.get('ver')!r}")
 
     expected_aud = inp.get("expected_audience")
@@ -212,7 +213,7 @@ def verify_attestation(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[
         after_typ_check=lambda c: _attestation_pre_signature(c, inp.get("trust_store")),
     )
 
-    if claims["ver"] != "aitp/0.2":
+    if claims["ver"] != PROTOCOL_VERSION:
         raise AitpError("UNKNOWN_VERSION", f"unknown ver {claims['ver']!r}")
     if now >= int(claims["exp"]):
         raise AitpError("TCT_EXPIRED", "attestation exp is in the past")
