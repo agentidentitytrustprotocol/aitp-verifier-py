@@ -1,5 +1,14 @@
 # aitp-rs 0.17.0 / aitp/0.3 conformance and interop alignment
 
+## Outcome (2026-10-20)
+
+Complete. Phases 1, 2, 4 and 5 landed in PR #66, merge `e335348`. Phase 3 is decided (Manifests stay
+OPTIONAL) and carried as an open item in CHANGELOG. Evidence at merge: conformance 93/0/9
+under both `--profile v0.2` and `--profile v0.1` at spec `d719b64`; pytest 635; mypy and
+ruff clean; aitp-rs v0.17.0 (`f8f41a7`) `xcheck-verify.py` PASSED (33 ok). At spec
+`4bbda67` (#94: rev-010, bundle-008): 95/0/9 with no code change. Open question 4 is
+fixed on the aitp-rs side (aitp-rs #265).
+
 ## Context
 
 Supersedes `plans/aitp-rs-0.15-adoption.md` (written 2026-10-19, never committed). It now
@@ -83,7 +92,7 @@ Not affected (no network, session store, bindings, or renewal):
 
 ## Phase 1 - Envelope schema rules (aitp-rs #262 parity)
 
-**Status:** DONE
+**Status:** DONE (PR #66, merge `e335348`)
 
 Steps (`aitp_verifier/envelope.py::validate_envelope_shape`, after `check_types` and before the
 `sender` checks, so the order stays version → member set/structure → signature):
@@ -113,7 +122,7 @@ unaffected).
 
 ## Phase 2 - Bundle participant TCTs capped at the coordinator Manifest (0.16 §4)
 
-**Status:** DONE
+**Status:** DONE (PR #66, merge `e335348`)
 
 1. In `sessionbundle.py`, keep the Manifest that `resolve_key_from_manifests` matched (it returns
    only the `Aid` today). Add a small helper in `manifest.py` that returns the matched Manifest,
@@ -132,7 +141,7 @@ branch. It passes no Manifest, so it must stay green.
 
 ## Phase 3 - Decide: Manifests mandatory or optional (no code until decided)
 
-**Status:** DECIDED 2026-10-20: keep OPTIONAL. Open item until aitp-rs `xcheck-verify.py` supplies a Manifest or a waiver.
+**Status:** DONE as a decision (PR #66, merge `e335348`, CHANGELOG "Open" entry), 2026-10-20: keep OPTIONAL. Open item until aitp-rs `xcheck-verify.py` supplies a Manifest or a waiver.
 
 Today a Manifest is checked only when the caller supplies it (`"coordinator_manifest" in inp`,
 `"issuer_manifests" in inp`). aitp-rs 0.16 requires them in its bindings and adapter. Without them it
@@ -151,7 +160,7 @@ If the decision is "mandatory":
 
 ## Phase 4 - Runner profile gate (RFC-AITP-0001 §10 item 9)
 
-**Status:** DONE
+**Status:** DONE (PR #66, merge `e335348`)
 
 1. `run_conformance.py`: add `--profile {v0.2,v0.1}`, defaulting to `v0.2`. A fixture with
    `required_for_v0_2` (absent counts as true, as in aitp-rs) that ends SKIP exits 1, unless an
@@ -170,7 +179,7 @@ If the decision is "mandatory":
 
 ## Phase 5 - Cross-repo cutover and release hygiene
 
-**Status:** DONE (single PR; CHANGELOG entries added)
+**Status:** DONE (PR #66, merge `e335348`; one PR rather than three, so aitp-rs bumps one pin. aitp-rs pins `e335348` in its #265)
 
 - There is no wire cutover here. This repo has no peers on the network, and the aitp/0.3 flip already
   happened in #65, in lockstep with aitp-rs 0.17 (its xcheck pin is `f335f4f`).
