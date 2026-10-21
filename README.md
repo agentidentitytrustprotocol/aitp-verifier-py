@@ -56,6 +56,7 @@ opaque `extensions` slot (`fields`); RFC-AITP-0013 (TCT renewal) is not implemen
 | `aitp_verifier.verify` | Operation registry: maps a fixture `input.operation` to its verifier |
 | `aitp_verifier.minter` | Conformance-fixture minter: fills `__PLACEHOLDER__` values with the pinned KAT keys (signs; the verification core never does) |
 | `aitp_verifier.b64`, `aitp_verifier.timeutil` | base64url helpers; the reference-clock constant |
+| `aitp_verifier.version` | `PROTOCOL_VERSION` (`aitp/0.3`), the one revision accepted under the strict cutover |
 | `aitp_verifier.sessionbundle` | Session Trust Bundle: envelope shape, expiry-before-signature, expiry-window invariant, coordinator signature, per-participant TCT, self-membership (RFC-AITP-0010) |
 
 ## Conformance coverage
