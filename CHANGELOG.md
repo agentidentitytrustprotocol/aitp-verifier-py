@@ -20,8 +20,12 @@ here, so a future integrator has one place to check before upgrading.
   - `verify_delegation_token`, multi-hop: a hop issuer's snapshot that fails verification,
     is signed by an issuer other than its record's `issuer_aid`, or is expired/stale
     leaves that issuer absent. Under `fail_closed` the hop counts as revoked:
-    `DELEGATION_SOURCE_TCT_REVOKED` (`del-mh-006`). A hop issuer with no snapshot supplied
-    still proceeds under every mode. This path now reads `policy` for the sweep too.
+    `DELEGATION_SOURCE_TCT_REVOKED` (`del-mh-006`). This path now reads `policy` for the
+    sweep too.
+  - `verify_delegation_token`, multi-hop: a hop issuer with **no** snapshot supplied is
+    absent too (RFC-AITP-0008 §3.1, as for an unreachable endpoint). Before, it proceeded
+    under every mode. Under `fail_closed` a caller must now supply a fresh snapshot for
+    every hop issuer. This reverses the DECISIONS.md Phase 4 non-goal.
   - Unchanged: `verify_revocation_snapshot` still reports the snapshot's own code, and a
     failing snapshot carrying A's own deny list (labelled `self_aid`, or unlabelled) still
     rejects with its own code under every mode (RFC-AITP-0006 §4 step 7, `del-008`).

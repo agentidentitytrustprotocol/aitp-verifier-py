@@ -228,7 +228,23 @@ settled by Opus without escalation.
 - **Verdict:** CONFIRM, with the CHANGELOG clarification applied immediately (not deferred
   as a follow-up task, since it was small and safe): `CHANGELOG.md`'s `policy` entry now
   states the per-hop scope limit explicitly.
-- **Status:** CONFIRMED (2026-09-23).
+- **Status:** CONFIRMED (2026-09-23). **SUPERSEDED (2026-10-20)** — see the next entry.
+
+### The multi-hop per-hop sweep follows `fail_mode` (reverses Phase 4)
+
+- **Chose:** A hop issuer with no fresh, trusted snapshot is absent, and the configured
+  `fail_mode` decides. Under `fail_closed` the hop counts as revoked
+  (`DELEGATION_SOURCE_TCT_REVOKED`). That covers both a missing snapshot and one discarded
+  under RFC-AITP-0008 §1.5.
+- **Why:** Phase 4 rested on RFC-AITP-0011 §6 stating no absence semantics. Spec
+  0.3.1-draft (`53b92c0`) applies the mode to a discarded hop snapshot. The spec author
+  confirmed that RFC-AITP-0008 §3.1 already applies it to one that could not be obtained;
+  §6 not repeating that is an editorial gap. The pack is unaffected: fixtures without a
+  revocation input do not test revocation (spec `125a856`, conformance README "Revocation
+  inputs"), and the runner gives them `fail_open`.
+- **Cost accepted:** under `fail_closed` a caller must now supply a fresh snapshot for
+  every hop issuer. Multi-hop is a Draft opt-in (`experimental-multihop-delegation`).
+- **Status:** DONE (2026-10-20).
 
 ## Summary
 

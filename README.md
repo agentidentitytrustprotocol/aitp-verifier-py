@@ -76,7 +76,7 @@ feature negates, and the runner prints it on stderr: under `v0.1`, `del-004` exp
 `DELEGATION_MULTIHOP_NOT_SUPPORTED`, and this verifier implements multi-hop delegation.
 Core fixtures run with no feature opted in, so `del-007` is executed, not exempted.
 
-Current status at spec `53b92c0` (`aitp/0.3`, RFC-AITP-0008 0.3.1-draft; the runner prints the live number, and the pack grows with the spec): **99 fixtures pass, 0 fail, 9 skipped**. All 82 core fixtures pass (the core tier is still keyed `required_for_v0_2` in the fixtures, deliberately not renamed). So do both Draft opt-ins (`experimental-multihop-delegation`,
+Current status at spec `125a856` (`aitp/0.3`, RFC-AITP-0008 0.3.1-draft; the runner prints the live number, and the pack grows with the spec): **99 fixtures pass, 0 fail, 9 skipped**. All 82 core fixtures pass (the core tier is still keyed `required_for_v0_2` in the fixtures, deliberately not renamed). So do both Draft opt-ins (`experimental-multihop-delegation`,
 `experimental-session-bundle`), the `aitp-self-attestation` extension, and all multi-step sequences (PoP
 challenge/response `tct-006`/`tct-007`, handshake replay `mh-001`). The surface — envelope, TCT (incl.
 `alg:none`, alg-confusion, `typ`-confusion, expiry-after-Manifest,

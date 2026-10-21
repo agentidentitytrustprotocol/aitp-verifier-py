@@ -1669,6 +1669,16 @@ def _delegation_snapshot_record(
     return {"issuer_aid": issuer, "snapshot": {"revocation_list": body, "signature": "__VALID_B_SIG__"}}
 
 
+def _hop_issuer_records(fixture_id: str) -> list[dict[str, Any]]:
+    """Fresh, empty, genuinely signed snapshots for `del-mh-001`'s hop issuers
+    (B and C), so a multi-hop test about A's own deny list is not decided by
+    the hop issuers' absence, which `fail_closed` now treats as revoked
+    (RFC-AITP-0008 §3.1, RFC-AITP-0011 §6). Empty for the single-hop path."""
+    if fixture_id != "del-mh-001":
+        return []
+    return [_delegation_snapshot_record(issuer=DELEGATE), _delegation_snapshot_record(issuer=SUBJECT)]
+
+
 @_BOTH_DELEGATION_PATHS
 def test_delegation_absent_snapshot_fail_closed_rejects(fixture_id: str, spec_dir: Path) -> None:
     """Issue #30 on this entry point: RFC-AITP-0008 §3.1's "an absent snapshot
@@ -1936,7 +1946,8 @@ def test_delegation_fresh_applicable_snapshot_under_fail_closed_still_verifies(
     keys = load_kat_keys(spec_dir)
     inp = _delegation_policy_input(spec_dir, fixture_id, fail_mode="fail_closed", max_staleness_secs=600)
     inp["revocation_snapshots"] = [
-        _delegation_snapshot_record(entries=[{"jti": "someone-elses-source-tct", "revoked_at": NOW}])
+        _delegation_snapshot_record(entries=[{"jti": "someone-elses-source-tct", "revoked_at": NOW}]),
+        *_hop_issuer_records(fixture_id),
     ]
     assert verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys)) == _DELEGATION_GRANTS
 
@@ -1992,7 +2003,8 @@ def test_delegation_policy_without_max_staleness_secs_applies_only_the_expires_a
             entries=[{"jti": "someone-elses-source-tct", "revoked_at": NOW}],
             published_at=NOW - 10_000,
             expires_at=NOW + 3600,
-        )
+        ),
+        *_hop_issuer_records(fixture_id),
     ]
     assert verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys)) == _DELEGATION_GRANTS
 
@@ -2028,24 +2040,23 @@ def test_delegation_malformed_revocation_snapshots_is_invalid_under_every_fail_m
     assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID"
 
 
-def test_delegation_multihop_per_hop_absence_is_not_fail_closed(spec_dir: Path) -> None:
-    """The explicit non-goal, pinned so it cannot be widened by accident.
+@pytest.mark.parametrize("fail_mode", ["fail_closed", "soft_fail", "fail_open"])
+def test_delegation_multihop_per_hop_absence_follows_the_mode(fail_mode: str, spec_dir: Path) -> None:
+    """A hop issuer with no snapshot is absent, and the configured mode
+    decides (RFC-AITP-0008 §3.1, as for an unreachable endpoint; RFC-AITP-0011
+    §6). This used to be an explicit non-goal -- hops proceeded under every
+    mode. The conformance pack's fixtures without revocation inputs
+    (`del-mh-001`) still pass, because they do not test revocation and the
+    runner supplies `fail_open` for them (spec conformance README, "Revocation
+    inputs").
 
-    `fail_closed` governs A's OWN deny list -- the §4 step 7 / RFC-AITP-0011 §6
-    source-TCT lookup -- and nothing else. It is deliberately NOT extended to
-    require a trusted snapshot for every intermediate hop issuer in the
-    multi-hop per-hop sweep: RFC-AITP-0011 is Draft, its §6 lookup says nothing
-    about absence, requiring N snapshots would be a materially wider policy
-    with no RFC-stated default, and `del-mh-001` (a draft-opt-in success
-    fixture) supplies none.
-
-    So: `del-mh-001` under `fail_closed`, with a trusted fresh snapshot from A
-    that lists nothing, VERIFIES -- even though the chain's two hop issuers (B
-    and C) have no snapshot supplied at all. Were the absence policy applied
-    per hop, this would reject.
+    `del-mh-001` with a trusted fresh snapshot from A that lists nothing, and
+    none for the hop issuers (B and C): `fail_closed` rejects, the permissive
+    modes verify, and supplying the hop issuers' snapshots verifies under
+    `fail_closed` too.
     """
     keys = load_kat_keys(spec_dir)
-    inp = _delegation_policy_input(spec_dir, "del-mh-001", fail_mode="fail_closed", max_staleness_secs=600)
+    inp = _delegation_policy_input(spec_dir, "del-mh-001", fail_mode=fail_mode, max_staleness_secs=600)
     # Pin the pre-condition the test rests on: the hops really are issued by
     # peers with no snapshot in the supplied data.
     hop_issuers = {inp["delegation_token_claims"]["iss"]} | {
@@ -2053,6 +2064,11 @@ def test_delegation_multihop_per_hop_absence_is_not_fail_closed(spec_dir: Path) 
     }
     assert hop_issuers == {DELEGATE, SUBJECT} and ISSUER not in hop_issuers
     inp["revocation_snapshots"] = [_delegation_snapshot_record(issuer=ISSUER, entries=[])]
+    if fail_mode == "fail_closed":
+        with pytest.raises(AitpError) as exc:
+            verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys))
+        assert exc.value.code == "DELEGATION_SOURCE_TCT_REVOKED"
+        inp["revocation_snapshots"] += _hop_issuer_records("del-mh-001")
     assert verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys)) == _DELEGATION_GRANTS
 
 

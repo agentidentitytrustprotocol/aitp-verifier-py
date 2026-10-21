@@ -49,16 +49,16 @@ each answering separately. A's own deny list is local state, so a snapshot carry
 that fails verification is rejected with its own code under every mode, never
 treated as absent (RFC-AITP-0006 §4 step 7, ``del-008``).
 
-The multi-hop per-hop issuer sweep reads the same policy for one case only: a
-hop issuer's snapshot that was supplied and **discarded** under RFC-AITP-0008
+The multi-hop per-hop issuer sweep (RFC-AITP-0011 §6) reads the same policy.
+A hop issuer with no fresh, trusted snapshot is absent -- none supplied (as for
+an unreachable endpoint, RFC-AITP-0008 §3.1), or its snapshot discarded under
 §1.5 (fails verification, signed by an issuer other than its record's
-``issuer_aid``, or expired/stale) leaves that issuer's deny list absent, and
-RFC-AITP-0011 §6 then applies ``fail_mode`` -- under ``fail_closed`` the hop
-counts as revoked (``del-mh-006``). A hop issuer for whom no snapshot was
-supplied at all still proceeds under every ``fail_mode``: §6 states the rule
-for a discarded snapshot only, and requiring N trusted snapshots under
-fail-closed would be a materially wider policy with no RFC-stated default;
-``ASSUMPTIONS.md`` records that boundary as a decision rather than an omission.
+``issuer_aid``, expired or stale) -- and under ``fail_closed`` that hop counts
+as revoked (``del-mh-006``). The conformance pack's fixtures that carry no
+revocation input do not test revocation (spec conformance README, "Revocation
+inputs"); ``run_conformance.py`` supplies ``fail_open`` for them, which is what
+keeps ``del-mh-001`` passing. ``DECISIONS.md`` records this as the reversal of
+the earlier per-hop non-goal.
 """
 
 from __future__ import annotations
@@ -200,16 +200,13 @@ def verify_delegation_token(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> 
     # calls, not a second spelling of it: one implementation is what keeps the
     # two paths from drifting apart again (the single-hop path silently
     # skipping this step is exactly how they last diverged).
-    _check_source_tct_revocation(inp, _verified_snapshot_bodies(inp, self_aid)[0], self_aid, vclaims["src_jti"], now)
+    _check_source_tct_revocation(inp, _verified_snapshot_bodies(inp, self_aid), self_aid, vclaims["src_jti"], now)
 
     return {"grants": claims["scope"]}
 
 
-def _verified_snapshot_bodies(
-    inp: dict[str, Any], self_aid: str
-) -> tuple[list[dict[str, Any]], set[str]]:
-    """Every supplied revocation snapshot that verifies, in input order, plus
-    the ``issuer_aid`` labels of the records whose snapshot was discarded.
+def _verified_snapshot_bodies(inp: dict[str, Any], self_aid: str) -> list[dict[str, Any]]:
+    """Every supplied revocation snapshot that verifies, in input order.
 
     Each snapshot is fully verified (structural + member-set + signature, via
     `revocation.py::verify_snapshot_trust`) before its ``entries`` are
@@ -230,10 +227,10 @@ def _verified_snapshot_bodies(
       That is local state, not a fetched snapshot, so RFC-AITP-0006 §4 step 7
       rejects with the snapshot's own code under every mode (``del-008``).
     * labelled with another issuer: a hop issuer's snapshot, discarded under
-      RFC-AITP-0008 §1.5. Its label joins the returned discarded set, and the
-      per-hop sweep applies ``fail_mode`` for that issuer (``del-mh-006``).
-      Mislabelling cannot weaken fail-closed: the label only decides whether
-      the failure surfaces as the snapshot's own code or as a policy decision.
+      RFC-AITP-0008 §1.5 and left out, so the per-hop sweep finds that issuer
+      absent and applies ``fail_mode`` (``del-mh-006``). Mislabelling cannot
+      weaken fail-closed: the label only decides whether the failure surfaces
+      as the snapshot's own code or as a policy decision.
 
     ``revocation_snapshots`` itself is untrusted remote input, same as every
     record inside it. Absent (``None``) is the one legitimate "no snapshots"
@@ -255,7 +252,6 @@ def _verified_snapshot_bodies(
             f"revocation_snapshots must be an array, got {type(snaps).__name__}",
         )
     bodies: list[dict[str, Any]] = []
-    discarded: set[str] = set()
     for record in snaps:
         label = record.get("issuer_aid") if isinstance(record, dict) else None
         try:
@@ -263,14 +259,7 @@ def _verified_snapshot_bodies(
         except AitpError:
             if not isinstance(label, str) or label == self_aid:
                 raise
-            discarded.add(label)
-            continue
-        if isinstance(label, str) and label != bodies[-1]["issuer"]:
-            # Signed by another issuer than the one it was supplied for (§1.5):
-            # absent for the labelled issuer. The body still speaks for its
-            # own signed issuer, so it stays indexed under that.
-            discarded.add(label)
-    return bodies, discarded
+    return bodies
 
 
 def _revocation_index(bodies: list[dict[str, Any]]) -> dict[str, set[str]]:
@@ -284,11 +273,8 @@ def _revocation_index(bodies: list[dict[str, Any]]) -> dict[str, set[str]]:
     own wrapper merely claims for it.
 
     Deliberately policy-free and ``now``-free -- a pure index. The per-hop
-    sweep that consumes it is RFC-AITP-0011 §6 (Draft), where the absence of a
-    snapshot for a hop issuer is not governed by ``fail_mode`` at all (the
-    module docstring's stated non-goal), so neither ``policy`` nor freshness
-    has any business in this function. Both live in
-    ``_check_source_tct_revocation``, which answers for ``self_aid`` alone.
+    sweep that consumes it filters out stale bodies first and applies
+    ``fail_mode`` to absence itself, so neither has any business in here.
     """
     index: dict[str, set[str]] = {}
     for body in bodies:
@@ -416,8 +402,8 @@ def _check_source_tct_revocation(
     no-top-level-``policy`` call reach a successful verification without
     freshness ever being evaluated.
 
-    Per-hop issuer deny lists are governed by none of this -- see the module
-    docstring's stated non-goal.
+    Per-hop issuer deny lists are the multi-hop sweep's job, under the same
+    ``fail_mode`` -- see the module docstring.
 
     ``_effective_fail_mode`` is resolved **eagerly, unconditionally, before**
     the applicability/freshness filtering below -- not lazily, only once
@@ -541,23 +527,21 @@ def _verify_multihop(
         prev, prev_scope = hc, scope
 
     # Per-hop revocation (§6) — only after every signature check.
-    bodies, discarded = _verified_snapshot_bodies(inp, self_aid)
+    bodies = _verified_snapshot_bodies(inp, self_aid)
 
     # The source-TCT check, through the identical helper the single-hop path
     # calls — same lookup, same absence policy, one implementation.
     _check_source_tct_revocation(inp, bodies, self_aid, root_voucher.get("src_jti"), now)
 
-    # The per-hop sweep (RFC-AITP-0011 §6). A hop issuer whose snapshot was
-    # discarded (RFC-AITP-0008 §1.5), with no usable one left, is absent and
-    # `fail_mode` decides; one with no supplied snapshot at all proceeds under
-    # every mode (module docstring).
+    # The per-hop sweep (RFC-AITP-0011 §6). A hop issuer with no fresh, trusted
+    # snapshot -- none supplied, or discarded (RFC-AITP-0008 §1.5) -- is absent
+    # and `fail_mode` decides (RFC-AITP-0008 §3.1).
     policy = inp["policy"]
     fresh = [
         body
         for body in bodies
         if not snapshot_is_stale(body, policy if isinstance(policy, dict) else {}, now)
     ]
-    discarded |= {body["issuer"] for body in bodies} - {body["issuer"] for body in fresh}
     revoked = _revocation_index(fresh)
     fail_mode = _effective_fail_mode(inp)
     for hop in hops:
@@ -565,10 +549,10 @@ def _verify_multihop(
         iss = str(hc.get("iss"))
         if hc.get("jti") in revoked.get(iss, set()):
             raise AitpError("DELEGATION_SOURCE_TCT_REVOKED", "a hop jti is revoked")
-        if iss in discarded and iss not in revoked and fail_mode == "fail_closed":
+        if iss not in revoked and fail_mode == "fail_closed":
             raise AitpError(
                 "DELEGATION_SOURCE_TCT_REVOKED",
-                "a hop issuer's revocation snapshot was discarded (RFC-AITP-0008 §1.5); "
+                "no fresh, trusted revocation snapshot for a hop issuer; "
                 "fail_closed treats unknown revocation status as revoked",
             )
 

@@ -291,6 +291,10 @@ untouched, so this entry's own rejection/pass pair stays exactly as pinned by
 
 ### The same permissive no-`policy` default, and the per-hop boundary it is deliberately not extended across
 
+> **Superseded (2026-10-20) for the per-hop boundary:** the multi-hop per-hop sweep now follows
+> `fail_mode` for absent and discarded hop snapshots. See `DECISIONS.md`, "The multi-hop per-hop
+> sweep follows `fail_mode`".
+
 **What changed:** `verify_delegation_token`'s input contract gains the same optional
 top-level `policy` key Phase 3 gave `verify_tct`, governing the analogous absence case: when
 no trusted, applicable revocation snapshot for `self_aid` was supplied, an effective
