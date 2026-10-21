@@ -25,7 +25,7 @@ def test_conformance_pack_has_no_failures(spec_dir: Path) -> None:
     assert res.counts[FAIL] == 0
     assert res.violations == []
     assert res.exit_code == 0
-    assert res.counts[PASS] >= 93  # all 78 core + Draft opt-ins + self-attestation at spec bf00e75
+    assert res.counts[PASS] >= 99  # all 82 core + Draft opt-ins + self-attestation at spec 59407d2
 
 
 def test_v0_1_profile_exempts_only_del_004(spec_dir: Path) -> None:
