@@ -26,6 +26,10 @@ here, so a future integrator has one place to check before upgrading.
     absent too (RFC-AITP-0008 §3.1, as for an unreachable endpoint). Before, it proceeded
     under every mode. Under `fail_closed` a caller must now supply a fresh snapshot for
     every hop issuer. This reverses the DECISIONS.md Phase 4 non-goal.
+  - `run_conformance.py` follows the per-issuer fixture convention (spec `59407d2`). In a
+    delegation fixture that supplies `revocation_snapshots`, an issuer without an entry
+    reads "not revoked": the runner adds a fresh, empty, signed snapshot for it. Before,
+    `del-mh-004`/`del-mh-006` could pass on A's or C's absence under `fail_closed`.
   - Unchanged: `verify_revocation_snapshot` still reports the snapshot's own code, and a
     failing snapshot carrying A's own deny list (labelled `self_aid`, or unlabelled) still
     rejects with its own code under every mode (RFC-AITP-0006 §4 step 7, `del-008`).

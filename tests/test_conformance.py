@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from aitp_verifier.keys import load_kat_keys
-from run_conformance import FAIL, PASS, SKIP, run_pack
+from run_conformance import FAIL, PASS, SKIP, _cover_unsupplied_issuers, run_pack
 
 
 def test_conformance_pack_has_no_failures(spec_dir: Path) -> None:
@@ -70,3 +70,33 @@ def test_required_under_v0_1_only_is_not_gated_under_v0_2(tmp_path: Path, spec_d
     pack = _pack(tmp_path, status="core", required_for_v0_1=True, required_for_v0_2=False)
     assert run_pack(pack, load_kat_keys(spec_dir), "v0.2").exit_code == 0
     assert run_pack(pack, load_kat_keys(spec_dir), "v0.1").exit_code == 1
+
+
+def _fixture(spec_dir: Path, fixture_id: str) -> dict[str, Any]:
+    for path in (spec_dir / "schemas/conformance").glob("*.json"):
+        d = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(d, dict) and d.get("id") == fixture_id:
+            return d
+    raise AssertionError(f"fixture {fixture_id!r} not found")
+
+
+def test_uncovered_issuers_read_not_revoked(spec_dir: Path) -> None:
+    """Spec 59407d2's per-issuer convention: in del-mh-006 only B's snapshot is
+    under test. The adapter adds fresh, empty snapshots for A (self) and C, so
+    the fixture rejects on B's discarded snapshot, not on A's or C's absence
+    under the runner's fail_closed default. B's own entry is left as supplied."""
+    inp = _fixture(spec_dir, "del-mh-006")["input"]
+    covered = _cover_unsupplied_issuers(inp)
+    supplied, added = covered["revocation_snapshots"][:1], covered["revocation_snapshots"][1:]
+    assert supplied == inp["revocation_snapshots"]
+    claims = inp["delegation_token_claims"]
+    expected = {inp["self_aid"], claims["iss"], *(h["iss"] for h in claims["chain_claims"])}
+    expected -= {r["issuer_aid"] for r in inp["revocation_snapshots"]}
+    assert {r["issuer_aid"] for r in added} == expected and inp["self_aid"] in expected
+    assert all(r["snapshot"]["revocation_list"]["entries"] == [] for r in added)
+
+
+def test_fixture_without_revocation_input_is_left_alone(spec_dir: Path) -> None:
+    inp = _fixture(spec_dir, "del-mh-001")["input"]
+    assert "revocation_snapshots" not in inp
+    assert _cover_unsupplied_issuers(inp) is inp

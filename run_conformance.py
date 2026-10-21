@@ -34,6 +34,7 @@ from aitp_verifier.keys import load_kat_keys
 from aitp_verifier.minter import MinterError, mint_input
 from aitp_verifier.timeutil import REFERENCE_CLOCK
 from aitp_verifier.verify import OPERATIONS, supported
+from aitp_verifier.version import PROTOCOL_VERSION
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 
@@ -152,6 +153,41 @@ def _run_sequence(inp: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str]:
     return PASS, "sequence"
 
 
+def _cover_unsupplied_issuers(inp: dict[str, Any]) -> dict[str, Any]:
+    """The spec's per-issuer fixture convention (conformance README, "Revocation
+    inputs", spec 59407d2). In a delegation fixture that supplies
+    ``revocation_snapshots``, an issuer with no entry is not under test and
+    reads "not revoked" whatever the mode. Only the supplied entries are
+    evaluated, including being discarded under RFC-AITP-0008 §1.5.
+
+    The library applies ``fail_mode`` to an issuer with no snapshot (RFC-AITP-0008
+    §3.1, RFC-AITP-0011 §6), which is right for a deployment. Here it would make
+    ``del-mh-004``/``del-mh-006`` pass on A's or C's absence rather than on the
+    supplied entry. So the adapter gives every uncovered issuer (``self_aid``,
+    the token's ``iss`` and each hop's ``iss``) a fresh, empty, genuinely signed
+    snapshot, which is what "not revoked" means to the verifier.
+    """
+    snaps = inp.get("revocation_snapshots")
+    if inp.get("operation") != "verify_delegation_token" or not isinstance(snaps, list):
+        return inp
+    claims = inp.get("delegation_token_claims") or {}
+    hop_issuers = [h.get("iss") for h in claims.get("chain_claims") or []]
+    covered = {r.get("issuer_aid") for r in snaps if isinstance(r, dict)}
+    now = int(inp.get("now", REFERENCE_CLOCK))
+    added = []
+    for aid in dict.fromkeys([inp.get("self_aid"), claims.get("iss"), *hop_issuers]):
+        if isinstance(aid, str) and aid not in covered:
+            body = {
+                "version": PROTOCOL_VERSION,
+                "issuer": aid,
+                "published_at": now,
+                "expires_at": now + 3600,
+                "entries": [],
+            }
+            added.append({"issuer_aid": aid, "snapshot": {"revocation_list": body, "signature": "__VALID_B_SIG__"}})
+    return {**inp, "revocation_snapshots": [*snaps, *added]} if added else inp
+
+
 def run_fixture(fixture: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str]:
     inp = fixture.get("input", {})
     expected = fixture.get("expected", {})
@@ -164,7 +200,7 @@ def run_fixture(fixture: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str
         return SKIP, f"unsupported operation: {op}"
 
     try:
-        minted = mint_input(inp, REFERENCE_CLOCK, keys)
+        minted = mint_input(_cover_unsupplied_issuers(inp), REFERENCE_CLOCK, keys)
     except (MinterError, KeyError) as exc:
         return SKIP, f"could not mint fixture: {exc}"
     minted["_feature"] = fixture.get("feature")
