@@ -338,7 +338,10 @@ not move. Two adjacent behaviors are preserved untouched and MUST stay that way 
 default is ever flipped: a malformed `revocation_snapshots` (non-list, truthy or falsy)
 still raises `REVOCATION_SNAPSHOT_INVALID`, and an untrustworthy snapshot still reports its
 own code, under **every** `fail_mode` — obtained-but-untrustworthy is never routed through
-the absence policy. The one counter-intuitive consequence the Phase 3 entry records — an
+the absence policy. (Superseded for fetched snapshots by RFC-AITP-0008 0.3.1-draft §1.5: a
+discarded snapshot is absent for the token decision in `verify_tct` and for a multi-hop hop
+issuer. A's own deny list in `verify_delegation_token` keeps its own code, per RFC-AITP-0006
+§4 step 7.) The one counter-intuitive consequence the Phase 3 entry records — an
 explicitly permissive `policy` over a *stale* snapshot that genuinely lists the handle
 verifies, where the identical input with no `policy` rejects, because freshness is
 evaluated before the deny-list scan and only under a supplied policy — held identically

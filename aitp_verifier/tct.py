@@ -333,20 +333,23 @@ def _apply_absence(fail_mode: str, detail: str) -> None:
 def _check_revocation(claims: dict[str, Any], inp: dict[str, Any], now: int) -> None:
     """RFC-AITP-0008 §3.3 + §3.1, in that order.
 
-    **Obtained but untrustworthy comes first and is never answered by
-    ``fail_mode``.** A supplied snapshot MUST itself be trusted (structurally
+    **A discarded snapshot is an absent one** (RFC-AITP-0008 §1.5,
+    0.3.1-draft). A supplied snapshot MUST itself be trusted (structurally
     valid, correctly shaped, genuinely signed by its own claimed issuer)
     before its ``entries`` are consulted -- ``verify_snapshot_trust``
     (``revocation.py``) is what closed issue #24's gap, where a forged/unsigned
-    snapshot was accepted at face value via a bare ``.get()`` chain. It still
-    raises ``REVOCATION_SNAPSHOT_INVALID``/``UNKNOWN_FIELD``/
-    ``REVOCATION_SNAPSHOT_SIGNATURE_INVALID`` under **every** ``fail_mode``,
-    including the permissive ones: collapsing "malformed" into "absent" is
-    precisely the bug ``revocation.py``'s module docstring records as having
-    shipped once already.
+    snapshot was accepted at face value via a bare ``.get()`` chain. When that
+    check fails, the snapshot's own code (``REVOCATION_SNAPSHOT_INVALID``/
+    ``UNKNOWN_FIELD``/``REVOCATION_SNAPSHOT_SIGNATURE_INVALID``) is what
+    ``verify_revocation_snapshot`` reports about the snapshot itself; the
+    *token* decision instead discards it and applies ``fail_mode``, exactly as
+    for an unreachable endpoint (``tct-022``/``tct-023``). Discarding never
+    means "no check needed": under ``fail_closed`` the token is rejected with
+    ``TCT_REVOKED``, so corrupting a snapshot in transit cannot turn
+    fail-closed into fail-open.
 
-    **Absence** -- the one case ``fail_mode`` answers (issue #30) -- is
-    exactly three things:
+    **Absence** -- the case ``fail_mode`` answers (issue #30) -- is the
+    discarded case above plus exactly three things:
 
     * (a) ``issuer_revocation_list`` missing or not a dict: nothing was
       obtained;
@@ -381,9 +384,13 @@ def _check_revocation(claims: dict[str, Any], inp: dict[str, Any], now: int) -> 
         _apply_absence(fail_mode, "no issuer_revocation_list was supplied")
         return
 
-    # Trust before policy, always -- an untrustworthy snapshot reports its own
-    # defect here rather than being silently downgraded to "absent".
-    body = verify_snapshot_trust(revlist.get("snapshot"))
+    # Trust before the deny-list scan, always. A snapshot that fails it is
+    # discarded and absent for this decision (RFC-AITP-0008 §1.5).
+    try:
+        body = verify_snapshot_trust(revlist.get("snapshot"))
+    except AitpError as err:
+        _apply_absence(fail_mode, f"the supplied snapshot was discarded ({err.code})")
+        return
 
     # (b) A snapshot signed by someone other than this TCT's own issuer does
     # not speak for it. The snapshot itself may be perfectly valid, so this is

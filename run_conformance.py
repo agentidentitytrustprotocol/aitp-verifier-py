@@ -180,7 +180,18 @@ def run_fixture(fixture: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str
     # real deployment would supply its own configured policy rather than
     # leaving the decision unmade. A fixture that DOES carry a `policy`
     # always wins -- `setdefault` only fills the gap, never overrides.
-    if op in ("verify_tct", "verify_attestation", "verify_delegation_token"):
+    #
+    # Two narrower gaps take the fixture's own declared decision instead
+    # (RFC-AITP-0008 §1.5, 0.3.1-draft): a `verify_tct` wrapper declaring
+    # `fail_mode` is the fixture's decision (`tct-022`/`tct-023`), so no
+    # top-level `policy` is added over it; and a delegation fixture carrying
+    # `revocation_snapshots` gets the schema default `fail_closed`
+    # (`del-mh-006`), since its expected outcome is stated under that default.
+    revlist = minted.get("issuer_revocation_list")
+    declares_mode = isinstance(revlist, dict) and "fail_mode" in revlist
+    if op == "verify_delegation_token" and "revocation_snapshots" in minted:
+        minted.setdefault("policy", {"fail_mode": "fail_closed"})
+    elif op in ("verify_tct", "verify_attestation", "verify_delegation_token") and not declares_mode:
         minted.setdefault("policy", {"fail_mode": "fail_open"})
 
     try:

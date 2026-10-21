@@ -804,10 +804,10 @@ def test_tct_revocation_snapshot_forged_signature_is_rejected_not_silently_trust
     snapshot claiming a jti was revoked was trusted at face value (and,
     worse, a forged snapshot claiming a jti was NOT revoked would have
     silently defeated a genuine revocation) -- there was no signature check
-    at all. Tampering one byte of the minted signature must now surface
-    `REVOCATION_SNAPSHOT_SIGNATURE_INVALID`, not the `TCT_REVOKED` a
-    face-value read of `entries` would still (correctly, by accident) report
-    for this jti.
+    at all. Tampering one byte of the minted signature must now
+    discard the snapshot (RFC-AITP-0008 §1.5, 0.3.1-draft) and apply the
+    wrapper's `fail_closed`: `TCT_REVOKED`. The jti is listed here, so the
+    unlisted-jti test below is what proves the entries are not what decided.
     """
     keys = load_kat_keys(spec_dir)
     minted = mint_input(_tct_revocation_input(str(uuid.uuid4())), REFERENCE_CLOCK, keys)
@@ -817,7 +817,7 @@ def test_tct_revocation_snapshot_forged_signature_is_rejected_not_silently_trust
     minted["issuer_revocation_list"]["snapshot"]["signature"] = b64url_encode(bytes(tampered))
     with pytest.raises(AitpError) as exc:
         verify_tct(minted)
-    assert exc.value.code == "REVOCATION_SNAPSHOT_SIGNATURE_INVALID"
+    assert exc.value.code == "TCT_REVOKED"
 
 
 def test_tct_revocation_snapshot_missing_signature_is_a_structural_rejection(spec_dir: Path) -> None:
@@ -826,7 +826,7 @@ def test_tct_revocation_snapshot_missing_signature_is_a_structural_rejection(spe
     del minted["issuer_revocation_list"]["snapshot"]["signature"]
     with pytest.raises(AitpError) as exc:
         verify_tct(minted)
-    assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID"
+    assert exc.value.code == "TCT_REVOKED"
 
 
 def test_tct_revocation_snapshot_unknown_body_member_is_rejected(spec_dir: Path) -> None:
@@ -834,21 +834,22 @@ def test_tct_revocation_snapshot_unknown_body_member_is_rejected(spec_dir: Path)
     minted = mint_input(_tct_revocation_input(str(uuid.uuid4()), routing_hint="x"), REFERENCE_CLOCK, keys)
     with pytest.raises(AitpError) as exc:
         verify_tct(minted)
-    assert exc.value.code == "UNKNOWN_FIELD"
+    assert exc.value.code == "TCT_REVOKED"
 
 
 def test_tct_revocation_snapshot_absent_snapshot_is_a_structural_rejection_not_a_crash(spec_dir: Path) -> None:
     """`.get("snapshot")` (not `["snapshot"]`) plus `verify_snapshot_trust`'s
     own `isinstance` guard is what makes a wholly-absent `snapshot` key raise
     `AitpError` instead of a raw `KeyError` from the old `.get("snapshot", {})`
-    -> `.get("revocation_list", {})` chain's silent-empty-dict fallback.
+    -> `.get("revocation_list", {})` chain's silent-empty-dict fallback. That
+    error discards the snapshot, and the wrapper's `fail_closed` decides.
     """
     keys = load_kat_keys(spec_dir)
     minted = mint_input(_tct_revocation_input(str(uuid.uuid4())), REFERENCE_CLOCK, keys)
     del minted["issuer_revocation_list"]["snapshot"]
     with pytest.raises(AitpError) as exc:
         verify_tct(minted)
-    assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID"
+    assert exc.value.code == "TCT_REVOKED"
 
 
 @pytest.mark.parametrize("junk", ["not-an-object", ["a"], 5, True], ids=["string", "list", "int", "bool"])
@@ -858,29 +859,36 @@ def test_tct_revocation_snapshot_malformed_shape_is_rejected_not_a_crash(junk: A
     minted["issuer_revocation_list"]["snapshot"] = junk
     with pytest.raises(AitpError) as exc:
         verify_tct(minted)
-    assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID"
+    assert exc.value.code == "TCT_REVOKED"
+
+
+def test_tct_discarded_snapshot_not_listing_the_jti_still_revokes_under_fail_closed(spec_dir: Path) -> None:
+    """`tct-022`'s shape: the forged snapshot does not list this TCT's jti, so
+    only the discard-then-policy rule (RFC-AITP-0008 §1.5) yields
+    `TCT_REVOKED`. Ignoring the bad snapshot would accept the token -- the
+    fail-closed downgrade of aitp-rs#271."""
+    keys = load_kat_keys(spec_dir)
+    inp = _tct_revocation_input(str(uuid.uuid4()))
+    inp["tct_token_claims"]["jti"] = str(uuid.uuid4())
+    minted = mint_input(inp, REFERENCE_CLOCK, keys)
+    tampered = bytearray(b64url_decode(minted["issuer_revocation_list"]["snapshot"]["signature"]))
+    tampered[-1] ^= 0x01
+    minted["issuer_revocation_list"]["snapshot"]["signature"] = b64url_encode(bytes(tampered))
+    with pytest.raises(AitpError) as exc:
+        verify_tct(minted)
+    assert exc.value.code == "TCT_REVOKED"
 
 
 @pytest.mark.parametrize("fail_mode", ["soft_fail", "fail_open"], ids=["soft_fail", "fail_open"])
-@pytest.mark.parametrize(
-    ("defect", "expected_code"),
-    [("forged_signature", "REVOCATION_SNAPSHOT_SIGNATURE_INVALID"), ("unknown_member", "UNKNOWN_FIELD")],
-)
-def test_tct_untrustworthy_snapshot_survives_a_permissive_policy(
-    defect: str, expected_code: str, fail_mode: str, spec_dir: Path
-) -> None:
-    """A snapshot that was OBTAINED and cannot be TRUSTED reports its own
-    defect under every `fail_mode`, including the permissive ones.
-
-    RFC-AITP-0008 §1.5 decides trustworthiness before §3.1's `fail_mode` is
-    consulted at all; `fail_mode` answers "what if there is no snapshot", never
-    "what if the snapshot is malformed". Under `fail_closed` the distinction
-    hides -- both routes reject -- so this pins the direction where collapsing
-    them is outright unsafe: a forged or §7-MUST-reject snapshot must not be
-    downgraded to "merely absent" and waved through because the deployment
-    opted into availability-first behavior. The mode is supplied as an explicit
-    top-level `policy` (the authoritative source), so this proves the
-    highest-precedence permissive setting still cannot reach these branches.
+@pytest.mark.parametrize("defect", ["forged_signature", "unknown_member"])
+def test_tct_discarded_snapshot_follows_a_permissive_policy(defect: str, fail_mode: str, spec_dir: Path) -> None:
+    """A snapshot that was OBTAINED and cannot be TRUSTED is discarded and
+    counts as absent, so the configured `fail_mode` decides (RFC-AITP-0008
+    §1.5, 0.3.1-draft; `tct-023`). Under a permissive mode the token verifies,
+    even though the untrusted snapshot lists its jti: entries of a discarded
+    snapshot are never read. The mode is supplied as an explicit top-level
+    `policy` (the authoritative source), so it outranks the wrapper's
+    `fail_closed`.
     """
     keys = load_kat_keys(spec_dir)
     inp = _tct_revocation_input(str(uuid.uuid4()), **({"routing_hint": "x"} if defect == "unknown_member" else {}))
@@ -890,9 +898,7 @@ def test_tct_untrustworthy_snapshot_survives_a_permissive_policy(
         tampered = bytearray(b64url_decode(minted["issuer_revocation_list"]["snapshot"]["signature"]))
         tampered[-1] ^= 0x01
         minted["issuer_revocation_list"]["snapshot"]["signature"] = b64url_encode(bytes(tampered))
-    with pytest.raises(AitpError) as exc:
-        verify_tct(minted)
-    assert exc.value.code == expected_code
+    assert "grants" in verify_tct(minted)
 
 
 # ── Absence policy (issue #30): `verify_tct` gains an optional top-level
@@ -1358,25 +1364,28 @@ def _load_conformance_input(spec_dir: Path, fixture_id: str) -> dict[str, Any]:
 
 def test_delegation_revocation_snapshot_forged_signature_is_rejected_not_silently_trusted(spec_dir: Path) -> None:
     """Same finding as the TCT case above, through the multi-hop path
-    (`delegation.py::_revocation_index`, RFC-AITP-0011 §6)."""
+    (RFC-AITP-0011 §6): a hop issuer's snapshot that fails verification is
+    discarded, and `fail_closed` counts the hop as revoked (`del-mh-006`)."""
     keys = load_kat_keys(spec_dir)
     minted = mint_input(_load_conformance_input(spec_dir, "del-mh-004"), REFERENCE_CLOCK, keys)
+    minted["policy"] = {"fail_mode": "fail_closed"}
     sig = minted["revocation_snapshots"][0]["snapshot"]["signature"]
     tampered = bytearray(b64url_decode(sig))
     tampered[-1] ^= 0x01
     minted["revocation_snapshots"][0]["snapshot"]["signature"] = b64url_encode(bytes(tampered))
     with pytest.raises(AitpError) as exc:
         verify_delegation_token(minted)
-    assert exc.value.code == "REVOCATION_SNAPSHOT_SIGNATURE_INVALID"
+    assert exc.value.code == "DELEGATION_SOURCE_TCT_REVOKED"
 
 
 def test_delegation_revocation_snapshot_missing_is_a_structural_rejection_not_a_crash(spec_dir: Path) -> None:
     keys = load_kat_keys(spec_dir)
     minted = mint_input(_load_conformance_input(spec_dir, "del-mh-004"), REFERENCE_CLOCK, keys)
+    minted["policy"] = {"fail_mode": "fail_closed"}
     del minted["revocation_snapshots"][0]["snapshot"]
     with pytest.raises(AitpError) as exc:
         verify_delegation_token(minted)
-    assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID"
+    assert exc.value.code == "DELEGATION_SOURCE_TCT_REVOKED"
 
 
 def test_delegation_revocation_snapshots_non_dict_record_is_rejected_not_a_crash(spec_dir: Path) -> None:
@@ -1392,10 +1401,11 @@ def test_delegation_revocation_snapshots_non_dict_record_is_rejected_not_a_crash
 def test_delegation_revocation_snapshot_malformed_shape_is_rejected_not_a_crash(junk: Any, spec_dir: Path) -> None:
     keys = load_kat_keys(spec_dir)
     minted = mint_input(_load_conformance_input(spec_dir, "del-mh-004"), REFERENCE_CLOCK, keys)
+    minted["policy"] = {"fail_mode": "fail_closed"}
     minted["revocation_snapshots"][0]["snapshot"] = junk
     with pytest.raises(AitpError) as exc:
         verify_delegation_token(minted)
-    assert exc.value.code == "REVOCATION_SNAPSHOT_INVALID"
+    assert exc.value.code == "DELEGATION_SOURCE_TCT_REVOKED"
 
 
 @pytest.mark.parametrize(

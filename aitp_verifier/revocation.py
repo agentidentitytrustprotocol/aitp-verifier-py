@@ -26,6 +26,14 @@ document is old": the branch is ``not (issuer_ok and fresh)``, so it fires for
 a perfectly fresh snapshot issued by the wrong peer too. Any mode string
 outside §3.1's three is treated as ``fail_closed`` — never silently permissive.
 
+Those codes are what *this* operation reports about the snapshot itself. A
+token decision made with the same snapshot is a different question: since
+RFC-AITP-0008 0.3.1-draft a snapshot discarded for any of the reasons above
+counts as absent there, and the token decision applies ``fail_mode``
+(``tct.py``, and the multi-hop per-hop sweep in ``delegation.py``). Only A's
+own deny list in ``verify_delegation_token`` keeps the snapshot's own code
+under every mode (RFC-AITP-0006 §4 step 7).
+
 Every one of those codes is raised, not folded into a boolean. An earlier
 version of this module collapsed all three untrustworthy cases into a
 ``sig_ok`` flag and answered from ``fail_mode``; under ``soft_fail`` that

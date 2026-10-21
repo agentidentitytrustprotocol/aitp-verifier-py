@@ -8,6 +8,26 @@ here, so a future integrator has one place to check before upgrading.
 
 ### Security-relevant
 
+- **A discarded revocation snapshot falls back to `revocation_policy.mode` (RFC-AITP-0008
+  0.3.1-draft §1.5, spec `53b92c0`; aitp-rs #271).** A snapshot that fails structural,
+  member-set or signature verification is now discarded and treated as absent for the
+  token decision, the same as an unreachable endpoint. Before, it raised its own code
+  under every mode.
+  - `verify_tct`: under `fail_closed` the token is rejected with `TCT_REVOKED` (`tct-022`).
+    Under `fail_open`/`soft_fail` it verifies (`tct-023`), even when the untrusted snapshot
+    lists the jti. It used to report `REVOCATION_SNAPSHOT_INVALID`, `UNKNOWN_FIELD` or
+    `REVOCATION_SNAPSHOT_SIGNATURE_INVALID`.
+  - `verify_delegation_token`, multi-hop: a hop issuer's snapshot that fails verification,
+    is signed by an issuer other than its record's `issuer_aid`, or is expired/stale
+    leaves that issuer absent. Under `fail_closed` the hop counts as revoked:
+    `DELEGATION_SOURCE_TCT_REVOKED` (`del-mh-006`). A hop issuer with no snapshot supplied
+    still proceeds under every mode. This path now reads `policy` for the sweep too.
+  - Unchanged: `verify_revocation_snapshot` still reports the snapshot's own code, and a
+    failing snapshot carrying A's own deny list (labelled `self_aid`, or unlabelled) still
+    rejects with its own code under every mode (RFC-AITP-0006 §4 step 7, `del-008`).
+  - `run_conformance.py` no longer adds its `fail_open` default over a `verify_tct`
+    wrapper that declares `fail_mode`. It gives delegation fixtures that carry
+    `revocation_snapshots` the schema default `fail_closed`.
 - **Envelope schema rules (aitp-rs #262 parity).** Two structural rules of
   `aitp-envelope.schema.json` are now enforced in `validate_envelope_shape`, so they
   apply to `verify_envelope` and to the handshake's envelope check. They run after the
