@@ -73,6 +73,7 @@ __all__ = [
     "issuer_key_from_jwk",
     "issuer_key_from_config",
     "issuer_keys_from",
+    "decode_jwk_member",
 ]
 
 
@@ -141,7 +142,7 @@ def _require_str(value: Any, member: str) -> str:
 _MAX_B64_MEMBER_CHARS = 8192
 
 
-def _decode_member(value: dict[str, Any], member: str) -> bytes:
+def decode_jwk_member(value: dict[str, Any], member: str) -> bytes:
     text = _require_str(value.get(member), member)
     if len(text) > _MAX_B64_MEMBER_CHARS:
         raise ValueError(
@@ -175,7 +176,7 @@ def issuer_key_from_jwk(value: dict[str, Any]) -> IssuerKey:
         crv = value.get("crv")
         if crv != "Ed25519":
             raise ValueError(f"unsupported OKP curve: {describe_value(crv)}")
-        x = _decode_member(value, "x")
+        x = decode_jwk_member(value, "x")
         if len(x) != 32:
             raise ValueError(f"Ed25519 JWK 'x' must decode to 32 bytes, got {len(x)}")
         return IssuerKey(kid=kid, jose_alg="EdDSA", public_key=PublicKey.from_raw(ALG_ED25519, x))
@@ -184,8 +185,8 @@ def issuer_key_from_jwk(value: dict[str, Any]) -> IssuerKey:
         crv = value.get("crv")
         if crv != "P-256":
             raise ValueError(f"unsupported EC curve: {describe_value(crv)}")
-        x = _decode_member(value, "x")
-        y = _decode_member(value, "y")
+        x = decode_jwk_member(value, "x")
+        y = decode_jwk_member(value, "y")
         if len(x) != 32 or len(y) != 32:
             raise ValueError(f"P-256 JWK 'x'/'y' must each decode to 32 bytes, got {len(x)}/{len(y)}")
         numbers = ec.EllipticCurvePublicNumbers(
@@ -194,8 +195,8 @@ def issuer_key_from_jwk(value: dict[str, Any]) -> IssuerKey:
         return IssuerKey(kid=kid, jose_alg="ES256", public_key=PublicKey(ALG_P256, numbers.public_key()))
 
     if kty == "RSA":
-        n = _decode_member(value, "n")
-        e = _decode_member(value, "e")
+        n = decode_jwk_member(value, "n")
+        e = decode_jwk_member(value, "e")
         return IssuerKey(kid=kid, jose_alg="RS256", public_key=PublicKey.from_rsa_numbers(n, e))
 
     raise ValueError(f"unsupported or missing JWK 'kty': {describe_value(kty)}")

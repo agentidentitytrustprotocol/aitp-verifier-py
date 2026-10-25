@@ -1168,7 +1168,7 @@ def test_identity_oidc_rsa_exponent_over_ceiling_is_key_resolution_failed_not_a_
 # --- JWK member decode-length bound (issue #50) --------------------------------
 #
 # `issuer_key_from_jwk` decodes each base64url member (OKP `x`; EC `x`/`y`; RSA
-# `n`/`e`) via `_decode_member`, which checks the *encoded* string's length
+# `n`/`e`) via `decode_jwk_member`, which checks the *encoded* string's length
 # against `_MAX_B64_MEMBER_CHARS` before ever calling `b64url_decode` -- not
 # only after, via each branch's existing decoded-length/bit-length check.
 

@@ -94,7 +94,8 @@ The first release, published to PyPI as `aitp-verifier` (Alpha). Spec pin `ddec9
 - **The Draft `spiffe` identity type (VP5.1, issue #79; RFC-AITP-0002 §6), behind
   `experimental-spiffe-identity`.** `aitp_verifier/spiffe.py` verifies a SPIFFE ID
   subject against the verifier's bundle store (`trust_anchors_config.spiffe_bundles`),
-  as a JWT-SVID (ES256 and RS256; the other JWT-SVID algorithms are rejected) or as an
+  as a JWT-SVID (all nine JWT-SVID algorithms, RS/PS/ES 256/384/512, each admitted only
+  by a bundle key of the matching type and curve) or as an
   X509-SVID with its §6.4.1 proof. X509 path validation is limited to SVID chains and
   fails closed: no system trust store, no AIA, URI name constraints only, and any
   unprocessed critical extension rejects the chain. Without the feature, `spiffe` is

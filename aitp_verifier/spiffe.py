@@ -5,10 +5,12 @@ A SPIFFE ID ``subject`` is proven by an SVID that chains to the local SPIFFE
 bundle of the ID's trust domain (§6.2), in one of two forms:
 
 * **JWT-SVID** (§6.3): checked like the OIDC JWT, with the bundle's
-  ``jwt-svid`` key named by the header ``kid`` in place of an issuer key. Of
-  the nine algorithms JWT-SVID allows, this verifier implements ``ES256`` and
-  ``RS256`` (the JWK forms ``jwk.py`` parses). A JWT-SVID under any other
-  allowed algorithm is rejected, never verified some other way.
+  ``jwt-svid`` key named by the header ``kid`` in place of an issuer key. All
+  nine JWT-SVID algorithms are verified (RS/PS/ES 256/384/512). The key's
+  ``kty`` and ``crv`` fix which of them it can verify: an RSA key takes
+  ``RS*``/``PS*``, and a P-256/P-384/P-521 key takes only ES256/ES384/ES512.
+  The header ``alg`` must be one of those; the JWK's own ``alg`` is never
+  consulted.
 * **X509-SVID** (§6.4): ``x5c`` is validated as a certification path to the
   bundle's ``x509-svid`` CAs, and ``proof`` is the leaf key's signature over
   the §6.4.1 input.
@@ -37,14 +39,16 @@ from typing import Any
 
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
-from cryptography.hazmat.primitives.asymmetric import ec, ed25519
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
+from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from cryptography.x509.oid import ExtensionOID
 
 from .aid import parse_aid
 from .crypto import ALG_ED25519, ALG_P256, PublicKey, sha256
 from .errors import AitpError
 from .fields import describe_value
-from .jwk import issuer_key_from_jwk, thumbprint
+from .jwk import decode_jwk_member, thumbprint
 from .jws import parse_compact
 from .proofinput import SPIFFE_X509_DOMAIN, handshake_proof_input
 from .sigfield import decode_tagged_signature_for
@@ -55,9 +59,16 @@ SPIFFE_FEATURE = "experimental-spiffe-identity"
 
 _SVID_TYPES = {"jwt-svid", "x509-svid"}
 # JWT-SVID §2.1. Anything else (`none`, `HS*`, `EdDSA`) is rejected outright.
-_JWT_SVID_ALGS = {"RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512"}
-# The subset this verifier implements (see the module docstring).
-_IMPLEMENTED_JWT_SVID_ALGS = {"ES256", "RS256"}
+_JWT_SVID_HASHES: dict[str, hashes.HashAlgorithm] = {
+    "256": hashes.SHA256(), "384": hashes.SHA384(), "512": hashes.SHA512(),
+}
+_JWT_SVID_ALGS = {f"{family}{bits}" for family in ("RS", "PS", "ES") for bits in _JWT_SVID_HASHES}
+# The curve, and its coordinate size in bytes, that each ES* alg requires.
+_ES_CURVES: dict[str, tuple[str, type[ec.EllipticCurve], int]] = {
+    "ES256": ("P-256", ec.SECP256R1, 32),
+    "ES384": ("P-384", ec.SECP384R1, 48),
+    "ES512": ("P-521", ec.SECP521R1, 66),
+}
 _JWT_SVID_HEADER = {"alg", "kid", "typ"}
 _IAT_TOLERANCE_SECS = 300  # as for OIDC (§2.2)
 _MAX_ID_BYTES = 2048
@@ -186,8 +197,6 @@ def _verify_jwt_svid(
     alg = header.get("alg")
     if alg not in _JWT_SVID_ALGS:
         raise _fail(f"JWT-SVID alg {describe_value(alg)} is not a JWT-SVID algorithm")
-    if alg not in _IMPLEMENTED_JWT_SVID_ALGS:
-        raise _fail(f"JWT-SVID alg {alg} is not implemented by this verifier")
     if "typ" in header and header["typ"] not in ("JWT", "JOSE"):
         raise _fail(f"JWT-SVID typ {describe_value(header['typ'])} is not JWT or JOSE")
     kid = header.get("kid")
@@ -196,12 +205,7 @@ def _verify_jwt_svid(
     matches = [k for k in candidates if k.get("kid") == kid]
     if len(matches) != 1:
         raise _fail(f"{len(matches)} jwt-svid bundle keys carry kid {kid!r}; exactly one must")
-    key = issuer_key_from_jwk(matches[0])
-    if key.jose_alg != alg:
-        raise _fail(f"JWT-SVID alg {alg} != bundle key alg {key.jose_alg}")
-    # A SPIFFE authority's token, not an AITP signing input: §5.4.7 low-S
-    # does not apply, as for an OIDC IdP token.
-    if not key.public_key.verify_jose(parsed.signing_input, parsed.signature, idp_token=True):
+    if not _verify_jwt_svid_signature(matches[0], alg, parsed.signing_input, parsed.signature):
         raise _fail("JWT-SVID signature invalid")
 
     # --- nothing below runs without a just-verified signature. ---
@@ -229,6 +233,41 @@ def _verify_jwt_svid(
     jkt = cnf.get("jkt") if isinstance(cnf, dict) else None
     if jkt != thumbprint(parse_aid(envelope["sender"]["agent_id"])):
         raise _fail("JWT-SVID cnf.jkt does not bind the sender key")
+
+
+def _verify_jwt_svid_signature(jwk: dict[str, Any], alg: str, signing_input: bytes, sig: bytes) -> bool:
+    """Verify under the bundle key *jwk*, whose ``kty``/``crv`` must admit
+    *alg*. A SPIFFE authority's token is not an AITP signing input, so the
+    §5.4.7 low-S rule does not apply, as for an OIDC IdP token."""
+    digest = _JWT_SVID_HASHES[alg[2:]]
+    kty = jwk.get("kty")
+    try:
+        if alg.startswith("ES"):
+            crv_name, curve, size = _ES_CURVES[alg]
+            if kty != "EC" or jwk.get("crv") != crv_name:
+                raise _fail(f"JWT-SVID alg {alg} needs an EC {crv_name} key; the bundle key is {describe_value(kty)}"
+                            f" {describe_value(jwk.get('crv'))}")
+            x, y = decode_jwk_member(jwk, "x"), decode_jwk_member(jwk, "y")
+            if len(x) != size or len(y) != size:
+                raise _fail(f"{crv_name} JWK x/y must each decode to {size} bytes")
+            ec_key = ec.EllipticCurvePublicNumbers(int.from_bytes(x, "big"), int.from_bytes(y, "big"), curve()).public_key()
+            if len(sig) != 2 * size:
+                return False
+            der = encode_dss_signature(int.from_bytes(sig[:size], "big"), int.from_bytes(sig[size:], "big"))
+            ec_key.verify(der, signing_input, ec.ECDSA(digest))
+            return True
+        if kty != "RSA":
+            raise _fail(f"JWT-SVID alg {alg} needs an RSA key; the bundle key is {describe_value(kty)}")
+        rsa_key = PublicKey.from_rsa_numbers(decode_jwk_member(jwk, "n"), decode_jwk_member(jwk, "e")).native
+        assert isinstance(rsa_key, rsa.RSAPublicKey)
+        pad: padding.AsymmetricPadding = (
+            padding.PKCS1v15() if alg.startswith("RS")
+            else padding.PSS(mgf=padding.MGF1(digest), salt_length=digest.digest_size)  # RFC 7518 §3.5
+        )
+        rsa_key.verify(sig, signing_input, pad, digest)
+        return True
+    except InvalidSignature:
+        return False
 
 
 # ── X509-SVID (§6.4) ────────────────────────────────────────────────────────

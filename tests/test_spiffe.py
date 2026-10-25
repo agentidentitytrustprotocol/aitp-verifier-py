@@ -19,7 +19,8 @@ from typing import Any, Callable
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 from cryptography.x509.oid import NameOID
 
 from aitp_verifier.b64 import b64url_decode, b64url_encode
@@ -235,13 +236,94 @@ def test_jwt_svid_string_aud_is_one_value(spec_dir: Path) -> None:
     (lambda env, me: _jwt(env, me, header={"alg": "EdDSA", "kid": "aitp-test-spiffe-jwt-1"}), "not a JWT-SVID algorithm"),
     (lambda env, me: _jwt(env, me, header={"alg": "none", "kid": "aitp-test-spiffe-jwt-1"}), "not a JWT-SVID algorithm"),
     (lambda env, me: _jwt(env, me, header={"alg": "HS256", "kid": "aitp-test-spiffe-jwt-1"}), "not a JWT-SVID algorithm"),
-    (lambda env, me: _jwt(env, me, header={"alg": "ES384", "kid": "aitp-test-spiffe-jwt-1"}), "not implemented"),
-    (lambda env, me: _jwt(env, me, header={"alg": "RS256", "kid": "aitp-test-spiffe-jwt-1"}), "!= bundle key alg"),
+    (lambda env, me: _jwt(env, me, header={"alg": "ES384", "kid": "aitp-test-spiffe-jwt-1"}), "needs an EC P-384 key"),
+    (lambda env, me: _jwt(env, me, header={"alg": "RS256", "kid": "aitp-test-spiffe-jwt-1"}), "needs an RSA key"),
+    (lambda env, me: _jwt(env, me, header={"alg": "PS256", "kid": "aitp-test-spiffe-jwt-1"}), "needs an RSA key"),
     (lambda env, me: _jwt(env, me, key=CA_KEY), "signature invalid"),
 ])
 def test_jwt_svid_rules(spec_dir: Path, mutate: Callable[[dict[str, Any], str], str], reason: str) -> None:
     env, me = _envelope(spec_dir)
     _rejects(reason, _jwt_identity(mutate(env, me)), env, me, _bundles(JWT_JWK))
+
+
+_RSA_KEY = rsa.generate_private_key(65537, 2048)
+_EC_KEYS = {"ES256": ec.generate_private_key(ec.SECP256R1()), "ES384": ec.generate_private_key(ec.SECP384R1()),
+            "ES512": ec.generate_private_key(ec.SECP521R1())}
+_HASHES = {"256": hashes.SHA256(), "384": hashes.SHA384(), "512": hashes.SHA512()}
+_CRV = {"ES256": ("P-256", 32), "ES384": ("P-384", 48), "ES512": ("P-521", 66)}
+
+
+def _uint(n: int) -> str:
+    return b64url_encode(n.to_bytes((n.bit_length() + 7) // 8, "big"))
+
+
+def _authority(alg: str) -> tuple[dict[str, Any], Callable[[bytes], bytes]]:
+    """A bundle JWK for *alg* and a JOSE signer under its private key."""
+    digest = _HASHES[alg[2:]]
+    if alg.startswith("ES"):
+        priv = _EC_KEYS[alg]
+        crv, size = _CRV[alg]
+        nums = priv.public_key().public_numbers()
+        jwk = {"kty": "EC", "crv": crv, "x": b64url_encode(nums.x.to_bytes(size, "big")),
+               "y": b64url_encode(nums.y.to_bytes(size, "big"))}
+
+        def sign(data: bytes) -> bytes:
+            r, s_ = decode_dss_signature(priv.sign(data, ec.ECDSA(digest)))
+            return r.to_bytes(size, "big") + s_.to_bytes(size, "big")
+    else:
+        pub = _RSA_KEY.public_key().public_numbers()
+        jwk = {"kty": "RSA", "n": _uint(pub.n), "e": _uint(pub.e)}
+        pad: padding.AsymmetricPadding = (padding.PKCS1v15() if alg.startswith("RS")
+                                          else padding.PSS(mgf=padding.MGF1(digest), salt_length=digest.digest_size))
+
+        def sign(data: bytes) -> bytes:
+            return _RSA_KEY.sign(data, pad, digest)
+    return {**jwk, "kid": "k1", "use": "jwt-svid"}, sign
+
+
+def _signed_jwt(env: dict[str, Any], me: str, alg: str, sign: Callable[[bytes], bytes]) -> str:
+    body = {"sub": SUBJECT, "aud": me, "iat": NOW, "exp": NOW + 300, "nonce": env["payload"]["pop_nonce"],
+            "cnf": {"jkt": thumbprint_for_aid(env["sender"]["agent_id"])}}
+    signing_input = (b64url_encode(json.dumps({"alg": alg, "kid": "k1"}).encode()) + "."
+                     + b64url_encode(json.dumps(body).encode()))
+    return signing_input + "." + b64url_encode(sign(signing_input.encode()))
+
+
+@pytest.mark.parametrize("alg", sorted(f"{f}{b}" for f in ("RS", "PS", "ES") for b in ("256", "384", "512")))
+def test_every_jwt_svid_algorithm_verifies(spec_dir: Path, alg: str) -> None:
+    """RFC-AITP-0002 §6.3: all nine JWT-SVID algorithms, each signed with a
+    generated key and verified; a tampered signature then fails."""
+    env, me = _envelope(spec_dir)
+    jwk, sign = _authority(alg)
+    token = _signed_jwt(env, me, alg, sign)
+    _check(_jwt_identity(token), env, me, _bundles(jwk))
+    head, body, sig = token.split(".")
+    flipped = bytearray(b64url_decode(sig))
+    flipped[len(flipped) // 2] ^= 1
+    _rejects("signature invalid", _jwt_identity(f"{head}.{body}.{b64url_encode(bytes(flipped))}"), env, me, _bundles(jwk))
+
+
+@pytest.mark.parametrize(("key_alg", "header_alg", "reason"), [
+    ("ES256", "ES384", "needs an EC P-384 key"),  # a curve fixes its one ES* alg
+    ("ES384", "ES256", "needs an EC P-256 key"),
+    ("ES512", "RS512", "needs an RSA key"),
+    ("RS256", "ES256", "needs an EC P-256 key"),
+    ("RS256", "PS256", "signature invalid"),  # same key, other padding: no cross-verification
+    ("PS384", "RS384", "signature invalid"),
+    ("RS256", "RS384", "signature invalid"),  # same key, other hash
+])
+def test_jwt_svid_alg_must_fit_the_key_and_the_signature(spec_dir: Path, key_alg: str, header_alg: str,
+                                                        reason: str) -> None:
+    env, me = _envelope(spec_dir)
+    jwk, sign = _authority(key_alg)
+    _rejects(reason, _jwt_identity(_signed_jwt(env, me, header_alg, sign)), env, me, _bundles(jwk))
+
+
+@pytest.mark.parametrize("alg", ["none", "HS256", "HS512", "EdDSA", "Ed25519", "ES256K", "es256"])
+def test_non_jwt_svid_algorithms_are_rejected(spec_dir: Path, alg: str) -> None:
+    env, me = _envelope(spec_dir)
+    jwk, sign = _authority("ES256")
+    _rejects("not a JWT-SVID algorithm", _jwt_identity(_signed_jwt(env, me, alg, sign)), env, me, _bundles(jwk))
 
 
 def test_jwt_svid_kid_must_name_exactly_one_key(spec_dir: Path) -> None:

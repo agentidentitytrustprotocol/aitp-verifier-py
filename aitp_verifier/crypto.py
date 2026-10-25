@@ -201,6 +201,11 @@ class PublicKey:
         except (_CryptoInvalidSignature, ValueError):
             return False
 
+    @property
+    def native(self) -> object:
+        """The ``cryptography`` key object (SPIFFE JWT-SVID verification)."""
+        return self._key
+
     def verify_jose(self, signing_input: bytes, sig: bytes, *, idp_token: bool = False) -> bool:
         """Verify a compact-JWS signature over the ``header.payload`` bytes.
 
