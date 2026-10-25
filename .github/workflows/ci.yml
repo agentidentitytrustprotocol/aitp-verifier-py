@@ -244,7 +244,7 @@ jobs:
     name: adapter agrees with run_conformance under aitp-conformance
     runs-on: ubuntu-latest
     env:
-      AITP_RS_SHA: e0854dfce5207eac55d132dec8b7003b91f8cde9
+      AITP_RS_SHA: be122245c500d4c5f5a2172845f1be99722c8f2c
       FEATURES: experimental-multihop-delegation experimental-session-bundle experimental-spiffe-identity aitp-self-attestation
     steps:
       - name: Check out the verifier

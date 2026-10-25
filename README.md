@@ -154,12 +154,10 @@ issuer.
 runner. The `adapter-parity` CI job (aitp-rs pinned by `AITP_RS_SHA` in `ci.yml`) produces
 both reports. It validates them against the spec's report schema and checker, then runs
 [`scripts/parity-diff.py`](scripts/parity-diff.py), which requires the two to agree
-fixture for fixture. The diff lists its allowed exceptions by name:
-
-- `del-007` runner policy: aitp-conformance skips it once the multi-hop draft feature is
-  on.
-- runner defects reported upstream and not yet fixed at the aitp-rs pin. A listed entry
-  that starts agreeing fails the diff, so the list cannot go stale.
+fixture for fixture. Its one allowed exception is runner policy: aitp-conformance skips
+`del-007` once the multi-hop draft feature is on. The list of known runner defects is
+empty at the aitp-rs pin. A future entry needs an upstream issue, and it fails the diff
+once it starts agreeing, so the list cannot go stale.
 
 A run with a draft feature enabled cannot pass the `AITP v0.3` gate, because the
 feature-negation skip of `del-007` blocks it. For a core claim, enable extension features

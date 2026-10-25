@@ -5,6 +5,13 @@ integrator has one place to check before upgrading.
 
 ## Unreleased
 
+### Other changes
+
+- **aitp-conformance pinned at aitp-rs `be12224`, with no known runner gaps.** The
+  runner fixes for the OIDC KAT keys, nested `*_claims` companions and the inline
+  Manifest PoP all landed upstream, so `KNOWN_RUNNER_GAPS` is empty. The adapter-parity
+  job now allows only the `del-007` runner-policy skip.
+
 ## 0.1.1 — 2026-10-25
 
 Spec pin `3a78a8f` (#134, RFC-AITP-0002 §6.3 "Key match").

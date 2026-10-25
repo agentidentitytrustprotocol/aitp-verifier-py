@@ -25,16 +25,11 @@ RUNNER_POLICY = {
 }
 
 # Defects in the aitp-conformance runner at the pinned aitp-rs commit, reported
-# upstream. The adapter's outcome is wrong because the runner sent it a wrong
-# input, not because the verifier differs. Delete each entry when the pinned
-# aitp-rs commit carries the fix.
-_COMPANION = "runner leaves a *_claims minting companion inside a nested object"
-KNOWN_RUNNER_GAPS = {
-    **{fid: _COMPANION for fid in ("mh-006", "mh-007", "mh-008", "mh-success-001",
-                                   "bundle-001", "bundle-002", "bundle-003",
-                                   "bundle-005-extensions-accepted", "bundle-007")},
-    "mh-002": "runner mints the inline Manifest's proof_of_possession signature invalid",
-}
+# upstream: the adapter's outcome is wrong because the runner sent it a wrong
+# input, not because the verifier differs. Empty at aitp-rs be12224, which
+# carries every fix (#364, #367, #369). An entry added here needs an upstream
+# issue, and is deleted when the pinned commit carries its fix.
+KNOWN_RUNNER_GAPS: dict[str, str] = {}
 
 
 def outcomes(path: str) -> dict[str, dict[str, str]]:
