@@ -16,6 +16,19 @@ This verifier tracks that one wire. The conformance claim it passes is `AITP v0.
 `AITP v0.3 self-attestation`) at the spec commit in [`SPEC_VERSION`](SPEC_VERSION); see
 [Conformance coverage](#conformance-coverage).
 
+## Install
+
+```
+pip install aitp-verifier
+```
+
+The distribution is `aitp-verifier`, the import package is `aitp_verifier`, and the
+console script is `aitp-verifier-adapter`. Its version numbers are its own. They do not
+follow aitp-rs's lockstep releases, and the spec commit a release passes is the one in
+`SPEC_VERSION`. Releases go out from a `v*` tag through PyPI trusted publishing
+([`release.yml`](.github/workflows/release.yml)). The tag must equal the `pyproject.toml`
+version, or nothing is published.
+
 ## Independence claim
 
 This codebase was implemented **from the RFC-AITP texts and JSON schemas only**

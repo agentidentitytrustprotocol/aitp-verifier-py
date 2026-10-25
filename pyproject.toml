@@ -10,6 +10,8 @@ readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
+authors = [{ name = "AITP contributors" }]
+keywords = ["aitp", "agent-identity", "verifier", "conformance", "jws"]
 # Floors are set so the oldest supported install carries no known OSV
 # advisory, and CI's `floors` job holds them to it. This is hygiene, not
 # incident response: none of the advisories fixed between 42.0 and 50.0 is
@@ -25,8 +27,7 @@ dependencies = [
 # above), and pairing that with a classifier-form license is a build error, not
 # a warning. Every string below was checked against PyPI's live classifier list
 # (https://pypi.org/pypi?%3Aaction=list_classifiers) so none is invented.
-# "3 - Alpha" is the honest status for a 0.1.0 release that has not been
-# published to PyPI yet.
+# "3 - Alpha" is the honest status for a 0.x release.
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -40,6 +41,13 @@ classifiers = [
     # confirmed by unzipping dist/*.whl (see the CI wheel-smoke-test job).
     "Typing :: Typed",
 ]
+
+[project.urls]
+Homepage = "https://github.com/agentidentitytrustprotocol/aitp-verifier-py"
+Source = "https://github.com/agentidentitytrustprotocol/aitp-verifier-py"
+Issues = "https://github.com/agentidentitytrustprotocol/aitp-verifier-py/issues"
+Changelog = "https://github.com/agentidentitytrustprotocol/aitp-verifier-py/blob/main/CHANGELOG.md"
+Specification = "https://github.com/agentidentitytrustprotocol/agentidentitytrustprotocol"
 
 [project.scripts]
 # The aitp-conformance subprocess adapter (aitp_verifier/adapter.py).

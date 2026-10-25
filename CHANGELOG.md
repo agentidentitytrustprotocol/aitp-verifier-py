@@ -87,6 +87,13 @@ here, so a future integrator has one place to check before upgrading.
 
 ### Other changes
 
+- **PyPI release pipeline (VP3.2, issue #78).** `release.yml` publishes `aitp-verifier`
+  with OIDC trusted publishing: a `v*` tag publishes to PyPI, and a manual run publishes to
+  TestPyPI. Every action is pinned by SHA, and no API token exists. The build fails closed
+  when the tag is not `v` plus the `pyproject.toml` version, and it smoke-tests the
+  installed wheel's adapter before anything is uploaded. The owner's one-time PyPI setup is
+  in `scripts/handoff/pypi-trusted-publisher.md`. `pyproject.toml` gains `project.urls`,
+  `authors` and `keywords`.
 - **aitp-conformance adapter (VP3.1, issue #77).** `aitp-verifier-adapter` (also
   `python -m aitp_verifier.adapter`) speaks aitp-rs's NDJSON subprocess protocol, so the
   `aitp-conformance` runner can drive this verifier. Both front ends share
