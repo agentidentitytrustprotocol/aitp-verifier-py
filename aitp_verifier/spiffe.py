@@ -9,8 +9,9 @@ bundle of the ID's trust domain (§6.2), in one of two forms:
   nine JWT-SVID algorithms are verified (RS/PS/ES 256/384/512). The key's
   ``kty`` and ``crv`` fix which of them it can verify: an RSA key takes
   ``RS*``/``PS*``, and a P-256/P-384/P-521 key takes only ES256/ES384/ES512.
-  The header ``alg`` must be one of those; the JWK's own ``alg`` is never
-  consulted.
+  When the JWK also carries ``alg``, the header ``alg`` must equal it (§6.3
+  "Key match"). The JWK ``alg`` only narrows; it never admits an algorithm
+  the key's structure does not.
 * **X509-SVID** (§6.4): ``x5c`` is validated as a certification path to the
   bundle's ``x509-svid`` CAs, and ``proof`` is the leaf key's signature over
   the §6.4.1 input.
@@ -241,6 +242,8 @@ def _verify_jwt_svid_signature(jwk: dict[str, Any], alg: str, signing_input: byt
     §5.4.7 low-S rule does not apply, as for an OIDC IdP token."""
     digest = _JWT_SVID_HASHES[alg[2:]]
     kty = jwk.get("kty")
+    if "alg" in jwk and jwk["alg"] != alg:
+        raise _fail(f"JWT-SVID alg {alg} != bundle key alg {describe_value(jwk['alg'])}")
     try:
         if alg.startswith("ES"):
             crv_name, curve, size = _ES_CURVES[alg]

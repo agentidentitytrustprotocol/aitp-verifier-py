@@ -319,6 +319,35 @@ def test_jwt_svid_alg_must_fit_the_key_and_the_signature(spec_dir: Path, key_alg
     _rejects(reason, _jwt_identity(_signed_jwt(env, me, header_alg, sign)), env, me, _bundles(jwk))
 
 
+@pytest.mark.parametrize(("key_alg", "jwk_alg", "header_alg", "ok"), [
+    ("RS256", "RS256", "PS256", False),  # §6.3 "Key match": a JWK alg pins the header alg
+    ("RS256", "RS256", "RS256", True),
+    ("PS512", "PS512", "PS512", True),
+    ("ES384", "ES384", "ES384", True),
+    ("ES256", "ES384", "ES256", False),  # a JWK alg that disagrees with the header
+    ("ES256", "ES384", "ES384", False),  # a JWK alg never admits what kty/crv does not
+    ("RS256", ["RS256"], "RS256", False),  # a non-string alg matches nothing
+])
+def test_a_jwk_alg_member_must_equal_the_header_alg(spec_dir: Path, key_alg: str, jwk_alg: Any, header_alg: str,
+                                                    ok: bool) -> None:
+    env, me = _envelope(spec_dir)
+    jwk, sign = _authority(key_alg)
+    identity = _jwt_identity(_signed_jwt(env, me, header_alg, sign))
+    store = _bundles({**jwk, "alg": jwk_alg})
+    if ok:
+        _check(identity, env, me, store)
+    else:
+        _rejects("JWT-SVID alg", identity, env, me, store)
+
+
+@pytest.mark.parametrize("header_alg", ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512"])
+def test_an_rsa_jwk_without_alg_admits_every_rsa_algorithm(spec_dir: Path, header_alg: str) -> None:
+    env, me = _envelope(spec_dir)
+    jwk, sign = _authority(header_alg)
+    assert "alg" not in jwk
+    _check(_jwt_identity(_signed_jwt(env, me, header_alg, sign)), env, me, _bundles(jwk))
+
+
 @pytest.mark.parametrize("alg", ["none", "HS256", "HS512", "EdDSA", "Ed25519", "ES256K", "es256"])
 def test_non_jwt_svid_algorithms_are_rejected(spec_dir: Path, alg: str) -> None:
     env, me = _envelope(spec_dir)

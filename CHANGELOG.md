@@ -5,6 +5,18 @@ integrator has one place to check before upgrading.
 
 ## Unreleased
 
+## 0.1.1 — 2026-10-25
+
+Spec pin `3a78a8f` (#134, RFC-AITP-0002 §6.3 "Key match").
+
+### Security-relevant
+
+- **A JWT-SVID bundle key's `alg` member now pins the header `alg`.** When the selected
+  `jwt-svid` JWK carries `alg`, the JWT-SVID header `alg` MUST equal it. Before, the JWK
+  `alg` was ignored, so an RSA key published as `RS256` also verified `PS*` tokens. The
+  JWK `alg` only narrows: the key's `kty`/`crv` still decides which algorithms it can
+  admit at all. A JWK without `alg` still admits every algorithm that fits its type.
+
 ## 0.1.0 — 2026-10-25
 
 The first release, published to PyPI as `aitp-verifier` (Alpha). Spec pin `ddec9f1`

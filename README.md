@@ -102,7 +102,7 @@ There are no other claims and no named profiles. Core fixtures run with no draft
 opted in, so `del-007`, which expects `DELEGATION_MULTIHOP_NOT_SUPPORTED`, is executed even
 though this verifier implements multi-hop delegation.
 
-Current status at the pinned spec commit (`SPEC_VERSION`, `ddec9f1`, `aitp/0.3`; the runner
+Current status at the pinned spec commit (`SPEC_VERSION`, `3a78a8f`, `aitp/0.3`; the runner
 prints the live number): **118 fixtures pass, 0 fail, 15 skipped**. All 94 core fixtures
 pass. So do the three Draft opt-ins (`experimental-multihop-delegation`,
 `experimental-session-bundle`, `experimental-spiffe-identity`), the `aitp-self-attestation` extension, and all multi-step
