@@ -5,6 +5,16 @@ integrator has one place to check before upgrading.
 
 ## Unreleased
 
+### Changed
+
+- **Adapter: a missing top-level argument is `MALFORMED_REQUEST`** (#101). Each verify
+  operation declares the argument sets it accepts in `verify.REQUIRED_ARGUMENTS`. The
+  adapter checks that table before dispatch and answers a request that completes none of
+  them with `MALFORMED_REQUEST`, naming the argument, e.g.
+  `verify_tct: missing required argument 'tct_token'`. The operation is never called.
+  Before, the `KeyError` surfaced as `ADAPTER_INTERNAL_ERROR`. A request that carries its
+  arguments gets the same verdict as before. The library API is unchanged.
+
 ## 0.1.2 — 2026-10-25
 
 ### Security-relevant

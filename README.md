@@ -151,6 +151,12 @@ read them from an unreleased spec instead. A set `AITP_SPEC` that is not a usabl
 checkout fails `init` with an error naming it. `aitp-verifier-adapter --help` says the
 same.
 
+A request line that is not a JSON object, or a verify operation missing a top-level
+argument it requires, gets `MALFORMED_REQUEST` and no verdict. The reason names the
+argument, e.g. `verify_tct: missing required argument 'tct_token'`, and
+`verify.REQUIRED_ARGUMENTS` lists each operation's argument sets. An exception inside an
+operation is `ADAPTER_INTERNAL_ERROR`. Every other failure carries the AITP registry code.
+
 `run_conformance.py --report native.json` writes the same report from this repo's own
 runner. The `adapter-parity` CI job (aitp-rs pinned by `AITP_RS_SHA` in `ci.yml`) produces
 both reports. It validates them against the spec's report schema and checker, then runs

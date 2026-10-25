@@ -17,7 +17,7 @@ from aitp_verifier.adapter import Adapter, main, serve
 from aitp_verifier.keys import load_kat_keys
 from aitp_verifier.minter import mint_input
 from aitp_verifier.timeutil import REFERENCE_CLOCK
-from aitp_verifier.verify import OPERATIONS
+from aitp_verifier.verify import OPERATIONS, REQUIRED_ARGUMENTS, missing_argument
 
 
 def _run(lines: list[bytes], adapter: Adapter | None = None) -> list[dict[str, Any]]:
@@ -145,6 +145,77 @@ def test_an_exception_inside_an_op_is_an_error_outcome_and_the_next_request_runs
     assert crashed == {"id": "req-1", "ok": False, "error_code": "ADAPTER_INTERNAL_ERROR",
                        "message": "verify_manifest raised RuntimeError: injected"}
     assert after["ok"] is True
+
+
+# Written out rather than read from REQUIRED_ARGUMENTS, so the table itself is
+# under test: the argument an empty request is told it lacks, per operation.
+FIRST_REQUIRED = {
+    "verify_envelope": "envelope",
+    "verify_manifest": "manifest",
+    "verify_tct": "tct_token",
+    "verify_tct_as_issuer": "tct_token",
+    "verify_attestation": "tct_token",
+    "verify_grant_voucher": "voucher_token",
+    "verify_delegation_token": "delegation_token",
+    "verify_revocation_snapshot": "snapshot",
+    "verify_handshake_payload": "envelope",
+    "verify_session_bundle": "self_aid",
+}
+
+
+def test_every_operation_declares_its_required_arguments() -> None:
+    assert set(REQUIRED_ARGUMENTS) == set(OPERATIONS) == set(FIRST_REQUIRED)
+
+
+@pytest.mark.parametrize(("op", "argument"), sorted(FIRST_REQUIRED.items()))
+def test_an_empty_request_is_malformed_naming_the_first_missing_argument(
+    monkeypatch: pytest.MonkeyPatch, op: str, argument: str
+) -> None:
+    def never(inp: dict[str, Any], now: int) -> dict[str, Any]:
+        raise AssertionError(f"{op} was called without its arguments")
+
+    monkeypatch.setitem(OPERATIONS, op, never)
+    [reply] = _run([_req("req-1", op)])
+    assert reply == {"id": "req-1", "ok": False, "error_code": "MALFORMED_REQUEST",
+                     "message": f"{op}: missing required argument {argument!r}"}
+
+
+@pytest.mark.parametrize(("op", "params", "argument"), [
+    ("verify_tct_as_issuer", {"tct_token": "t"}, "self_aid"),
+    ("verify_tct_as_issuer", {"self_aid": "a"}, "tct_token"),
+    ("verify_attestation", {"tct_token": "t"}, "expected_ext_key"),
+    ("verify_attestation", {"expected_ext_key": "k"}, "tct_token"),
+    ("verify_session_bundle", {"self_aid": "a"}, "session_bundle"),
+    ("verify_session_bundle", {"session_bundle": {}}, "self_aid"),
+    # The incomplete set closest to complete names the argument.
+    ("verify_envelope", {"active_tct": "t"}, "requested_capability"),
+    ("verify_handshake_payload", {"peer_a": {}}, "peer_b"),
+])
+def test_each_required_argument_is_named_when_it_alone_is_missing(op: str, params: dict[str, Any], argument: str) -> None:
+    [reply] = _run([_req("req-1", op, **params)])
+    assert reply["error_code"] == "MALFORMED_REQUEST"
+    assert reply["message"] == f"{op}: missing required argument {argument!r}"
+
+
+@pytest.mark.parametrize(("op", "params", "code"), [
+    # A request with its arguments keeps the operation's own verdict, even
+    # when an argument's value is unusable.
+    ("verify_delegation_token", {"delegation_token": 5}, "DELEGATION_INVALID_SIGNATURE"),
+    ("verify_delegation_token", {"delegation": {}}, "DELEGATION_INVALID_SIGNATURE"),
+    ("verify_handshake_payload", {"envelope": {}}, "UNKNOWN_VERSION"),
+    ("verify_envelope", {"needed_key_for": "x"}, "KEY_RESOLUTION_FAILED"),
+])
+def test_a_request_with_its_arguments_reaches_the_operation(op: str, params: dict[str, Any], code: str) -> None:
+    [reply] = _run([_req("req-1", op, **params)])
+    assert reply["error_code"] == code
+
+
+def test_every_corpus_request_carries_its_required_arguments(spec_dir: Path) -> None:
+    for path in sorted((spec_dir / "schemas/conformance").glob("*.json")):
+        inp = json.loads(path.read_text(encoding="utf-8")).get("input")
+        if not isinstance(inp, dict) or inp.get("operation") not in OPERATIONS or "sequence" in inp:
+            continue  # sequence steps name a message_id, answered before dispatch
+        assert missing_argument(inp["operation"], inp) is None, path.name
 
 
 def test_without_aitp_spec_the_packaged_kat_keys_are_used(spec_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
