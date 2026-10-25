@@ -292,10 +292,12 @@ jobs:
         run: |
           features=()
           for f in $FEATURES; do features+=(--feature "$f"); done
-          # The exit code reports the run's own core gate, which the listed
-          # runner defects hold red at this aitp-rs pin; the report and the
-          # parity diff below are the checks. Anything but 0 or 1 is a runner
-          # or adapter crash.
+          # The exit code reports the run's own core gate, which a draft
+          # feature holds red (its negation skips core del-004 and del-007);
+          # the report and the parity diff below are the checks. Anything but
+          # 0 or 1 is a runner or adapter crash. AITP_SPEC is set here to
+          # exercise the spec-checkout key path; the badge run below uses the
+          # packaged keys.
           set +e
           aitp-rs/target/debug/aitp-conformance run \
             --target "$(command -v aitp-verifier-adapter)" \
@@ -304,10 +306,28 @@ jobs:
           rc=$?
           set -e
           [ "$rc" -le 1 ] || { echo "aitp-conformance exited $rc"; exit 1; }
+      # The badge configuration (conformance-badge.md: extension features
+      # only), run the way a PyPI user runs it: no AITP_SPEC, so the KAT keys
+      # come from the package. Every fixture it sends must pass and both
+      # gates must hold, so the exit code is checked strictly.
+      - name: Badge run (extension features only, packaged KAT keys)
+        shell: bash
+        run: |
+          env -u AITP_SPEC aitp-rs/target/debug/aitp-conformance run \
+            --target "$(command -v aitp-verifier-adapter)" \
+            --fixtures-dir agentidentitytrustprotocol/schemas/conformance \
+            --feature aitp-self-attestation --report "$RUNNER_TEMP/badge.json"
+          python - "$RUNNER_TEMP/badge.json" <<'PY'
+          import json, sys
+          report = json.load(open(sys.argv[1]))
+          print("core:", report["totals"]["core"])
+          failed = [g["name"] for g in report["gates"] if not g["passed"]]
+          sys.exit(f"gates not passed: {failed}" if failed else 0)
+          PY
       - name: Both reports validate against the schema and pass the spec's report checker
         run: |
           pip install "jsonschema[format]>=4.23"
-          for r in native adapter; do
+          for r in native adapter badge; do
             python - "$RUNNER_TEMP/$r.json" <<'PY'
           import json, sys
           from jsonschema import Draft202012Validator
@@ -331,6 +351,7 @@ jobs:
           path: |
             ${{ runner.temp }}/native.json
             ${{ runner.temp }}/adapter.json
+            ${{ runner.temp }}/badge.json
           if-no-files-found: ignore
 
   wheel-smoke-test:

@@ -103,7 +103,7 @@ opted in, so `del-007`, which expects `DELEGATION_MULTIHOP_NOT_SUPPORTED`, is ex
 though this verifier implements multi-hop delegation.
 
 Current status at the pinned spec commit (`SPEC_VERSION`, `3a78a8f`, `aitp/0.3`; the runner
-prints the live number): **118 fixtures pass, 0 fail, 15 skipped**. All 94 core fixtures
+prints the live number): **119 fixtures pass, 0 fail, 14 skipped**. All 94 core fixtures
 pass. So do the three Draft opt-ins (`experimental-multihop-delegation`,
 `experimental-session-bundle`, `experimental-spiffe-identity`), the `aitp-self-attestation` extension, and all multi-step
 sequences (PoP challenge/response `tct-006`/`tct-007`, issuer-side PoP enforcement `tct-026`,
@@ -119,8 +119,6 @@ echo, round-2 PoP, embedded peer-issued TCT) — is validated byte-for-byte agai
 
 The skips are reported explicitly, never as a silent pass (PLACEHOLDERS.md §"Operation key"):
 
-- **`del-004`** — frozen in the retired v0.1 object wire shape
-  (`required_for_v0_1` only); a current implementation legitimately does not run it.
 - **`id-013`…`id-016`, `id-019`…`id-022`** — the optional pinned-admission profile
   (RFC-AITP-0002 §3.4, `feature: aitp-pinned-admission`), which this verifier does not
   claim.
@@ -137,25 +135,30 @@ publishes no runner binary, so build it from an aitp-rs checkout:
 
 ```
 cargo build -p aitp-conformance --bin aitp-conformance      # in aitp-rs
-AITP_SPEC=../agentidentitytrustprotocol \
-  target/debug/aitp-conformance run \
+target/debug/aitp-conformance run \
     --target "$(command -v aitp-verifier-adapter)" \
     --fixtures-dir ../agentidentitytrustprotocol/schemas/conformance \
     --feature aitp-self-attestation --report adapter.json
 ```
 
-`AITP_SPEC` names the spec checkout. The adapter reads two key files from it. It needs the
-KAT keys to sign the per-issuer "not revoked" snapshots of a delegation fixture
-(conformance README, "Revocation inputs"). Its OIDC issuer resolver needs
-`known-answer/oidc-test-issuers.json`: it resolves `https://auth.openai.com` and no other
-issuer.
+The adapter needs the spec's KAT keys (`known-answer/keypairs.json` and
+`known-answer/oidc-test-issuers.json`) to mint a fixture's placeholders. For example, it
+signs the per-issuer "not revoked" snapshots of a delegation fixture (conformance README,
+"Revocation inputs"), and its OIDC issuer resolver resolves `https://auth.openai.com` and
+no other issuer. Both files ship in the package, copied verbatim from the pinned spec
+commit, so a `pip install` needs no spec checkout. Set `AITP_SPEC=<spec checkout>` only to
+read them from an unreleased spec instead. A set `AITP_SPEC` that is not a usable
+checkout fails `init` with an error naming it. `aitp-verifier-adapter --help` says the
+same.
 
 `run_conformance.py --report native.json` writes the same report from this repo's own
 runner. The `adapter-parity` CI job (aitp-rs pinned by `AITP_RS_SHA` in `ci.yml`) produces
 both reports. It validates them against the spec's report schema and checker, then runs
 [`scripts/parity-diff.py`](scripts/parity-diff.py), which requires the two to agree
-fixture for fixture. Its one allowed exception is runner policy: aitp-conformance skips
-`del-007` once the multi-hop draft feature is on. The list of known runner defects is
+fixture for fixture. Its only allowed exceptions are runner policy: aitp-conformance skips
+`del-004` and `del-007` once the multi-hop draft feature is on. The same job also runs the
+badge configuration (extension features only, no `AITP_SPEC`) and requires both gates to
+pass. The list of known runner defects is
 empty at the aitp-rs pin. A future entry needs an upstream issue, and it fails the diff
 once it starts agreeing, so the list cannot go stale.
 

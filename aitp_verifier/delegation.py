@@ -130,16 +130,32 @@ def _resolve_issuer(inp: dict[str, Any], iss: Any, now: int) -> None:
         resolve_key_from_manifests(str(iss), inp["issuer_manifests"], now)
 
 
+def _reject_v01_object_token(token: dict[str, Any]) -> None:
+    """The retired v0.1 object-shaped token (del-004). It is never verified,
+    only rejected structurally: a non-empty ``chain`` is multi-hop, which no
+    v0.3 object token can carry; anything else is a malformed token."""
+    if token.get("chain"):
+        raise AitpError("DELEGATION_MULTIHOP_NOT_SUPPORTED", "v0.1 object token with a non-empty chain")
+    raise AitpError("DELEGATION_INVALID_SIGNATURE", "v0.1 object-shaped delegation token is not a compact JWS")
+
+
 def verify_delegation_token(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any]:
-    self_aid = inp["self_aid"]
-    token = inp["delegation_token"]
+    token = inp.get("delegation_token")
+    if token is None and isinstance(inp.get("delegation"), dict):
+        _reject_v01_object_token(inp["delegation"])
+    if not isinstance(token, str):
+        raise AitpError("DELEGATION_INVALID_SIGNATURE", "delegation_token is absent or not a compact JWS string")
     outer = parse_compact(token, structural_code="DELEGATION_INVALID_SIGNATURE").claims
 
-    # Multi-hop guard — structural, before any signature work. A verifier that
-    # has not opted into RFC-AITP-0011 rejects on the mere presence of `chain`.
+    # Multi-hop guard — structural, before any signature work or key lookup. A
+    # verifier that has not opted into RFC-AITP-0011 rejects on the mere
+    # presence of `chain`.
+    if "chain" in outer and inp.get("_feature") != _MULTIHOP_FEATURE:
+        raise AitpError("DELEGATION_MULTIHOP_NOT_SUPPORTED", "chain claim requires RFC-AITP-0011 opt-in")
+    self_aid = inp.get("self_aid")
+    if not isinstance(self_aid, str):
+        raise AitpError("DELEGATION_AUDIENCE_MISMATCH", "no verifier AID to match the delegation aud against")
     if "chain" in outer:
-        if inp.get("_feature") != _MULTIHOP_FEATURE:
-            raise AitpError("DELEGATION_MULTIHOP_NOT_SUPPORTED", "chain claim requires RFC-AITP-0011 opt-in")
         return {"grants": _verify_multihop(inp, token, outer, self_aid, now)}
 
     _resolve_issuer(inp, outer.get("iss"), now)

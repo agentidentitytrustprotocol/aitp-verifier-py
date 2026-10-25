@@ -1,0 +1,22 @@
+{
+  "$comment": "Pinned Ed25519 keys of the OIDC test issuers that sign the corpus's __VALID_JWT__ and OIDC __JWT_*__ identity proofs (PLACEHOLDERS.md, 'Identity-issuer keys'). They are issuer signing keys, not AIDs, so they live here and not in keypairs.json. An adapter's identity-issuer resolver maps an issuer URL to its key from this file; it MUST NOT copy a key from another implementation's source. Each JWT has header {\"alg\":\"EdDSA\",\"typ\":\"JWT\"} with no kid, so the resolver returns exactly one key for the issuer.",
+  "vectors": [
+    {
+      "id": "kat-oidc-issuer-001",
+      "$comment": "The trusted OIDC test issuer. Signs __VALID_JWT__ and every OIDC __JWT_*__ negative. When a fixture states no self_trust_anchors, this is the only issuer the verifier trusts (conformance README, 'Receiver policy inputs').",
+      "role": "trusted",
+      "issuer": "https://auth.openai.com",
+      "seed_hex": "4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f",
+      "pubkey_b64url": "AOPFa5GrCgFxdLlmRer5KDZs264eh_0hv4ZmHYbz5-8",
+      "jwk": {"crv": "Ed25519", "kty": "OKP", "x": "AOPFa5GrCgFxdLlmRer5KDZs264eh_0hv4ZmHYbz5-8"}
+    },
+    {
+      "id": "kat-oidc-issuer-002-unknown",
+      "$comment": "Signs __VALID_JWT_FROM_UNKNOWN_ISSUER__. Published only so that token can be minted again byte for byte on any runner. A resolver MUST NOT return this key for any issuer, and it MUST NOT appear in any fixture's accepted_trust_anchors or trust_anchors.",
+      "role": "untrusted",
+      "seed_hex": "5555555555555555555555555555555555555555555555555555555555555555",
+      "pubkey_b64url": "xoImN8fTEOxXYnvgC6JZ0lN0n0qvZERwz_vlOjX3MkI",
+      "jwk": {"crv": "Ed25519", "kty": "OKP", "x": "xoImN8fTEOxXYnvgC6JZ0lN0n0qvZERwz_vlOjX3MkI"}
+    }
+  ]
+}

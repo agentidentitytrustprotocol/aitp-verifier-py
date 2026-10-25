@@ -1,0 +1,57 @@
+{
+  "$comment": "AITP Ed25519 and P-256 keypair known-answer test vectors. Pinned reference values for cross-implementation interop. RFC-AITP-0001 \u00a75.3 references this file. Each entry takes a 32-byte seed and pins the resulting raw Ed25519 public key (base64url, unpadded, 43 chars) and the corresponding aid:pubkey: identifier.",
+  "vectors": [
+    {
+      "id": "kat-keypair-001",
+      "seed_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "pubkey_b64url": "O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik",
+      "aid": "aid:pubkey:O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik"
+    },
+    {
+      "id": "kat-keypair-002",
+      "seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "pubkey_b64url": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+      "aid": "aid:pubkey:A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+    },
+    {
+      "id": "kat-keypair-003",
+      "seed_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "pubkey_b64url": "dqFZIESm5PURJlvKc6YE2QsFKdHfYCvjChmpJXZg0fU",
+      "aid": "aid:pubkey:dqFZIESm5PURJlvKc6YE2QsFKdHfYCvjChmpJXZg0fU"
+    },
+    {
+      "id": "kat-keypair-004",
+      "$comment": "Added to support 3-hop multi-hop delegation fixtures (RFC-AITP-0011). Standard deterministic seed pattern (0x01 repeated 32 times); a 4-byte distinct-from-the-other-three seed is sufficient for cross-impl interop, since the AID derivation is fixed by Ed25519.",
+      "seed_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "pubkey_b64url": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w",
+      "aid": "aid:pubkey:iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w"
+    },
+    {
+      "id": "kat-keypair-005-p256",
+      "$comment": "First non-Ed25519 reference keypair. Added in v0.2 to support cross-impl conformance for RFC-AITP-0001 §5.4.3 algorithm-tagged signatures. Algorithm: ECDSA on P-256 with SHA-256. Private scalar is the 32-byte big-endian integer 0x05*32 (mod n); public key is the SEC1 compressed point form (33 bytes). The aid grammar uses the v0.2 algorithm-tagged form `aid:pubkey:p256:<44-char-base64url>`.",
+      "algorithm": "p256",
+      "private_scalar_hex": "0505050505050505050505050505050505050505050505050505050505050505",
+      "pubkey_compressed_hex": "0307810ea974cea5773e63b897f37e3be9a09e7a5fe9b971a44d1065ac2a3a9311",
+      "pubkey_b64url": "AweBDql0zqV3PmO4l_N-O-mgnnpf6blxpE0QZawqOpMR",
+      "aid": "aid:pubkey:p256:AweBDql0zqV3PmO4l_N-O-mgnnpf6blxpE0QZawqOpMR"
+    },
+    {
+      "id": "kat-keypair-006-attacker",
+      "$comment": "UNTRUSTED non-role key. Exists solely so mh-002 (RFC-AITP-0004 §5, MANIFEST_SIGNATURE_INVALID) is independently re-mintable: an implementer needs the ATTACKER's private key to produce a valid proof_of_possession.signature before the Manifest signature check is even reached (RFC-AITP-0003 §5 verifies PoP before signature). This key is deliberately NOT one of the agentA-D role keys above and MUST NOT be added to any trust_anchors / pinned_keys fixture — its only legitimate use is minting the attacker-signed content of mh-002. Seed pattern 0xAA × 32, chosen to be distinct from every other seed in this file (0x00, 0x00..1f, 0xff, 0x01, 0x05 repeats). Replaces mh-002's original attacker AID, whose seed was never published and is unrecoverable (issue #17 erratum 2); mh-002's signatures were placeholders, so nothing pinned depended on the old AID.",
+      "seed_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "pubkey_b64url": "5zTqbCtiV95yNV5HKqBaTEh-a0Y8Ap7TBt8vAbVja1g",
+      "aid": "aid:pubkey:5zTqbCtiV95yNV5HKqBaTEh-a0Y8Ap7TBt8vAbVja1g"
+    },
+    {
+      "id": "kat-keypair-001-tagged",
+      "$comment": "The same keypair as kat-keypair-001 (seed = 32 zero bytes), written in the v0.2 algorithm-tagged AID form `aid:pubkey:ed25519:<43-char-base64url>` (RFC-AITP-0001 §5.3). Every other Ed25519 entry in this file uses the untagged form, which `untagged_aid` repeats here. The two strings name the same key, but they are different byte strings wherever an AID enters a signing input (for example the RFC-AITP-0002 §3.1 proof_input), so an implementation MUST carry the AID string it was given rather than re-deriving one form from the key.",
+      "rfc_refs": [
+        "RFC-AITP-0001 §5.3"
+      ],
+      "seed_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "pubkey_b64url": "O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik",
+      "aid": "aid:pubkey:ed25519:O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik",
+      "untagged_aid": "aid:pubkey:O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik"
+    }
+  ]
+}

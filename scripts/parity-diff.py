@@ -22,6 +22,9 @@ RUNNER_POLICY = {
     # (feature negation); run_conformance.py opts features in per fixture, so
     # it runs del-007 feature-less.
     "del-007": "negated by experimental-multihop-delegation under aitp-conformance",
+    # The same negation for the frozen v0.1 multi-hop rejection, which
+    # run_conformance.py runs as a feature-less core fixture.
+    "del-004": "negated by experimental-multihop-delegation under aitp-conformance",
 }
 
 # Defects in the aitp-conformance runner at the pinned aitp-rs commit, reported

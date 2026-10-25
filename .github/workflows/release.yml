@@ -68,6 +68,8 @@ jobs:
             echo "$cmd -> $reply"
             printf '%s' "$reply" | venv/bin/python -c 'import json, sys; r = json.load(sys.stdin); assert r["ok"] and r["result"]["implementation"] == "aitp-verifier-py", r'
           done
+          # The KAT keys ship in the wheel: no spec checkout is needed.
+          env -u AITP_SPEC venv/bin/python -c 'from aitp_verifier.keys import load_packaged_kat_keys as k; n = len(k()); assert n >= 9, n; print(n, "packaged KAT keys")'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist

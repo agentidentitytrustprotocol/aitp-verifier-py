@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from aitp_verifier.adapter import Adapter, serve
+from aitp_verifier.adapter import Adapter, main, serve
 from aitp_verifier.keys import load_kat_keys
 from aitp_verifier.minter import mint_input
 from aitp_verifier.timeutil import REFERENCE_CLOCK
@@ -147,10 +147,42 @@ def test_an_exception_inside_an_op_is_an_error_outcome_and_the_next_request_runs
     assert after["ok"] is True
 
 
-def test_missing_spec_keys_are_an_error_outcome(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_without_aitp_spec_the_packaged_kat_keys_are_used(spec_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A PyPI install has no spec checkout: init and a key-needing op both work."""
     monkeypatch.delenv("AITP_SPEC", raising=False)
-    [reply] = _run([_req("req-1", "verify_delegation_token", revocation_snapshots=[])])
-    assert reply["error_code"] == "ADAPTER_INTERNAL_ERROR" and "AITP_SPEC" in reply["message"]
+    adapter = Adapter()
+    init, verdict = _run([_req("req-1", "init", version="1"),
+                          _req("req-2", "verify_tct", **_minted(spec_dir, "tct-025"))], adapter)
+    assert init["ok"] is True and verdict["ok"] is True
+    assert adapter.keys.keys() == load_kat_keys(spec_dir).keys()
+
+
+@pytest.mark.parametrize("layout", ["missing", "empty-dir"])
+def test_an_unusable_aitp_spec_fails_init_naming_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                    layout: str) -> None:
+    target = tmp_path / "nope" if layout == "missing" else tmp_path
+    monkeypatch.setenv("AITP_SPEC", str(target))
+    [reply] = _run([_req("req-1", "init", version="1")], Adapter())
+    assert reply["ok"] is False and reply["error_code"] == "ADAPTER_INTERNAL_ERROR"
+    assert "AITP_SPEC=" in reply["message"] and "keypairs.json not found" in reply["message"]
+
+
+def test_del_004_through_the_adapter(spec_dir: Path, keyed: Adapter) -> None:
+    """The frozen v0.1 multi-hop token (no `self_aid`, object-shaped
+    `delegation`) gets the structural rejection, never an internal error."""
+    path = next((spec_dir / "schemas/conformance").glob("del-004-*.json"))
+    fixture = json.loads(path.read_text(encoding="utf-8"))
+    inp = mint_input(copy.deepcopy(fixture["input"]), REFERENCE_CLOCK, load_kat_keys(spec_dir))
+    op = inp.pop("operation")
+    [reply] = _run([_req("req-1", op, **inp)], keyed)
+    assert reply["ok"] is False
+    assert reply["error_code"] == fixture["expected"]["error_code"] == "DELEGATION_MULTIHOP_NOT_SUPPORTED"
+
+
+def test_help_names_aitp_spec(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["--help"])
+    assert exc.value.code == 0 and "AITP_SPEC" in capsys.readouterr().out
 
 
 def test_subprocess_flushes_each_line_logs_on_stderr_and_exits_0_on_eof() -> None:

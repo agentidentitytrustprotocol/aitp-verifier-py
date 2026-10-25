@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aitp-verifier"
-version = "0.1.1"
+version = "0.1.2"
 description = "Independent Python implementation of the AITP verification core (second, spec-only implementation that cross-checks the reference one)"
 readme = "README.md"
 license = "Apache-2.0"
@@ -63,6 +63,10 @@ dev = ["pytest>=9.0.3", "mypy>=1.18.1"]
 
 [tool.setuptools.packages.find]
 include = ["aitp_verifier*"]
+
+[tool.setuptools.package-data]
+# The KAT keypairs the conformance minter signs with (aitp_verifier/keys.py).
+aitp_verifier = ["kat/*.json"]
 
 [tool.mypy]
 strict = true

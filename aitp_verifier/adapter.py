@@ -19,13 +19,19 @@ object gets a ``MALFORMED_REQUEST`` line and no verdict. An exception inside an
 operation is reported as ``ADAPTER_INTERNAL_ERROR`` with its reason; the
 process keeps serving. Logs go to stderr only. EOF on stdin exits 0.
 
-Building the per-issuer "not revoked" snapshots of a delegation fixture needs
-the KAT private keys, which are read from the spec checkout named by the
-``AITP_SPEC`` environment variable.
+Minting a fixture's placeholders needs the spec's KAT private keys. They ship
+in the package, so no spec checkout is needed. ``AITP_SPEC``, when set, names
+a spec checkout to read them from instead (for a run against an unreleased
+spec). A set ``AITP_SPEC`` that is not a usable checkout fails ``init`` with an
+error naming it, before any fixture runs.
+
+Usage: ``aitp-verifier-adapter`` (or ``python -m aitp_verifier.adapter``),
+spawned by aitp-conformance as ``run --target aitp-verifier-adapter``.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -36,7 +42,7 @@ from typing import IO, Any, Callable
 from .b64 import b64url_decode, b64url_encode
 from .errors import AitpError
 from .harness import FixtureError, pop_required, run_operation, unverified_claims
-from .keys import load_kat_keys
+from .keys import KAT_FILES, load_kat_keys, load_packaged_kat_keys
 from .tct import presenter_from_pop
 from .timeutil import REFERENCE_CLOCK
 from .verify import OPERATIONS
@@ -53,6 +59,27 @@ FEATURE_GATED_OPS = {
 }
 # The challenge lifetime a verifier gives its own PoP challenge here.
 POP_CHALLENGE_TTL_SECS = 300
+
+
+class KatKeysError(Exception):
+    """The KAT keys cannot be loaded from the ``AITP_SPEC`` checkout."""
+
+
+def _load_keys() -> dict[str, Any]:
+    spec = os.environ.get("AITP_SPEC")
+    if not spec:
+        return load_packaged_kat_keys()
+    kat = Path(spec) / "schemas/conformance/known-answer"
+    missing = [name for name in KAT_FILES if not (kat / name).is_file()]
+    if missing:
+        raise KatKeysError(
+            f"AITP_SPEC={spec!r} is not a spec checkout: {kat}/{missing[0]} not found. "
+            "Unset AITP_SPEC to use the KAT keys shipped in the package."
+        )
+    try:
+        return load_kat_keys(Path(spec))
+    except (ValueError, KeyError, TypeError) as exc:
+        raise KatKeysError(f"AITP_SPEC={spec!r}: cannot read the KAT keys: {exc}") from exc
 
 
 class MalformedRequest(Exception):
@@ -124,10 +151,7 @@ class Adapter:
     @property
     def keys(self) -> dict[str, Any]:
         if self._keys is None:
-            spec = os.environ.get("AITP_SPEC")
-            if not spec:
-                raise RuntimeError("AITP_SPEC is not set; the KAT keys are read from the spec checkout")
-            self._keys = load_kat_keys(Path(spec))
+            self._keys = _load_keys()
         return self._keys
 
     def supported_ops(self) -> list[str]:
@@ -151,6 +175,10 @@ class Adapter:
         if op == "init":
             if params.get("version") != PROTOCOL_VERSION:
                 return _err(rid, "MALFORMED_REQUEST", f"unsupported adapter protocol version {params.get('version')!r}")
+            try:
+                self.keys
+            except KatKeysError as exc:
+                return _err(rid, "ADAPTER_INTERNAL_ERROR", str(exc))
             return _ok(rid, {
                 "implementation": IMPLEMENTATION,
                 "version": _package_version(),
@@ -283,7 +311,15 @@ def serve(stdin: IO[bytes], stdout: IO[str], adapter: Adapter | None = None) -> 
     return 0
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="aitp-verifier-adapter",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="environment:\n  AITP_SPEC  optional spec checkout to read the KAT keys from "
+               "(default: the copies shipped in the package)",
+    )
+    parser.parse_args(argv)
     return serve(sys.stdin.buffer, sys.stdout)
 
 

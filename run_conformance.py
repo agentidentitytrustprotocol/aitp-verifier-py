@@ -43,9 +43,8 @@ from aitp_verifier.version import PROTOCOL_VERSION
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 
-# Draft opt-in features this implementation now exercises. A non-required
-# fixture is run when its `feature` is one of these; otherwise it is out of
-# scope (Draft not-yet-implemented, or a v0.1-frozen fixture).
+# Draft opt-in features this implementation now exercises. A fixture with a
+# `feature` is run when it is one of these; otherwise it is out of scope.
 SUPPORTED_FEATURES = {
     "experimental-multihop-delegation",
     "experimental-session-bundle",
@@ -67,6 +66,17 @@ def is_required(fixture: dict[str, Any]) -> bool:
     """A core fixture's ``required_for_core`` flag; absent counts as required,
     as in aitp-rs, so a fixture missing its metadata is never quietly skipped."""
     return fixture.get("status", "core") == "core" and fixture.get("required_for_core", True) is True
+
+
+def in_scope(fixture: dict[str, Any]) -> bool:
+    """Whether this runner executes *fixture*: every feature-less ``core``
+    fixture, required or not (a ``required_for_v0_1``-only one such as
+    ``del-004`` still has a defined verdict, and aitp-conformance runs it),
+    and every fixture of a feature this verifier implements."""
+    feature = fixture.get("feature")
+    if feature is None:
+        return bool(fixture.get("status", "core") == "core")
+    return bool(feature in SUPPORTED_FEATURES)
 
 
 def gates(fixture: dict[str, Any], claim: str) -> bool:
@@ -218,10 +228,10 @@ def run_pack(conf_dir: Path, keys: dict[str, Any], claim: str = CORE_CLAIM) -> P
         if fixture.get("status") == "reserved":
             continue  # ignored by every runner (conformance README)
         res.fixtures[fid] = fixture
-        if is_required(fixture) or fixture.get("feature") in SUPPORTED_FEATURES:
+        if in_scope(fixture):
             status, detail = run_fixture(fixture, keys)
         else:
-            status, detail = SKIP, "not core (draft/extension/v0.1-frozen)"
+            status, detail = SKIP, f"feature {fixture.get('feature')} not implemented"
         if status == SKIP and gates(fixture, claim):
             res.violations.append(f"{fid}: SKIP of a fixture behind the claim — {detail}")
         res.counts[status] += 1

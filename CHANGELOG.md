@@ -5,12 +5,36 @@ integrator has one place to check before upgrading.
 
 ## Unreleased
 
+## 0.1.2 — 2026-10-25
+
+### Security-relevant
+
+- **`del-004`: the frozen v0.1 multi-hop token is rejected structurally.** The
+  object-shaped v0.1 `delegation` with a non-empty `chain` now gets
+  `DELEGATION_MULTIHOP_NOT_SUPPORTED`, and any other object-shaped token gets
+  `DELEGATION_INVALID_SIGNATURE`. Neither is ever parsed further. The multi-hop guard runs
+  before `self_aid` is read, and a missing `self_aid` or `delegation_token` is a typed
+  rejection. 0.1.1 raised `KeyError: 'self_aid'` here, which aitp-conformance reported as
+  `ADAPTER_INTERNAL_ERROR`. `del-004` is `required_for_v0_1` only, so the core claim was
+  not affected.
+
 ### Other changes
 
+- **The adapter no longer needs a spec checkout.** The KAT key files ship in
+  `aitp_verifier/kat/`, byte-equal to the pinned spec's (`tests/test_keys.py` holds them
+  to it). `AITP_SPEC` is now an optional override. A set `AITP_SPEC` that is not a usable
+  checkout fails `init` with an error naming it. In 0.1.1, every key-needing op failed
+  when it was unset. The adapter gains `--help`.
+- **`run_conformance.py` runs every feature-less `core` fixture, required or not**, as
+  aitp-conformance does. Before, it skipped `del-004`, which hid the crash above. The
+  native count is 119 pass, 0 fail, 14 skip.
+- **CI runs the badge configuration** (extension features only, no `AITP_SPEC`) through
+  aitp-conformance and requires both gates to pass. `del-004` joins `del-007` as a
+  runner-policy skip in the parity diff.
 - **aitp-conformance pinned at aitp-rs `be12224`, with no known runner gaps.** The
   runner fixes for the OIDC KAT keys, nested `*_claims` companions and the inline
   Manifest PoP all landed upstream, so `KNOWN_RUNNER_GAPS` is empty. The adapter-parity
-  job now allows only the `del-007` runner-policy skip.
+  job now allows only the runner-policy skips.
 
 ## 0.1.1 — 2026-10-25
 
