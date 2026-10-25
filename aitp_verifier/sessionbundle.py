@@ -196,12 +196,11 @@ def verify_session_bundle(inp: dict[str, Any], now: int | None = None) -> dict[s
         # SESSION_BUNDLE_INVALID, matching manifest.py's/envelope.py's own
         # `parse_aid` guard.
         raise AitpError("SESSION_BUNDLE_INVALID", f"session bundle coordinator is not a valid AID: {exc}") from exc
-    # RFC-AITP-0010 §5 step 5: when the caller supplies its Manifest source,
-    # the coordinator's key comes from the Manifest designating that AID, not
-    # from the AID string -- before the signature is checked (bundle-007).
-    coord_manifest: dict[str, Any] | None = None
-    if "coordinator_manifest" in inp:
-        coord, coord_manifest = resolve_manifest(coordinator, inp["coordinator_manifest"], now)
+    # RFC-AITP-0010 §5 step 5: the coordinator's key comes from its verified
+    # Manifest, never from the AID string, before the signature is checked.
+    # No Manifest, or one designating another AID (bundle-007), is
+    # KEY_RESOLUTION_FAILED.
+    coord, coord_manifest = resolve_manifest(coordinator, inp.get("coordinator_manifest"), now)
     signature = body["signature"]
     signing_body = {k: v for k, v in body.items() if k != "signature"}
     raw = decode_tagged_signature(signature, coord, sig_err="BUNDLE_INVALID_SIGNATURE")
@@ -253,7 +252,7 @@ def verify_session_bundle(inp: dict[str, Any], now: int | None = None) -> dict[s
         # The coordinator issued every participant TCT, so its verified
         # Manifest's `expires_at` caps each one's `exp` (RFC-AITP-0005 §10.4,
         # aitp-rs 0.16). No Manifest supplied means no cap.
-        if coord_manifest is not None and outlives_manifest(claims, coord_manifest):
+        if outlives_manifest(claims, coord_manifest):
             raise AitpError("BUNDLE_PARTICIPANT_TCT_INVALID", "participant TCT outlives the coordinator Manifest")
         if claims.get("iss") != coordinator:
             raise AitpError("BUNDLE_COORDINATOR_ISSUER_MISMATCH", "participant TCT iss != coordinator")

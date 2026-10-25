@@ -409,7 +409,10 @@ def test_participant_tct_expiring_with_coordinator_manifest_is_accepted(spec_dir
     assert verify_session_bundle(_bundle_001_with_manifest_expiry(spec_dir, 0))["ok"] is True
 
 
-def test_no_coordinator_manifest_means_no_cap(spec_dir: Path) -> None:
-    """Manifests stay OPTIONAL: without one the key comes from the AID and no
-    cap applies (aitp-rs xcheck-verify.py relies on this)."""
-    assert verify_session_bundle(_bundle_001_with_manifest_expiry(spec_dir, None))["ok"] is True
+def test_an_absent_coordinator_manifest_is_key_resolution_failed(spec_dir: Path) -> None:
+    """RFC-AITP-0010 §5 step 5: the key comes only from the coordinator's
+    Manifest, so without one it cannot be resolved, never read off the AID."""
+    with pytest.raises(AitpError) as exc:
+        verify_session_bundle(_bundle_001_with_manifest_expiry(spec_dir, None))
+    assert exc.value.code == "KEY_RESOLUTION_FAILED"
+    assert "no supplied Manifest designates a key" in exc.value.message

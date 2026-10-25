@@ -5,6 +5,15 @@ integrator has one place to check before upgrading.
 
 ## Unreleased
 
+### Security-relevant
+
+- **Session bundle: the coordinator key comes only from its Manifest.** RFC-AITP-0010 §5
+  step 5 resolves the coordinator's key from its verified Manifest. `verify_session_bundle`
+  used to fall back to the key in the coordinator AID when no `coordinator_manifest` was
+  supplied, which skipped that step and the participant-TCT Manifest cap. It now fails
+  with `KEY_RESOLUTION_FAILED`, as for a Manifest designating another AID (`bundle-007`).
+  Callers must pass `coordinator_manifest`.
+
 ### Changed
 
 - **Adapter: a missing top-level argument is `MALFORMED_REQUEST`** (#101). Each verify
