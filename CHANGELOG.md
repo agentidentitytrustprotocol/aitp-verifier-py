@@ -1,10 +1,14 @@
 # Changelog
 
-This project has not yet had a tagged release (still `0.1.0` / Alpha, unpublished). This
-file starts tracking security-relevant and other breaking verifier-behavior changes from
-here, so a future integrator has one place to check before upgrading.
+This file tracks security-relevant and other breaking verifier-behavior changes, so an
+integrator has one place to check before upgrading.
 
 ## Unreleased
+
+## 0.1.0 — 2026-10-25
+
+The first release, published to PyPI as `aitp-verifier` (Alpha). Spec pin `ddec9f1`
+(v0.3.2-draft).
 
 ### Security-relevant
 
