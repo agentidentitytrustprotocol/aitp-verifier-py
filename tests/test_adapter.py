@@ -82,6 +82,15 @@ def test_verification_success_and_failure(spec_dir: Path, keyed: Adapter) -> Non
     assert bad["ok"] is False and bad["error_code"] and bad["message"]
 
 
+def test_spiffe_runs_only_under_its_feature(spec_dir: Path, keyed: Adapter) -> None:
+    inp = _minted(spec_dir, "id-024")
+    off, _, on = _run([_req("req-1", "verify_handshake_payload", **inp),
+                       _req("req-2", "set_features", features=["experimental-spiffe-identity"]),
+                       _req("req-3", "verify_handshake_payload", **inp)], keyed)
+    assert not off["ok"] and "unknown identity type 'spiffe'" in off["message"]
+    assert on["ok"] is True
+
+
 def test_replay_state_is_per_fixture() -> None:
     step = _req("r", "process_handshake_message", message_id="550e8400-e29b-41d4-a716-446655440099")
     first, second, _, third = _run([step, step, _req("r", "begin_fixture"), step])

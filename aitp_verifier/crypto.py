@@ -243,6 +243,11 @@ class PrivateKey:
     def public_key(self) -> PublicKey:
         return PublicKey(self.alg, self._key.public_key())  # type: ignore[attr-defined]
 
+    @property
+    def native(self) -> object:
+        """The ``cryptography`` key object, for minting X.509 test certificates."""
+        return self._key
+
     def raw_public(self) -> bytes:
         from cryptography.hazmat.primitives import serialization
 

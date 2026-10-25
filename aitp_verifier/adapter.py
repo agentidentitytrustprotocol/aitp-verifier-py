@@ -46,7 +46,11 @@ __all__ = ["Adapter", "main", "parse_request"]
 PROTOCOL_VERSION = "1"
 IMPLEMENTATION = "aitp-verifier-py"
 REPOSITORY = "https://github.com/agentidentitytrustprotocol/aitp-verifier-py"
-MULTIHOP_FEATURE = "experimental-multihop-delegation"
+# The Draft features an operation reads from its input's `_feature`.
+FEATURE_GATED_OPS = {
+    "verify_delegation_token": "experimental-multihop-delegation",
+    "verify_handshake_payload": "experimental-spiffe-identity",
+}
 # The challenge lifetime a verifier gives its own PoP challenge here.
 POP_CHALLENGE_TTL_SECS = 300
 
@@ -186,8 +190,9 @@ class Adapter:
             code, result = session_op(params)
         elif op in OPERATIONS:
             inp = {"now": self.clock, **params}
-            if op == "verify_delegation_token":
-                inp["_feature"] = MULTIHOP_FEATURE if MULTIHOP_FEATURE in self.features else None
+            feature = FEATURE_GATED_OPS.get(op)
+            if feature is not None:
+                inp["_feature"] = feature if feature in self.features else None
             try:
                 code, result = run_operation(op, inp, self.keys, accept_presented_type=True)
             except FixtureError as exc:

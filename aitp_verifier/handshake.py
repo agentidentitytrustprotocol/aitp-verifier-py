@@ -8,6 +8,10 @@
   identity binding (RFC-AITP-0002), then the envelope signature, then the
   receiver's policy (§5.1 step 8), then the ACK nonce echo.
 
+A ``spiffe`` identity (RFC-AITP-0002 §6) is verified only when the input's
+``_feature`` is ``experimental-spiffe-identity``, against the bundle store in
+``trust_anchors_config.spiffe_bundles``.
+
 The receiver's policy is ``self_accepted_identity_types`` (default
 ``["oidc"]``, RFC-AITP-0004 §5.1 step 8) and ``self_trust_anchors``, its OIDC
 ``trust_anchors`` (default: none, so no OIDC issuer is trusted).
@@ -32,6 +36,7 @@ from .jwk import thumbprint
 from .jws import parse_compact, verify_jws
 from .manifest import verify_manifest
 from .sigfield import decode_tagged_signature
+from .spiffe import SPIFFE_FEATURE
 from .tct import check_grant_context, check_tct_claims_shape
 from .timeutil import REFERENCE_CLOCK
 from .version import PROTOCOL_VERSION
@@ -77,6 +82,16 @@ def verify_handshake_payload(inp: dict[str, Any], now: int = REFERENCE_CLOCK) ->
     raise AitpError("INVALID_ENVELOPE", f"unsupported handshake message_type {mtype!r}")
 
 
+def _spiffe_bundles(inp: dict[str, Any]) -> Any:
+    """The SPIFFE bundle store (``trust_anchors_config.spiffe_bundles``,
+    RFC-AITP-0002 §6.2) when the Draft ``spiffe`` type is enabled, else
+    ``None``. Enabled with no configured store, it trusts no trust domain."""
+    if inp.get("_feature") != SPIFFE_FEATURE:
+        return None
+    config = inp.get("trust_anchors_config")
+    return config.get("spiffe_bundles", []) if isinstance(config, dict) else []
+
+
 def _verify_bootstrap(inp: dict[str, Any], env: dict[str, Any], now: int) -> dict[str, Any]:
     # `env` is already fully shape-validated by `validate_envelope_shape` in
     # the dispatcher above (message_id/timestamp/signature/sender/payload all
@@ -116,6 +131,7 @@ def _verify_bootstrap(inp: dict[str, Any], env: dict[str, Any], now: int) -> dic
         trust_store=inp.get("trust_store"),
         issuer_keys=inp.get("resolved_issuer_keys", {}),
         now=now,
+        spiffe_bundles=_spiffe_bundles(inp),
     )
 
     # Envelope signature (RFC-AITP-0004 §5.1 step 7).

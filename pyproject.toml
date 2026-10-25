@@ -15,8 +15,10 @@ keywords = ["aitp", "agent-identity", "verifier", "conformance", "jws"]
 # Floors are set so the oldest supported install carries no known OSV
 # advisory, and CI's `floors` job holds them to it. This is hygiene, not
 # incident response: none of the advisories fixed between 42.0 and 50.0 is
-# reachable from the APIs used here -- no x509, pkcs7, or pkcs12 is imported,
-# and the only curve constructed is SECP256R1, never a SECT curve. The cost is
+# reachable from the APIs used here -- no pkcs7 or pkcs12 is imported, x509 is
+# used only for SPIFFE X509-SVID chains (RFC-AITP-0002 §6.4, hand-rolled path
+# validation; never Web PKI or the system trust store), and the only curve
+# constructed is SECP256R1, never a SECT curve. The cost is
 # real and accepted: cryptography dropped Intel-macOS and win32 wheels at
 # 49.0.0, and pyOpenSSL <=26.2.0 caps cryptography below 49.
 dependencies = [

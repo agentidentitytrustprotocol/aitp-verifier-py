@@ -87,6 +87,20 @@ here, so a future integrator has one place to check before upgrading.
 
 ### Other changes
 
+- **The Draft `spiffe` identity type (VP5.1, issue #79; RFC-AITP-0002 §6), behind
+  `experimental-spiffe-identity`.** `aitp_verifier/spiffe.py` verifies a SPIFFE ID
+  subject against the verifier's bundle store (`trust_anchors_config.spiffe_bundles`),
+  as a JWT-SVID (ES256 and RS256; the other JWT-SVID algorithms are rejected) or as an
+  X509-SVID with its §6.4.1 proof. X509 path validation is limited to SVID chains and
+  fails closed: no system trust store, no AIA, URI name constraints only, and any
+  unprocessed critical extension rejects the chain. Without the feature, `spiffe` is
+  still an unknown identity type. With it, `oidc` and `pinned_key` descriptors reject
+  `svid_type` and `x5c`, and a Manifest `identity_hint` may be `{type: spiffe,
+  subject}`. The minter mints the test authorities and SVIDs at runtime. `id-024`…`id-030`
+  pass natively and under `aitp-conformance`, and `kat-spiffe-x509-proof-001` is checked.
+  The handshake proof input moved to `proofinput.py`, and the tagged-signature mismatch
+  message now reads "signature algorithm X != signer algorithm Y".
+
 - **PyPI release pipeline (VP3.2, issue #78).** `release.yml` publishes `aitp-verifier`
   with OIDC trusted publishing: a `v*` tag publishes to PyPI, and a manual run publishes to
   TestPyPI. Every action is pinned by SHA, and no API token exists. The build fails closed

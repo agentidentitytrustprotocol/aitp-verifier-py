@@ -12,10 +12,17 @@ byte-stable across implementations (PLACEHOLDERS.md §Reference clock).
 
 from __future__ import annotations
 
+import base64
 import copy
+import functools
 import json
 import re
+from datetime import datetime, timezone
 from typing import Any, Callable, cast
+
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.x509.oid import NameOID
 
 from .aid import parse_aid
 from .b64 import b64url_decode, b64url_encode
@@ -26,6 +33,7 @@ from .jcs import canonicalize
 from .jwk import thumbprint
 from .jws import encode_jws
 from .keys import OIDC_ISSUER_KEY_IDS, UNKNOWN_OIDC_ISSUER_KEY_ID
+from .spiffe import spiffe_x509_proof_input
 
 __all__ = ["mint_input", "MinterError"]
 
@@ -296,6 +304,140 @@ def _mint_pop_signature(payload: dict[str, Any], sender: str, self_nonce: str | 
     payload["pop_signature"] = b64url_encode(sk.sign_digest(sha256(b64url_decode(nonce))))
 
 
+# ── SPIFFE test authorities (PLACEHOLDERS.md, spiffe fixtures id-024..030) ──
+#
+# Minted at runtime, like the pre-#133 OIDC issuers: one P-256 JWT-SVID
+# signing key and one self-signed P-256 X.509 CA, both for prod.example.com.
+# Their keys are derived from fixed labels; the CA certificate is built once
+# per clock value, so every placeholder minted at one `now` agrees on it.
+
+_SPIFFE_TRUST_DOMAIN = "prod.example.com"
+_SPIFFE_JWT_KID = "aitp-test-spiffe-jwt-1"
+_SPIFFE_LEAF_AID = "aid:pubkey:dqFZIESm5PURJlvKc6YE2QsFKdHfYCvjChmpJXZg0fU"  # kat-keypair-003, the leaf key
+_SPIFFE_OTHER_SAN = "spiffe://prod.example.com/ns/payments/sa/other"
+_SPIFFE_WRONG_NONCE = "YWl0cC1zcGlmZmUtand0OQ"  # the 16 bytes "aitp-spiffe-jwt9"
+
+
+def _spiffe_key(label: str) -> PrivateKey:
+    scalar = (int.from_bytes(sha256(b"aitp-conformance-spiffe:" + label.encode()), "big") % (_P256_ORDER - 1)) + 1
+    return PrivateKey.p256_from_scalar(scalar)
+
+
+def _ec_jwk(key: PrivateKey) -> dict[str, Any]:
+    numbers = cast(Any, key.native).public_key().public_numbers()
+    return {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": b64url_encode(numbers.x.to_bytes(32, "big")),
+        "y": b64url_encode(numbers.y.to_bytes(32, "big")),
+    }
+
+
+@functools.lru_cache(maxsize=8)
+def _spiffe_ca(now: int) -> x509.Certificate:
+    key = _spiffe_key("x509-ca")
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "aitp-test-spiffe-ca")])
+    return (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(cast(Any, key.native).public_key())
+        .serial_number(1)
+        .not_valid_before(datetime.fromtimestamp(now - 3600, tz=timezone.utc))
+        .not_valid_after(datetime.fromtimestamp(now + 86400, tz=timezone.utc))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(x509.KeyUsage(False, False, False, False, False, True, True, False, False), critical=True)
+        .add_extension(x509.SubjectAlternativeName([x509.UniformResourceIdentifier(f"spiffe://{_SPIFFE_TRUST_DOMAIN}")]), critical=False)
+        .sign(cast(Any, key.native), hashes.SHA256())
+    )
+
+
+def _std_b64_der(cert: x509.Certificate) -> str:
+    return base64.b64encode(cert.public_bytes(serialization.Encoding.DER)).decode("ascii")
+
+
+def _spiffe_bundle_key(placeholder: str, now: int) -> dict[str, Any]:
+    if placeholder == "__TEST_SPIFFE_JWT_AUTHORITY_JWK__":
+        return {**_ec_jwk(_spiffe_key("jwt-authority")), "kid": _SPIFFE_JWT_KID, "use": "jwt-svid"}
+    if placeholder == "__TEST_SPIFFE_X509_CA_JWK__":
+        return {**_ec_jwk(_spiffe_key("x509-ca")), "use": "x509-svid", "x5c": [_std_b64_der(_spiffe_ca(now))]}
+    raise MinterError(f"unknown SPIFFE bundle key placeholder {placeholder}")
+
+
+def _mint_spiffe_bundles(config: dict[str, Any], now: int) -> None:
+    for entry in config.get("spiffe_bundles", []):
+        bundle = entry.get("bundle") if isinstance(entry, dict) else None
+        if isinstance(bundle, dict) and isinstance(bundle.get("keys"), list):
+            bundle["keys"] = [
+                _spiffe_bundle_key(k, now) if isinstance(k, str) and k.startswith("__") else k for k in bundle["keys"]
+            ]
+
+
+def _mint_x509_svid(placeholder: str, subject: str, keys: dict[str, PrivateKey], now: int) -> str:
+    sans = [subject]
+    if placeholder == "__X509_SVID_LEAF_TWO_URI_SANS__":
+        sans.append(_SPIFFE_OTHER_SAN)
+    elif placeholder != "__X509_SVID_LEAF__":
+        raise MinterError(f"unknown X509-SVID placeholder {placeholder}")
+    ca_key = _spiffe_key("x509-ca")
+    leaf = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "aitp-test-svid")]))
+        .issuer_name(_spiffe_ca(now).subject)
+        .public_key(cast(Any, keys[_SPIFFE_LEAF_AID].native).public_key())
+        .serial_number(2)
+        .not_valid_before(datetime.fromtimestamp(now - 60, tz=timezone.utc))
+        .not_valid_after(datetime.fromtimestamp(now + 3600, tz=timezone.utc))
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(x509.KeyUsage(True, False, False, False, False, False, False, False, False), critical=True)
+        .add_extension(x509.SubjectAlternativeName([x509.UniformResourceIdentifier(u) for u in sans]), critical=False)
+        .sign(cast(Any, ca_key.native), hashes.SHA256())
+    )
+    return _std_b64_der(leaf)
+
+
+def _mint_jwt_svid(placeholder: str, identity: dict[str, Any], env: dict[str, Any], inp: dict[str, Any], now: int) -> str:
+    claims: dict[str, Any] = {
+        "sub": identity["subject"],
+        "aud": [inp.get("self_aid")],
+        "iat": now,
+        "exp": now + 300,
+        "nonce": env["payload"].get("pop_nonce"),
+        "cnf": {"jkt": thumbprint(parse_aid(env["sender"]["agent_id"]))},
+    }
+    if placeholder == "__JWT_SVID_WRONG_NONCE__":
+        claims["nonce"] = _SPIFFE_WRONG_NONCE
+    elif placeholder == "__JWT_SVID_EXPIRED__":
+        claims["iat"], claims["exp"] = now - 360, now - 60
+    elif placeholder == "__JWT_SVID_AUD_DIFFERENT_PEER__":
+        claims["aud"] = [_OTHER_AID]
+    elif placeholder not in ("__VALID_JWT_SVID__", "__JWT_SVID_STAGING_SUBJECT_PROD_KEY__"):
+        raise MinterError(f"unknown JWT-SVID placeholder {placeholder}")
+    header = json.dumps({"alg": "ES256", "kid": _SPIFFE_JWT_KID, "typ": "JWT"}, separators=(",", ":")).encode()
+    signing_input = b64url_encode(header) + "." + b64url_encode(json.dumps(claims, separators=(",", ":")).encode())
+    return signing_input + "." + b64url_encode(_spiffe_key("jwt-authority").sign_jose(signing_input.encode("ascii")))
+
+
+def _mint_spiffe_identity(identity: dict[str, Any], env: dict[str, Any], inp: dict[str, Any], keys: dict[str, PrivateKey], now: int) -> None:
+    x5c = identity.get("x5c")
+    if isinstance(x5c, list):
+        identity["x5c"] = [
+            _mint_x509_svid(c, identity["subject"], keys, now) if isinstance(c, str) and c.startswith("__") else c for c in x5c
+        ]
+    proof = identity.get("proof")
+    if not (isinstance(proof, str) and proof.startswith("__")):
+        return
+    if identity.get("svid_type") == "jwt-svid":
+        identity["proof"] = _mint_jwt_svid(proof, identity, env, inp, now)
+    elif proof == "__VALID_X509_SVID_PROOF__":
+        data = spiffe_x509_proof_input(
+            env["sender"]["agent_id"], inp.get("self_aid", ""), env["message_id"], int(env["timestamp"]), env["payload"]["pop_nonce"]
+        )
+        identity["proof"] = _env_wire_sig(keys[_SPIFFE_LEAF_AID], sha256(data))
+    else:
+        raise MinterError(f"unknown X509-SVID proof placeholder {proof}")
+
+
 def _mint_handshake(inp: dict[str, Any], keys: dict[str, PrivateKey], now: int) -> None:
     env = inp["envelope"]
     payload = env.get("payload", {})
@@ -309,6 +451,8 @@ def _mint_handshake(inp: dict[str, Any], keys: dict[str, PrivateKey], now: int) 
             identity["proof"] = _mint_oidc_jwt(identity["proof"], identity, env, inp, now, sign_override=signer.sign_jose)
         elif identity.get("type") == "pinned_key":
             identity["proof"] = _mint_pinned_proof(identity["proof"], identity, env, inp, keys)
+    if isinstance(identity, dict) and identity.get("type") == "spiffe":
+        _mint_spiffe_identity(identity, env, inp, keys, now)
 
     if isinstance(payload.get("tct"), str) and payload["tct"] in _JWS_TOKENS and "tct_claims" in payload:
         payload["tct"] = _mint_token(payload["tct"], payload["tct_claims"], keys, now)
@@ -377,6 +521,9 @@ def mint_input(inp: dict[str, Any], now: int, keys: dict[str, PrivateKey]) -> di
         sibling = f"{base}_claims"
         if sibling in d and isinstance(d[base], str) and d[base] in _JWS_TOKENS:
             d[base] = _mint_token(d[base], d[sibling], keys, now)
+
+    if isinstance(d.get("trust_anchors_config"), dict):
+        _mint_spiffe_bundles(d["trust_anchors_config"], now)
 
     if isinstance(d.get("envelope"), dict):
         _mint_handshake(d, keys, now)

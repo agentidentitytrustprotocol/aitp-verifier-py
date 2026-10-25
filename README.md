@@ -103,9 +103,9 @@ opted in, so `del-007`, which expects `DELEGATION_MULTIHOP_NOT_SUPPORTED`, is ex
 though this verifier implements multi-hop delegation.
 
 Current status at the pinned spec commit (`SPEC_VERSION`, `ddec9f1`, `aitp/0.3`; the runner
-prints the live number): **111 fixtures pass, 0 fail, 22 skipped**. All 94 core fixtures
-pass. So do both Draft opt-ins (`experimental-multihop-delegation`,
-`experimental-session-bundle`), the `aitp-self-attestation` extension, and all multi-step
+prints the live number): **118 fixtures pass, 0 fail, 15 skipped**. All 94 core fixtures
+pass. So do the three Draft opt-ins (`experimental-multihop-delegation`,
+`experimental-session-bundle`, `experimental-spiffe-identity`), the `aitp-self-attestation` extension, and all multi-step
 sequences (PoP challenge/response `tct-006`/`tct-007`, issuer-side PoP enforcement `tct-026`,
 handshake replay `mh-001`). The surface — envelope, TCT (incl. `alg:none`, alg-confusion,
 `typ`-confusion, expiry-after-Manifest, revocation-ordering, no revocation source, and the
@@ -124,8 +124,6 @@ The skips are reported explicitly, never as a silent pass (PLACEHOLDERS.md §"Op
 - **`id-013`…`id-016`, `id-019`…`id-022`** — the optional pinned-admission profile
   (RFC-AITP-0002 §3.4, `feature: aitp-pinned-admission`), which this verifier does not
   claim.
-- **`id-024`…`id-030`** — the Draft `spiffe` identity branch
-  (`feature: experimental-spiffe-identity`), not yet implemented.
 - **`a2a-001`…`a2a-006`** — the Draft A2A Agent Card binding (RFC-AITP-0014,
   `feature: aitp-a2a-agent-card`), not implemented.
 

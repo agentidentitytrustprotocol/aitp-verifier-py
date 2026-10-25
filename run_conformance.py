@@ -46,7 +46,12 @@ PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 # Draft opt-in features this implementation now exercises. A non-required
 # fixture is run when its `feature` is one of these; otherwise it is out of
 # scope (Draft not-yet-implemented, or a v0.1-frozen fixture).
-SUPPORTED_FEATURES = {"experimental-multihop-delegation", "experimental-session-bundle", "aitp-self-attestation"}
+SUPPORTED_FEATURES = {
+    "experimental-multihop-delegation",
+    "experimental-session-bundle",
+    "experimental-spiffe-identity",
+    "aitp-self-attestation",
+}
 
 # The RFC-AITP-0001 §10 claim strings (conformance-badge.md, "Claims") -> the
 # fixture `feature` an extension claim gates on. The core claim, None, gates on

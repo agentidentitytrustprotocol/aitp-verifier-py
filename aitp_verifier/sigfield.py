@@ -16,11 +16,17 @@ from .aid import Aid
 from .b64 import b64url_decode
 from .errors import AitpError
 
-__all__ = ["decode_tagged_signature"]
+__all__ = ["decode_tagged_signature", "decode_tagged_signature_for"]
 
 
 def decode_tagged_signature(sig: object, aid: Aid, *, sig_err: str) -> bytes:
     """Return the raw signature bytes, enforcing the §5.4.3 tag rules."""
+    return decode_tagged_signature_for(sig, aid.alg, sig_err=sig_err)
+
+
+def decode_tagged_signature_for(sig: object, alg: str, *, sig_err: str) -> bytes:
+    """:func:`decode_tagged_signature` for a signer that is not an AID (an
+    X509-SVID leaf key, RFC-AITP-0002 §6.4.1): the tag must match *alg*."""
     if not isinstance(sig, str):
         raise AitpError(sig_err, f"signature is {type(sig).__name__}, not a string")
     tag = "ed25519"  # untagged = legacy Ed25519
@@ -29,8 +35,8 @@ def decode_tagged_signature(sig: object, aid: Aid, *, sig_err: str) -> bytes:
         tag, _, body = sig.partition(".")
         if tag not in ("ed25519", "p256"):
             raise AitpError(sig_err, f"unknown signature algorithm tag: {tag!r}")
-    if tag != aid.alg:
-        raise AitpError(sig_err, f"signature algorithm {tag!r} != signer AID algorithm {aid.alg!r}")
+    if tag != alg:
+        raise AitpError(sig_err, f"signature algorithm {tag!r} != signer algorithm {alg!r}")
     try:
         raw = b64url_decode(body)
     except ValueError as exc:
