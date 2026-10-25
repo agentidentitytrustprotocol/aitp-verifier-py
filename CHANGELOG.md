@@ -87,6 +87,12 @@ here, so a future integrator has one place to check before upgrading.
 
 ### Other changes
 
+- **Breaking: `run_conformance.py --claim` replaces `--profile` (VP2.1, issue #76).**
+  `--claim` takes one of the RFC-AITP-0001 §10 claim strings: `AITP v0.3` (the default),
+  `AITP v0.3 pinned-admission` or `AITP v0.3 self-attestation`. Each is gated as the
+  spec's `docs/conformance-badge.md` defines it, and a SKIP of any fixture behind the claim
+  fails the run. `--profile` and the `core`/`v0.1` profile names are gone, with no alias,
+  and so is the `del-004` feature-negation exemption that only `v0.1` used.
 - **Conformance runner profile gate.** `run_conformance.py --profile {v0.2,v0.1}`
   (default `v0.2`). A SKIP of a core fixture the profile requires now fails the run;
   before, only FAIL did. A missing `required_for_v0_N` flag counts as required (it used to

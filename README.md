@@ -10,6 +10,12 @@ here: see [`governance/RFC-PROCESS.md`](https://github.com/agentidentitytrustpro
 and [`VERSIONING.md`](https://github.com/agentidentitytrustprotocol/agentidentitytrustprotocol/blob/main/VERSIONING.md).
 Status of each RFC: [`rfcs/README.md`](https://github.com/agentidentitytrustprotocol/agentidentitytrustprotocol/blob/main/rfcs/README.md).
 
+**Wire freeze:** the `aitp/0.3` wire is frozen until 1.0, except for security fixes
+([what is frozen](https://github.com/agentidentitytrustprotocol/agentidentitytrustprotocol/blob/main/VERSIONING.md#what-is-frozen-aitp03-line)).
+This verifier tracks that one wire. The conformance claim it passes is `AITP v0.3` (with
+`AITP v0.3 self-attestation`) at the spec commit in [`SPEC_VERSION`](SPEC_VERSION); see
+[Conformance coverage](#conformance-coverage).
+
 ## Independence claim
 
 This codebase was implemented **from the RFC-AITP texts and JSON schemas only**
@@ -65,17 +71,23 @@ opaque `extensions` slot (`fields`); RFC-AITP-0013 (TCT renewal) is not implemen
 keypairs and runs it against this implementation:
 
 ```
-python run_conformance.py --spec-dir ../agentidentitytrustprotocol [--profile core|v0.1]
+python run_conformance.py --spec-dir ../agentidentitytrustprotocol [--claim "AITP v0.3"]
 ```
 
-The run exits nonzero on any FAIL. `--profile` (default `core`) also gates on the spec's
-runner enforcement rules: a `status: core` fixture whose `required_for_core` flag is set
-MUST execute, so a SKIP of one fails the run too (RFC-AITP-0001 §10 item 9). A missing flag
-counts as required. The one exemption is a fixture outside the current core tier whose
-assertion an implemented feature negates, and the runner prints it on stderr: under `v0.1`,
-`del-004` expects `DELEGATION_MULTIHOP_NOT_SUPPORTED`, and this verifier implements
-multi-hop delegation. Core fixtures run with no feature opted in, so `del-007` is executed,
-not exempted.
+The run exits nonzero on any FAIL. `--claim` names one of the RFC-AITP-0001 §10 claim
+strings, gated as the spec's
+[conformance badge rules](https://github.com/agentidentitytrustprotocol/agentidentitytrustprotocol/blob/main/docs/conformance-badge.md#claims)
+define them, and a SKIP of any fixture behind the claim fails the run too:
+
+| `--claim` | Gated on | Here |
+|---|---|---|
+| `AITP v0.3` (default) | every `status: core` fixture with `required_for_core` (a missing flag counts as required) | passes |
+| `AITP v0.3 self-attestation` | every fixture with `feature: aitp-self-attestation` | passes |
+| `AITP v0.3 pinned-admission` | every fixture with `feature: aitp-pinned-admission` | fails: not implemented |
+
+There are no other claims and no named profiles. Core fixtures run with no draft feature
+opted in, so `del-007`, which expects `DELEGATION_MULTIHOP_NOT_SUPPORTED`, is executed even
+though this verifier implements multi-hop delegation.
 
 Current status at the pinned spec commit (`SPEC_VERSION`, `ac481f8`, `aitp/0.3`; the runner
 prints the live number): **111 fixtures pass, 0 fail, 22 skipped**. All 94 core fixtures

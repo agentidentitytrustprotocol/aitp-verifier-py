@@ -7,14 +7,15 @@ implementation, prints a per-fixture PASS/FAIL/SKIP table, and exits nonzero on
 any FAIL. Operations this implementation does not yet support are reported SKIP
 — explicitly, never as a silent pass (PLACEHOLDERS.md §"Operation key").
 
-``--profile`` (default ``core``) selects the gate: a ``status: core`` fixture
-whose flag is set for the profile (``required_for_core``, or the legacy
-``required_for_v0_1``) MUST execute, so a SKIP of one also exits nonzero
-(RFC-AITP-0001 §10 item 9; the spec's conformance README, "Conformance runner
-enforcement rules").
+``--claim`` (default ``AITP v0.3``) names the RFC-AITP-0001 §10 claim to
+gate on, as the spec's ``docs/conformance-badge.md`` defines it. Every fixture
+behind the claim MUST pass: for ``AITP v0.3`` that is each ``status: core``
+fixture with ``required_for_core``, so a SKIP of one also exits nonzero (§10
+item 9; the conformance README, "Conformance runner enforcement rules"). An
+extension claim gates on every fixture carrying its ``feature``.
 
 Usage:
-    python run_conformance.py --spec-dir ../agentidentitytrustprotocol [--profile core|v0.1]
+    python run_conformance.py --spec-dir ../agentidentitytrustprotocol [--claim "AITP v0.3"]
 """
 
 from __future__ import annotations
@@ -43,10 +44,15 @@ PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 # scope (Draft not-yet-implemented, or a v0.1-frozen fixture).
 SUPPORTED_FEATURES = {"experimental-multihop-delegation", "experimental-session-bundle", "aitp-self-attestation"}
 
-# `--profile` -> the fixture flag it gates on. `core` is the current
-# revision's core tier.
-PROFILES = {"core": "required_for_core", "v0.1": "required_for_v0_1"}
-CURRENT_TIER = PROFILES["core"]
+# The RFC-AITP-0001 §10 claim strings (conformance-badge.md, "Claims") -> the
+# fixture `feature` an extension claim gates on. The core claim, None, gates on
+# `required_for_core`. There are no other claims and no named profiles.
+CORE_CLAIM = "AITP v0.3"
+CLAIMS: dict[str, str | None] = {
+    CORE_CLAIM: None,
+    "AITP v0.3 pinned-admission": "aitp-pinned-admission",
+    "AITP v0.3 self-attestation": "aitp-self-attestation",
+}
 
 # The runner-minted OIDC test issuer (PLACEHOLDERS.md, "Identity-issuer keys"):
 # the receiver's only trust anchor when a fixture states no `self_trust_anchors`.
@@ -60,31 +66,16 @@ NOT_TESTED = {"fail_mode": "fail_open"}
 class FixtureError(Exception):
     """A fixture whose inputs contradict each other; reported, never guessed at."""
 
-# A rejection a feature-less implementation asserts, mapped to the supported
-# feature whose opt-in makes the assertion inapplicable (aitp-rs's
-# `negated_by_feature`). This runner opts features in per fixture (`_feature`),
-# so a current-tier fixture still runs feature-less and its "not supported"
-# assertion is really exercised (del-007 passes). Only a fixture outside the
-# current tier -- frozen in an older shape this aitp/0.3-only implementation
-# does not parse, e.g. del-004 -- is exempted, never silently.
-NEGATED_BY_FEATURE = {
-    "DELEGATION_MULTIHOP_NOT_SUPPORTED": "experimental-multihop-delegation",
-    "BUNDLE_NOT_SUPPORTED": "experimental-session-bundle",
-}
+def is_required(fixture: dict[str, Any]) -> bool:
+    """A core fixture's ``required_for_core`` flag; absent counts as required,
+    as in aitp-rs, so a fixture missing its metadata is never quietly skipped."""
+    return fixture.get("status", "core") == "core" and fixture.get("required_for_core", True) is True
 
 
-def is_required(fixture: dict[str, Any], flag: str) -> bool:
-    """A core fixture's gate flag; absent counts as required, as
-    in aitp-rs, so a fixture missing its metadata is never quietly skipped."""
-    return fixture.get("status", "core") == "core" and fixture.get(flag, True) is True
-
-
-def negating_feature(fixture: dict[str, Any]) -> str | None:
-    """The supported feature that negates *fixture*'s assertion, if any."""
-    if is_required(fixture, CURRENT_TIER):
-        return None
-    feature = NEGATED_BY_FEATURE.get(str(fixture.get("expected", {}).get("error_code")))
-    return feature if feature in SUPPORTED_FEATURES else None
+def gates(fixture: dict[str, Any], claim: str) -> bool:
+    """Whether *fixture* is behind *claim*."""
+    feature = CLAIMS[claim]
+    return is_required(fixture) if feature is None else fixture.get("feature") == feature
 
 
 class _SeqState:
@@ -314,57 +305,54 @@ def run_fixture(fixture: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str
 
 
 class PackResult:
-    """Per-fixture rows plus the profile gate's verdict."""
+    """Per-fixture rows plus the claim gate's verdict."""
 
     def __init__(self) -> None:
         self.counts: Counter[str] = Counter()
         self.rows: list[tuple[str, str, str]] = []
         self.violations: list[str] = []
-        self.exempted: list[str] = []
 
     @property
     def exit_code(self) -> int:
         return 1 if self.counts[FAIL] or self.violations else 0
 
 
-def run_pack(conf_dir: Path, keys: dict[str, Any], profile: str = "core") -> PackResult:
-    """Run every fixture in *conf_dir* and apply the *profile* gate."""
-    flag = PROFILES[profile]
+def run_pack(conf_dir: Path, keys: dict[str, Any], claim: str = CORE_CLAIM) -> PackResult:
+    """Run every fixture in *conf_dir* and apply the *claim* gate."""
     res = PackResult()
     for path in sorted(conf_dir.glob("*.json")):
         fixture = json.loads(path.read_text(encoding="utf-8"))
         if "id" not in fixture or "input" not in fixture:
             continue  # not a scenario fixture (e.g. a schema helper)
         fid = fixture["id"]
-        required = is_required(fixture, flag)
-        feature = negating_feature(fixture)
-        if required and feature is not None:
-            status, detail = SKIP, f"feature `{feature}` enabled — assertion no longer applies"
-            res.exempted.append(f"{fid}: {detail}")
-        elif required or is_required(fixture, CURRENT_TIER) or fixture.get("feature") in SUPPORTED_FEATURES:
+        if is_required(fixture) or fixture.get("feature") in SUPPORTED_FEATURES:
             status, detail = run_fixture(fixture, keys)
-            if required and status == SKIP:
-                res.violations.append(f"{fid}: SKIP of a required fixture — {detail}")
         else:
             status, detail = SKIP, "not core (draft/extension/v0.1-frozen)"
+        if status == SKIP and gates(fixture, claim):
+            res.violations.append(f"{fid}: SKIP of a fixture behind the claim — {detail}")
         res.counts[status] += 1
         res.rows.append((status, fid, detail))
     return res
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--spec-dir", required=True, type=Path, help="path to the agentidentitytrustprotocol spec repo")
-    ap.add_argument("--profile", choices=sorted(PROFILES), default="core",
-                    help="tier to gate on (default core)")
+    ap.add_argument("--claim", choices=list(CLAIMS), default=CORE_CLAIM,
+                    help=f"RFC-AITP-0001 §10 claim to gate on (default {CORE_CLAIM!r})")
     ap.add_argument("-v", "--verbose", action="store_true")
-    args = ap.parse_args()
+    return ap.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
 
     conf_dir = args.spec_dir / "schemas/conformance"
     if not conf_dir.is_dir():
         print(f"conformance dir not found: {conf_dir}", file=sys.stderr)
         return 2
-    res = run_pack(conf_dir, load_kat_keys(args.spec_dir), args.profile)
+    res = run_pack(conf_dir, load_kat_keys(args.spec_dir), args.claim)
 
     # Windows' default stdout encoding is cp1252, which cannot encode the
     # ✓/✗/– markers below -- the runner died with UnicodeEncodeError there
@@ -385,10 +373,8 @@ def main() -> int:
 
     print()
     print(f"{res.counts[PASS]} passed, {res.counts[FAIL]} failed, {res.counts[SKIP]} skipped")
-    for line in res.exempted:
-        print(f"{args.profile} gate: exempted {line}", file=sys.stderr)
     for line in res.violations:
-        print(f"{args.profile} gate: {line}", file=sys.stderr)
+        print(f"{args.claim} gate: {line}", file=sys.stderr)
     return res.exit_code
 
 

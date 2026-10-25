@@ -1,8 +1,8 @@
 """Drive the whole conformance pack and assert no in-scope fixture FAILs.
 
 Every ``required_for_core`` fixture must pass; unsupported operations report
-SKIP (never a silent pass), and a SKIP of a required core fixture fails the
-profile gate.
+SKIP (never a silent pass), and a SKIP of a fixture behind the claim fails the
+claim gate.
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ import pytest
 
 from aitp_verifier.keys import load_kat_keys
 from run_conformance import (
-    FAIL, NOT_TESTED, PASS, SKIP, FixtureError, _cover_unsupplied_issuers, _receiver_policy,
-    _revocation_conventions, run_pack,
+    CLAIMS, FAIL, NOT_TESTED, PASS, SKIP, FixtureError, _cover_unsupplied_issuers, _receiver_policy,
+    _revocation_conventions, parse_args, run_pack,
 )
 
 
@@ -32,18 +32,42 @@ def test_conformance_pack_has_no_failures(spec_dir: Path) -> None:
     assert res.counts[PASS] >= 111
 
 
-def test_v0_1_profile_exempts_only_del_004(spec_dir: Path) -> None:
-    res = run_pack(spec_dir / "schemas/conformance", load_kat_keys(spec_dir), "v0.1")
-    assert res.exit_code == 0
-    assert [line.split(":")[0] for line in res.exempted] == ["del-004"]
-
-
-def test_del_007_runs_rather_than_being_exempted(spec_dir: Path) -> None:
-    """Core fixtures run feature-less here, so del-007's not-supported
-    assertion is exercised under the default profile, not waived."""
+def test_del_007_runs_feature_less(spec_dir: Path) -> None:
+    """Core fixtures run with no draft feature opted in, so del-007's
+    not-supported assertion is exercised, not waived."""
     res = run_pack(spec_dir / "schemas/conformance", load_kat_keys(spec_dir))
     assert (PASS, "del-007", "DELEGATION_MULTIHOP_NOT_SUPPORTED") in res.rows
-    assert res.exempted == []
+
+
+def test_self_attestation_claim_passes(spec_dir: Path) -> None:
+    res = run_pack(spec_dir / "schemas/conformance", load_kat_keys(spec_dir), "AITP v0.3 self-attestation")
+    assert res.exit_code == 0
+
+
+def test_pinned_admission_claim_is_blocked_by_its_skipped_fixtures(spec_dir: Path) -> None:
+    """This verifier does not implement the profile, so the claim fails on
+    the skips rather than passing on an empty set."""
+    res = run_pack(spec_dir / "schemas/conformance", load_kat_keys(spec_dir), "AITP v0.3 pinned-admission")
+    assert res.exit_code == 1
+    assert {v.split(":")[0] for v in res.violations} >= {"id-013", "id-019"}
+
+
+def test_claim_choices_are_the_rfc_0001_claim_strings() -> None:
+    assert list(CLAIMS) == ["AITP v0.3", "AITP v0.3 pinned-admission", "AITP v0.3 self-attestation"]
+    assert parse_args(["--spec-dir", "x"]).claim == "AITP v0.3"
+    assert parse_args(["--spec-dir", "x", "--claim", "AITP v0.3 self-attestation"]).claim == "AITP v0.3 self-attestation"
+
+
+@pytest.mark.parametrize("argv", [
+    ["--profile", "core"],
+    ["--profile", "v0.1"],
+    ["--claim", "core"],
+    ["--claim", "v0.1"],
+])
+def test_profile_flag_and_profile_names_are_rejected(argv: list[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        parse_args(["--spec-dir", "x", *argv])
+    assert exc.value.code == 2
 
 
 def _pack(tmp_path: Path, **fixture: Any) -> Path:
@@ -70,10 +94,9 @@ def test_skip_of_a_non_required_fixture_passes_the_gate(tmp_path: Path, spec_dir
     assert res.exit_code == 0
 
 
-def test_required_under_v0_1_only_is_not_gated_under_core(tmp_path: Path, spec_dir: Path) -> None:
+def test_required_under_v0_1_only_is_not_gated(tmp_path: Path, spec_dir: Path) -> None:
     pack = _pack(tmp_path, status="core", required_for_v0_1=True, required_for_core=False)
-    assert run_pack(pack, load_kat_keys(spec_dir), "core").exit_code == 0
-    assert run_pack(pack, load_kat_keys(spec_dir), "v0.1").exit_code == 1
+    assert run_pack(pack, load_kat_keys(spec_dir)).exit_code == 0
 
 
 def _fixture(spec_dir: Path, fixture_id: str) -> dict[str, Any]:
