@@ -14,10 +14,12 @@ from typing import Any
 import pytest
 
 from aitp_verifier.keys import load_kat_keys
-from run_conformance import (
-    CLAIMS, FAIL, NOT_TESTED, PASS, SKIP, FixtureError, _cover_unsupplied_issuers, _receiver_policy,
-    _revocation_conventions, parse_args, run_pack,
+from aitp_verifier.harness import (
+    NOT_TESTED, FixtureError, cover_unsupplied_issuers, issuer_resolver, receiver_policy, revocation_conventions,
 )
+from aitp_verifier.minter import mint_input
+from aitp_verifier.timeutil import REFERENCE_CLOCK
+from run_conformance import CLAIMS, FAIL, PASS, SKIP, parse_args, run_pack
 
 
 def test_conformance_pack_has_no_failures(spec_dir: Path) -> None:
@@ -112,21 +114,24 @@ def test_uncovered_issuers_read_not_revoked(spec_dir: Path) -> None:
     under test. The adapter adds fresh, empty snapshots for A (self) and C, so
     the fixture rejects on B's discarded snapshot, not on A's or C's absence
     under the runner's fail_closed default. B's own entry is left as supplied."""
-    inp = _fixture(spec_dir, "del-mh-006")["input"]
-    covered = _cover_unsupplied_issuers(inp)
+    raw = _fixture(spec_dir, "del-mh-006")["input"]
+    keys = load_kat_keys(spec_dir)
+    inp = mint_input(raw, REFERENCE_CLOCK, keys)
+    covered = cover_unsupplied_issuers(inp, keys)
     supplied, added = covered["revocation_snapshots"][:1], covered["revocation_snapshots"][1:]
     assert supplied == inp["revocation_snapshots"]
-    claims = inp["delegation_token_claims"]
+    claims = raw["delegation_token_claims"]
     expected = {inp["self_aid"], claims["iss"], *(h["iss"] for h in claims["chain_claims"])}
     expected -= {r["issuer_aid"] for r in inp["revocation_snapshots"]}
     assert {r["issuer_aid"] for r in added} == expected and inp["self_aid"] in expected
     assert all(r["snapshot"]["revocation_list"]["entries"] == [] for r in added)
+    assert all(not r["snapshot"]["signature"].startswith("__") for r in added)
 
 
 def test_fixture_without_revocation_input_is_left_alone(spec_dir: Path) -> None:
     inp = _fixture(spec_dir, "del-mh-001")["input"]
     assert "revocation_snapshots" not in inp
-    assert _cover_unsupplied_issuers(inp) is inp
+    assert cover_unsupplied_issuers(inp, load_kat_keys(spec_dir)) is inp
 
 
 # ── Revocation inputs (README, "Revocation inputs") ─────────────────────────
@@ -139,42 +144,42 @@ def _unavailable(**extra: Any) -> dict[str, Any]:
 def test_unavailable_source_with_no_mode_runs_the_verifier_default() -> None:
     """tct-024: no snapshot reaches the verifier and no mode is set, so the
     verifier's own default (fail_closed) decides."""
-    out = _revocation_conventions("verify_tct", _unavailable())
+    out = revocation_conventions("verify_tct", _unavailable())
     assert "issuer_revocation_list" not in out
     assert "policy" not in out
 
 
 def test_unavailable_source_with_a_mode_configures_that_mode() -> None:
     """tct-025: the fixture's fail_mode is the verifier's configured mode."""
-    out = _revocation_conventions("verify_tct", _unavailable(fail_mode="fail_open"))
+    out = revocation_conventions("verify_tct", _unavailable(fail_mode="fail_open"))
     assert "issuer_revocation_list" not in out
     assert out["policy"] == {"fail_mode": "fail_open"}
 
 
 def test_unavailable_source_beside_a_snapshot_is_a_fixture_error() -> None:
     with pytest.raises(FixtureError):
-        _revocation_conventions("verify_tct", _unavailable(snapshot={"revocation_list": {}, "signature": "x"}))
+        revocation_conventions("verify_tct", _unavailable(snapshot={"revocation_list": {}, "signature": "x"}))
 
 
 def test_non_boolean_available_is_a_fixture_error() -> None:
     with pytest.raises(FixtureError):
-        _revocation_conventions("verify_tct", {"issuer_revocation_list": {"available": "no"}})
+        revocation_conventions("verify_tct", {"issuer_revocation_list": {"available": "no"}})
 
 
 def test_available_snapshot_keeps_the_wrapper_and_maps_the_mode() -> None:
-    out = _revocation_conventions("verify_tct", {"issuer_revocation_list": {"issuer": "i", "snapshot": {}, "fail_mode": "soft_fail"}})
+    out = revocation_conventions("verify_tct", {"issuer_revocation_list": {"issuer": "i", "snapshot": {}, "fail_mode": "soft_fail"}})
     assert out["issuer_revocation_list"] == {"issuer": "i", "snapshot": {}}
     assert out["policy"] == {"fail_mode": "soft_fail"}
 
 
 def test_no_revocation_input_is_not_tested() -> None:
-    assert _revocation_conventions("verify_tct", {})["policy"] == NOT_TESTED
-    assert _revocation_conventions("verify_delegation_token", {})["policy"] == NOT_TESTED
-    assert "policy" not in _revocation_conventions("verify_delegation_token", {"revocation_snapshots": []})
+    assert revocation_conventions("verify_tct", {})["policy"] == NOT_TESTED
+    assert revocation_conventions("verify_delegation_token", {})["policy"] == NOT_TESTED
+    assert "policy" not in revocation_conventions("verify_delegation_token", {"revocation_snapshots": []})
 
 
 def test_a_fixture_policy_wins() -> None:
-    out = _revocation_conventions("verify_tct", {"policy": {"fail_mode": "fail_closed"}, **_unavailable(fail_mode="fail_open")})
+    out = revocation_conventions("verify_tct", {"policy": {"fail_mode": "fail_closed"}, **_unavailable(fail_mode="fail_open")})
     assert out["policy"] == {"fail_mode": "fail_closed"}
 
 
@@ -193,19 +198,40 @@ def _hello(itype: str, **extra: Any) -> dict[str, Any]:
 
 def test_receiver_trusts_only_the_runner_issuer_by_default() -> None:
     inp = _hello("oidc")
-    _receiver_policy("mh-002", inp)
+    receiver_policy(inp, accept_presented_type=False)
     assert inp["self_trust_anchors"] == ["https://auth.openai.com"]
     assert "self_accepted_identity_types" not in inp  # mh-*: the verifier default
 
 
 def test_id_fixture_accepts_the_presented_type() -> None:
     inp = _hello("pinned_key")
-    _receiver_policy("id-017", inp)
+    receiver_policy(inp, accept_presented_type=True)
     assert inp["self_accepted_identity_types"] == ["pinned_key"]
 
 
 def test_stated_receiver_policy_is_kept() -> None:
     inp = _hello("pinned_key", self_accepted_identity_types=["oidc"], self_trust_anchors=["https://x"])
-    _receiver_policy("id-099", inp)
+    receiver_policy(inp, accept_presented_type=True)
     assert inp["self_accepted_identity_types"] == ["oidc"]
     assert inp["self_trust_anchors"] == ["https://x"]
+
+
+def test_issuer_resolver_resolves_the_pinned_trusted_issuer_only(spec_dir: Path) -> None:
+    """PLACEHOLDERS.md "Identity-issuer keys": https://auth.openai.com is
+    kat-oidc-issuer-001, read from the file, and no other issuer resolves."""
+    vectors = json.loads((spec_dir / "schemas/conformance/known-answer/oidc-test-issuers.json")
+                         .read_text(encoding="utf-8"))["vectors"]
+    trusted = next(v for v in vectors if v["id"] == "kat-oidc-issuer-001")
+    assert issuer_resolver(load_kat_keys(spec_dir)) == {trusted["issuer"]: trusted["pubkey_b64url"]}
+
+
+def test_corpus_oidc_jwts_are_signed_with_the_pinned_keys(spec_dir: Path) -> None:
+    from aitp_verifier.jws import parse_compact
+
+    keys = load_kat_keys(spec_dir)
+    for fixture_id, key_id in (("id-009", "kat-oidc-issuer-001"), ("mh-004", "kat-oidc-issuer-002-unknown")):
+        path = next((spec_dir / "schemas/conformance").glob(f"{fixture_id}-*.json"))
+        minted = mint_input(json.loads(path.read_text(encoding="utf-8"))["input"], REFERENCE_CLOCK, keys)
+        assert "resolved_issuer_keys" not in minted  # the resolver is the runner's, not the minter's
+        jws = parse_compact(minted["envelope"]["payload"]["identity"]["proof"])
+        assert keys[key_id].public_key().verify_jose(jws.signing_input, jws.signature)

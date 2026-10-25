@@ -235,6 +235,104 @@ jobs:
   # not editable) into a throwaway venv, and exercises it from a working
   # directory that is neither the repo nor a parent of it, so `import
   # aitp_verifier` can only resolve to what's on site-packages.
+  # The same verifier behind its second front end: aitp_verifier.adapter under
+  # aitp-rs's aitp-conformance runner. Both front ends write the spec's
+  # conformance report; scripts/parity-diff.py requires them to agree fixture
+  # for fixture, apart from the listed runner defects reported upstream.
+  # aitp-rs publishes no runner binary, so it is built from a pinned commit.
+  adapter-parity:
+    name: adapter agrees with run_conformance under aitp-conformance
+    runs-on: ubuntu-latest
+    env:
+      AITP_RS_SHA: e0854dfce5207eac55d132dec8b7003b91f8cde9
+      FEATURES: experimental-multihop-delegation experimental-session-bundle aitp-self-attestation
+    steps:
+      - name: Check out the verifier
+        uses: actions/checkout@v7
+        with:
+          path: aitp-verifier-py
+      - name: Read the pinned spec commit
+        id: spec
+        shell: bash
+        run: |
+          sha=$(tr -d '[:space:]' < aitp-verifier-py/SPEC_VERSION)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Check out the AITP spec at the pinned commit
+        uses: actions/checkout@v7
+        with:
+          repository: agentidentitytrustprotocol/agentidentitytrustprotocol
+          path: agentidentitytrustprotocol
+          ref: ${{ steps.spec.outputs.sha }}
+          fetch-depth: 0  # spec.version is the newest v* tag at the pin
+      - name: Check out aitp-rs at the pinned commit
+        uses: actions/checkout@v7
+        with:
+          repository: agentidentitytrustprotocol/aitp-rs
+          path: aitp-rs
+          ref: ${{ env.AITP_RS_SHA }}
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          workspaces: aitp-rs
+      - name: Build aitp-conformance
+        working-directory: aitp-rs
+        run: cargo build --locked -p aitp-conformance --bin aitp-conformance
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install
+        working-directory: aitp-verifier-py
+        run: python -m pip install --upgrade pip && pip install -e ".[dev]"
+      - name: Native report (run_conformance.py)
+        working-directory: aitp-verifier-py
+        run: python run_conformance.py --spec-dir ../agentidentitytrustprotocol --report "$RUNNER_TEMP/native.json"
+      - name: Adapter report (aitp-conformance)
+        env:
+          AITP_SPEC: ${{ github.workspace }}/agentidentitytrustprotocol
+        shell: bash
+        run: |
+          features=()
+          for f in $FEATURES; do features+=(--feature "$f"); done
+          # The exit code reports the run's own core gate, which the listed
+          # runner defects hold red at this aitp-rs pin; the report and the
+          # parity diff below are the checks. Anything but 0 or 1 is a runner
+          # or adapter crash.
+          set +e
+          aitp-rs/target/debug/aitp-conformance run \
+            --target "$(command -v aitp-verifier-adapter)" \
+            --fixtures-dir agentidentitytrustprotocol/schemas/conformance \
+            "${features[@]}" --report "$RUNNER_TEMP/adapter.json"
+          rc=$?
+          set -e
+          [ "$rc" -le 1 ] || { echo "aitp-conformance exited $rc"; exit 1; }
+      - name: Both reports validate against the schema and pass the spec's report checker
+        run: |
+          pip install "jsonschema[format]>=4.23"
+          for r in native adapter; do
+            python - "$RUNNER_TEMP/$r.json" <<'PY'
+          import json, sys
+          from jsonschema import Draft202012Validator
+          schema = json.load(open("agentidentitytrustprotocol/schemas/json/aitp-conformance-report.schema.json"))
+          report = json.load(open(sys.argv[1]))
+          errors = list(Draft202012Validator(schema, format_checker=Draft202012Validator.FORMAT_CHECKER).iter_errors(report))
+          for e in errors:
+              print(f"{sys.argv[1]}: {e.json_path}: {e.message}")
+          sys.exit(1 if errors else 0)
+          PY
+            python agentidentitytrustprotocol/scripts/check-conformance-report.py "$RUNNER_TEMP/$r.json" \
+              --fixtures-dir agentidentitytrustprotocol/schemas/conformance
+          done
+      - name: Parity diff
+        run: python aitp-verifier-py/scripts/parity-diff.py "$RUNNER_TEMP/native.json" "$RUNNER_TEMP/adapter.json"
+      - name: Upload both reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: conformance-reports
+          path: |
+            ${{ runner.temp }}/native.json
+            ${{ runner.temp }}/adapter.json
+          if-no-files-found: ignore
+
   wheel-smoke-test:
     name: build + install the wheel (non-editable) and smoke-test it
     runs-on: ubuntu-latest

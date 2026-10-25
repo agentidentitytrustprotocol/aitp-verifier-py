@@ -48,7 +48,7 @@ from aitp_verifier.jws import encode_jws
 from aitp_verifier.keys import load_kat_keys
 from aitp_verifier.manifest import verify_manifest
 from aitp_verifier.minter import mint_input
-from run_conformance import _receiver_policy
+from aitp_verifier.harness import issuer_resolver, receiver_policy
 from aitp_verifier.revocation import verify_revocation_snapshot
 from aitp_verifier.tct import verify_tct
 from aitp_verifier.timeutil import REFERENCE_CLOCK
@@ -1299,7 +1299,7 @@ def _load_conformance_input(spec_dir: Path, fixture_id: str) -> dict[str, Any]:
             inp: dict[str, Any] = copy.deepcopy(d["input"])
             inp["_feature"] = d.get("feature")
             if inp.get("operation") == "verify_handshake_payload":
-                _receiver_policy(fixture_id, inp)  # the runner's receiver defaults
+                receiver_policy(inp, accept_presented_type=fixture_id.startswith("id-"))  # the runner's receiver defaults
             return inp
     raise AssertionError(f"conformance fixture {fixture_id!r} not found under {conf_dir}")
 
@@ -2262,19 +2262,25 @@ def test_verify_identity_pinned_key_missing_pop_nonce_is_identity_failed_not_a_c
 #
 # `id-009` is the OIDC conformance fixture (unlike `_hello_input` above, which
 # builds a `pinned_key` identity that never reaches `jwk.py` at all): minting
-# it populates `resolved_issuer_keys[issuer]` with one genuine, resolvable
-# key, so mutating that one entry (or the container itself) after minting --
+# it and adding the runner's issuer resolver (aitp_verifier.harness) gives
+# `resolved_issuer_keys[issuer]` one genuine, resolvable key, so mutating that one entry (or the container itself) after minting --
 # not before, per this file's own convention -- reaches `identity.py:210`'s
 # call into `jwk.issuer_keys_from` through the real handshake entry point,
 # with every other gate ahead of it (manifest, envelope, proof) still
 # genuinely satisfied.
 
 
+def _minted_oidc_hello(spec_dir: Path, keys: dict[str, Any]) -> dict[str, Any]:
+    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    minted["resolved_issuer_keys"] = issuer_resolver(keys)
+    return minted
+
+
 def test_handshake_deeply_nested_resolved_issuer_key_is_key_resolution_failed_not_a_crash(
     spec_dir: Path,
 ) -> None:
     keys = load_kat_keys(spec_dir)
-    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    minted = _minted_oidc_hello(spec_dir, keys)
     issuer = minted["envelope"]["payload"]["identity"]["issuer"]
     value: Any = "deep-leaf-sentinel"
     for _ in range(3000):
@@ -2289,7 +2295,7 @@ def test_handshake_malformed_resolved_issuer_key_is_key_resolution_failed_not_a_
     spec_dir: Path,
 ) -> None:
     keys = load_kat_keys(spec_dir)
-    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    minted = _minted_oidc_hello(spec_dir, keys)
     issuer = minted["envelope"]["payload"]["identity"]["issuer"]
     minted["resolved_issuer_keys"][issuer] = 12345
     with pytest.raises(AitpError) as exc:
@@ -2301,7 +2307,7 @@ def test_handshake_deeply_nested_kty_in_resolved_issuer_key_is_key_resolution_fa
     spec_dir: Path,
 ) -> None:
     keys = load_kat_keys(spec_dir)
-    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    minted = _minted_oidc_hello(spec_dir, keys)
     issuer = minted["envelope"]["payload"]["identity"]["issuer"]
     value: Any = "deep-leaf-sentinel"
     for _ in range(20000):
@@ -2319,7 +2325,7 @@ def test_handshake_non_mapping_resolved_issuer_keys_is_key_resolution_failed_not
     inside it, being a non-`Mapping` -- used to raise a raw `AttributeError`
     from `identity.py`'s own `.get()`."""
     keys = load_kat_keys(spec_dir)
-    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    minted = _minted_oidc_hello(spec_dir, keys)
     minted["resolved_issuer_keys"] = "not-a-mapping"
     with pytest.raises(AitpError) as exc:
         verify_handshake_payload(minted)
@@ -2335,7 +2341,7 @@ def test_handshake_past_max_candidates_resolved_issuer_key_is_key_resolution_fai
     replacing the fixture's single resolved key must still resolve to
     `KEY_RESOLUTION_FAILED`, not a slow-but-successful parse."""
     keys = load_kat_keys(spec_dir)
-    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    minted = _minted_oidc_hello(spec_dir, keys)
     issuer = minted["envelope"]["payload"]["identity"]["issuer"]
     jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(b"\x01" * 32)}
     minted["resolved_issuer_keys"][issuer] = {"keys": [jwk] * (_MAX_CANDIDATES + 1)}
@@ -2352,7 +2358,7 @@ def test_handshake_rsa_modulus_over_ceiling_resolved_issuer_key_is_key_resolutio
     fixture's single resolved key, must still resolve to
     `KEY_RESOLUTION_FAILED`."""
     keys = load_kat_keys(spec_dir)
-    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    minted = _minted_oidc_hello(spec_dir, keys)
     issuer = minted["envelope"]["payload"]["identity"]["issuer"]
     n_int = (1 << 8192) | 1  # exactly 8193 bits, odd
     n_b64u = b64url_encode(n_int.to_bytes((n_int.bit_length() + 7) // 8, "big"))
@@ -2371,7 +2377,7 @@ def test_handshake_rsa_exponent_over_ceiling_resolved_issuer_key_is_key_resoluti
     fixture's single resolved key, must still resolve to
     `KEY_RESOLUTION_FAILED`."""
     keys = load_kat_keys(spec_dir)
-    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    minted = _minted_oidc_hello(spec_dir, keys)
     issuer = minted["envelope"]["payload"]["identity"]["issuer"]
     n_int = (1 << 2047) | 1  # a valid, exactly-2048-bit synthetic modulus
     e_int = (1 << 33) | 1  # exactly 34 bits, odd -- one past the 33-bit ceiling
@@ -2394,7 +2400,7 @@ def test_handshake_rsa_zero_padded_modulus_resolved_issuer_key_is_key_resolution
     (RFC 7518 §2/§6.3.1.1) now rejects it, replacing the fixture's single
     resolved key."""
     keys = load_kat_keys(spec_dir)
-    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    minted = _minted_oidc_hello(spec_dir, keys)
     issuer = minted["envelope"]["payload"]["identity"]["issuer"]
     real_modulus = (1 << 2047) | 1  # exactly 2048 bits
     real_bytes = real_modulus.to_bytes(256, "big")
@@ -2416,7 +2422,7 @@ def test_handshake_jwks_within_candidate_cap_with_over_ceiling_rsa_candidate_is_
     (every other Phase 2 e2e test above replaces the whole resolved value
     with a single JWK, never a JWKS containing one)."""
     keys = load_kat_keys(spec_dir)
-    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    minted = _minted_oidc_hello(spec_dir, keys)
     issuer = minted["envelope"]["payload"]["identity"]["issuer"]
     ed_jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64url_encode(b"\x01" * 32)}
     n_int = (1 << 8192) | 1  # exactly 8193 bits, odd -- one past the modulus ceiling
@@ -2440,7 +2446,7 @@ def test_handshake_oversized_jwk_member_resolved_issuer_key_is_key_resolution_fa
     fail (the code alone already passed before this fix, since the existing
     catch-all already converts any `ValueError` here)."""
     keys = load_kat_keys(spec_dir)
-    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    minted = _minted_oidc_hello(spec_dir, keys)
     issuer = minted["envelope"]["payload"]["identity"]["issuer"]
     oversized_x = b64url_encode(b"\x01" * (_MAX_B64_MEMBER_CHARS + 1))
     minted["resolved_issuer_keys"][issuer] = {"kty": "OKP", "crv": "Ed25519", "x": oversized_x}
@@ -2475,7 +2481,7 @@ def test_handshake_aliased_resolved_issuer_key_is_key_resolution_failed_via_node
     count of every node visited -- not merely that some `ValueError`
     eventually surfaced."""
     keys = load_kat_keys(spec_dir)
-    minted = mint_input(_load_conformance_input(spec_dir, "id-009"), REFERENCE_CLOCK, keys)
+    minted = _minted_oidc_hello(spec_dir, keys)
     issuer = minted["envelope"]["payload"]["identity"]["issuer"]
     aliased: Any = None
     for _ in range(16):

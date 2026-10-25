@@ -87,6 +87,20 @@ here, so a future integrator has one place to check before upgrading.
 
 ### Other changes
 
+- **aitp-conformance adapter (VP3.1, issue #77).** `aitp-verifier-adapter` (also
+  `python -m aitp_verifier.adapter`) speaks aitp-rs's NDJSON subprocess protocol, so the
+  `aitp-conformance` runner can drive this verifier. Both front ends share
+  `aitp_verifier.harness`, and CI diffs their reports fixture for fixture.
+  `run_conformance.py --report PATH` writes the spec's conformance report
+  (`report_version` "1"). It refuses to guess `spec.commit` or `spec.version`.
+- **Breaking: OIDC test-issuer keys are the pinned ones (spec `ddec9f1`).** The minter
+  signs corpus OIDC JWTs with `known-answer/oidc-test-issuers.json` instead of a key
+  derived from the issuer URL, and it no longer emits `resolved_issuer_keys`. The runner's
+  resolver (`harness.issuer_resolver`) maps `https://auth.openai.com` to
+  `kat-oidc-issuer-001` and resolves no other issuer. A corpus OIDC fixture naming an
+  issuer with no pinned key is a `MinterError`. `load_kat_keys` also returns the issuer
+  keys, under their vector ids, and checks each published public key against its seed.
+  `tct._presenter_from_pop` is now the public `tct.presenter_from_pop`.
 - **Breaking: `run_conformance.py --claim` replaces `--profile` (VP2.1, issue #76).**
   `--claim` takes one of the RFC-AITP-0001 §10 claim strings: `AITP v0.3` (the default),
   `AITP v0.3 pinned-admission` or `AITP v0.3 self-attestation`. Each is gated as the

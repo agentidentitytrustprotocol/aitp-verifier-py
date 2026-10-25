@@ -57,7 +57,7 @@ from .sigfield import decode_tagged_signature
 from .timeutil import REFERENCE_CLOCK
 from .version import PROTOCOL_VERSION
 
-__all__ = ["verify_tct", "verify_tct_as_issuer", "TCT_CLAIM_FIELDS", "TCT_CNF_FIELDS", "check_tct_claims_shape", "outlives_manifest"]
+__all__ = ["verify_tct", "verify_tct_as_issuer", "presenter_from_pop", "TCT_CLAIM_FIELDS", "TCT_CNF_FIELDS", "check_tct_claims_shape", "outlives_manifest"]
 
 # aitp-tct.schema.json: additionalProperties: false. `ext` is the
 # RFC-AITP-0012 §1.1 extensions slot on this claims object -- listing it here
@@ -225,7 +225,7 @@ def verify_tct_as_issuer(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dic
 
     # Items 3 and 4: the presenter AID, from PoP or a channel binding only.
     if inp.get("envelope") is not None:
-        presenter = _presenter_from_pop(inp, claims, now)
+        presenter = presenter_from_pop(inp, claims, now)
     elif inp.get("channel_bound_aid") is not None:
         presenter = inp["channel_bound_aid"]
     else:
@@ -237,7 +237,7 @@ def verify_tct_as_issuer(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dic
     return {"presenter_aid": presenter, "grants": claims["grants"]}
 
 
-def _presenter_from_pop(inp: dict[str, Any], claims: dict[str, Any], now: int) -> str:
+def presenter_from_pop(inp: dict[str, Any], claims: dict[str, Any], now: int) -> str:
     """RFC-AITP-0005 §6.2 over a challenge this verifier issued for ``jti``.
     Returns ``sub``, the only AID a valid response can establish."""
     try:

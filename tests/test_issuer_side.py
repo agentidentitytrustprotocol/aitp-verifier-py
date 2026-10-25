@@ -19,7 +19,7 @@ from aitp_verifier.keys import load_kat_keys
 from aitp_verifier.minter import mint_input
 from aitp_verifier.tct import verify_tct_as_issuer
 from aitp_verifier.timeutil import REFERENCE_CLOCK
-from run_conformance import NOT_TESTED, _receiver_policy
+from aitp_verifier.harness import NOT_TESTED, issuer_resolver, receiver_policy
 
 SUB = "aid:pubkey:A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
 OTHER = "aid:pubkey:dqFZIESm5PURJlvKc6YE2QsFKdHfYCvjChmpJXZg0fU"
@@ -109,7 +109,8 @@ def test_revocation_runs_last_and_defaults_to_fail_closed(spec_dir: Path) -> Non
 
 def _hello(spec_dir: Path, fixture_id: str) -> dict[str, Any]:
     inp = _input(spec_dir, fixture_id)
-    _receiver_policy(fixture_id, inp)
+    receiver_policy(inp, accept_presented_type=fixture_id.startswith("id-"))
+    inp["resolved_issuer_keys"] = issuer_resolver(load_kat_keys(spec_dir))
     return inp
 
 

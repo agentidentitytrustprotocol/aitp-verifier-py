@@ -25,6 +25,7 @@ from .identity import pinned_key_proof_input
 from .jcs import canonicalize
 from .jwk import thumbprint
 from .jws import encode_jws
+from .keys import OIDC_ISSUER_KEY_IDS, UNKNOWN_OIDC_ISSUER_KEY_ID
 
 __all__ = ["mint_input", "MinterError"]
 
@@ -178,7 +179,9 @@ _P256_ORDER = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
 
 
 def _issuer_key(issuer: str, alg: str = "EdDSA") -> PrivateKey:
-    """Deterministic synthetic OIDC issuer key (both mint + inline its pubkey).
+    """Deterministic synthetic OIDC issuer key, for unit tests that need an
+    issuer of either AID algorithm. Corpus fixtures never use it: they are
+    signed with the pinned keys (``_corpus_issuer_key``).
 
     Only ``EdDSA`` (Ed25519) and ``ES256`` (P-256) are derivable here — the
     two algorithms ``PrivateKey`` supports (AITP's AID algorithms). RS256 test
@@ -192,6 +195,19 @@ def _issuer_key(issuer: str, alg: str = "EdDSA") -> PrivateKey:
         scalar = (int.from_bytes(seed, "big") % (_P256_ORDER - 1)) + 1
         return PrivateKey.p256_from_scalar(scalar)
     return PrivateKey.ed25519_from_seed(seed)
+
+
+def _corpus_issuer_key(placeholder: str, issuer: Any, keys: dict[str, PrivateKey]) -> PrivateKey:
+    """The pinned key that signs a corpus OIDC JWT (known-answer/oidc-test-issuers.json):
+    the unknown-issuer key for ``__VALID_JWT_FROM_UNKNOWN_ISSUER__``, else the
+    issuer's own pinned key. An issuer with no pinned key is a fixture the
+    corpus cannot mint byte-stably, so it is refused rather than given one."""
+    if placeholder == "__VALID_JWT_FROM_UNKNOWN_ISSUER__":
+        return keys[UNKNOWN_OIDC_ISSUER_KEY_ID]
+    key_id = OIDC_ISSUER_KEY_IDS.get(issuer) if isinstance(issuer, str) else None
+    if key_id is None:
+        raise MinterError(f"no pinned OIDC test-issuer key for {issuer!r}")
+    return keys[key_id]
 
 
 def _mint_oidc_jwt(
@@ -283,16 +299,14 @@ def _mint_pop_signature(payload: dict[str, Any], sender: str, self_nonce: str | 
 def _mint_handshake(inp: dict[str, Any], keys: dict[str, PrivateKey], now: int) -> None:
     env = inp["envelope"]
     payload = env.get("payload", {})
-    issuer_keys: dict[str, str] = {}
-
     if isinstance(payload.get("manifest"), dict):
         _sign_manifest(payload["manifest"], keys)
 
     identity = payload.get("identity")
     if isinstance(identity, dict) and isinstance(identity.get("proof"), str) and identity["proof"].startswith("__"):
         if identity.get("type") == "oidc":
-            identity["proof"] = _mint_oidc_jwt(identity["proof"], identity, env, inp, now)
-            issuer_keys[identity["issuer"]] = b64url_encode(_issuer_key(identity["issuer"]).raw_public())
+            signer = _corpus_issuer_key(identity["proof"], identity.get("issuer"), keys)
+            identity["proof"] = _mint_oidc_jwt(identity["proof"], identity, env, inp, now, sign_override=signer.sign_jose)
         elif identity.get("type") == "pinned_key":
             identity["proof"] = _mint_pinned_proof(identity["proof"], identity, env, inp, keys)
 
@@ -313,9 +327,6 @@ def _mint_handshake(inp: dict[str, Any], keys: dict[str, PrivateKey], now: int) 
 
     if isinstance(env.get("signature"), str) and env["signature"].startswith("__VALID_ENVELOPE_SIG__"):
         _sign_envelope(env, keys)
-
-    if issuer_keys:
-        inp["resolved_issuer_keys"] = issuer_keys
 
 
 def _mint_bundle(outer: dict[str, Any], keys: dict[str, PrivateKey], now: int) -> None:

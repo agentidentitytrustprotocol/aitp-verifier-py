@@ -41,6 +41,10 @@ classifiers = [
     "Typing :: Typed",
 ]
 
+[project.scripts]
+# The aitp-conformance subprocess adapter (aitp_verifier/adapter.py).
+aitp-verifier-adapter = "aitp_verifier.adapter:main"
+
 [project.optional-dependencies]
 # mypy is floored at its first cp314 release, not for an advisory (it has
 # none) and not for a strict-mode change -- 1.10 and 1.20 both pass this

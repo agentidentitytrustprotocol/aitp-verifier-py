@@ -89,7 +89,7 @@ There are no other claims and no named profiles. Core fixtures run with no draft
 opted in, so `del-007`, which expects `DELEGATION_MULTIHOP_NOT_SUPPORTED`, is executed even
 though this verifier implements multi-hop delegation.
 
-Current status at the pinned spec commit (`SPEC_VERSION`, `ac481f8`, `aitp/0.3`; the runner
+Current status at the pinned spec commit (`SPEC_VERSION`, `ddec9f1`, `aitp/0.3`; the runner
 prints the live number): **111 fixtures pass, 0 fail, 22 skipped**. All 94 core fixtures
 pass. So do both Draft opt-ins (`experimental-multihop-delegation`,
 `experimental-session-bundle`), the `aitp-self-attestation` extension, and all multi-step
@@ -115,6 +115,44 @@ The skips are reported explicitly, never as a silent pass (PLACEHOLDERS.md §"Op
   (`feature: experimental-spiffe-identity`), not yet implemented.
 - **`a2a-001`…`a2a-006`** — the Draft A2A Agent Card binding (RFC-AITP-0014,
   `feature: aitp-a2a-agent-card`), not implemented.
+
+## Running under aitp-conformance
+
+The same verifier also runs behind aitp-rs's
+[`aitp-conformance`](https://github.com/agentidentitytrustprotocol/aitp-rs/blob/main/docs/conformance.md)
+runner. `aitp-verifier-adapter` is its NDJSON subprocess adapter: one request per line on
+stdin, one response per line on stdout, logs on stderr only, exit 0 on EOF. aitp-rs
+publishes no runner binary, so build it from an aitp-rs checkout:
+
+```
+cargo build -p aitp-conformance --bin aitp-conformance      # in aitp-rs
+AITP_SPEC=../agentidentitytrustprotocol \
+  target/debug/aitp-conformance run \
+    --target "$(command -v aitp-verifier-adapter)" \
+    --fixtures-dir ../agentidentitytrustprotocol/schemas/conformance \
+    --feature aitp-self-attestation --report adapter.json
+```
+
+`AITP_SPEC` names the spec checkout. The adapter reads two key files from it. It needs the
+KAT keys to sign the per-issuer "not revoked" snapshots of a delegation fixture
+(conformance README, "Revocation inputs"). Its OIDC issuer resolver needs
+`known-answer/oidc-test-issuers.json`: it resolves `https://auth.openai.com` and no other
+issuer.
+
+`run_conformance.py --report native.json` writes the same report from this repo's own
+runner. The `adapter-parity` CI job (aitp-rs pinned by `AITP_RS_SHA` in `ci.yml`) produces
+both reports. It validates them against the spec's report schema and checker, then runs
+[`scripts/parity-diff.py`](scripts/parity-diff.py), which requires the two to agree
+fixture for fixture. The diff lists its allowed exceptions by name:
+
+- `del-007` runner policy: aitp-conformance skips it once the multi-hop draft feature is
+  on.
+- runner defects reported upstream and not yet fixed at the aitp-rs pin. A listed entry
+  that starts agreeing fails the diff, so the list cannot go stale.
+
+A run with a draft feature enabled cannot pass the `AITP v0.3` gate, because the
+feature-negation skip of `del-007` blocks it. For a core claim, enable extension features
+only.
 
 ## CI and the spec pin
 
