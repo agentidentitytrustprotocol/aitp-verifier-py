@@ -8,6 +8,29 @@ here, so a future integrator has one place to check before upgrading.
 
 ### Security-relevant
 
+- **The revocation default is `fail_closed`, and only the caller sets the mode (spec
+  `ac481f8`, `tct-024`/`tct-025`).** With no top-level `policy`, `verify_tct`,
+  `verify_attestation` and `verify_delegation_token` now run the default revocation
+  policy, whose mode is the schema default `fail_closed` (RFC-AITP-0008 §3.1). They
+  used to raise `KeyError("policy")`. `verify_tct` no longer reads
+  `issuer_revocation_list.fail_mode`: the wrapper is unsigned, and with a `fail_closed`
+  default it could otherwise loosen the mode. Snapshot freshness (`expires_at`, plus
+  `max_staleness_secs` when the policy sets it) is now evaluated with or without a
+  `policy`. `run_conformance.py` maps a fixture's `fail_mode` onto `policy`, and reads
+  `available: false` as "no revocation source" (no snapshot reaches the verifier). It
+  reports `available: false` beside a `snapshot` as a malformed fixture.
+- **`verify_tct_as_issuer` (RFC-AITP-0005 §10.5).** It verifies a TCT presented back to
+  its own issuer. The presenter AID comes only from downstream PoP over a live challenge
+  this verifier issued, or from a channel binding. With neither, the TCT is rejected
+  (`POP_RESPONSE_INVALID`), so it is never accepted as a bearer token. `aud` must equal
+  `sub`, and both must equal the presenter. Revocation runs last (`tct-026` to
+  `tct-029`).
+- **Handshake receiver policy (RFC-AITP-0004 §5.1 step 8).** `verify_handshake_payload`
+  now checks the payload `identity.type` against `self_accepted_identity_types`, which
+  defaults to `["oidc"]` (`INCOMPATIBLE_IDENTITY_TYPE`, `mh-010` to `mh-014`). A missing
+  `self_trust_anchors` now trusts no OIDC issuer. It used to skip the trust-anchor check.
+  `verify_identity` takes `trust_anchors` as a required collection.
+
 - **A discarded revocation snapshot falls back to `revocation_policy.mode` (RFC-AITP-0008
   0.3.1-draft §1.5, spec `53b92c0`; aitp-rs #271).** A snapshot that fails structural,
   member-set or signature verification is now discarded and treated as absent for the

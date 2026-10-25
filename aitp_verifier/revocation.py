@@ -58,6 +58,8 @@ __all__ = [
     "FAIL_MODES",
     "resolve_fail_mode",
     "snapshot_is_stale",
+    "policy_of",
+    "policy_fail_mode",
 ]
 
 # aitp-revocation-list.schema.json. The wrapper, the `revocation_list` body,
@@ -114,6 +116,25 @@ def resolve_fail_mode(value: Any) -> str:
     leniently, which is backwards.
     """
     return value if isinstance(value, str) and value in FAIL_MODES else "fail_closed"
+
+
+def policy_of(inp: dict[str, Any]) -> dict[str, Any]:
+    """The caller's top-level ``policy``, or ``{}`` when it is absent or not an
+    object. ``{}`` is the verifier's default revocation policy: ``fail_closed``
+    with no staleness bound beyond each snapshot's own ``expires_at``."""
+    policy = inp.get("policy")
+    return policy if isinstance(policy, dict) else {}
+
+
+def policy_fail_mode(inp: dict[str, Any]) -> str:
+    """The ``fail_mode`` a token decision applies to an absent snapshot.
+
+    The default is ``fail_closed``, the schema default of
+    ``revocation_policy.mode`` (RFC-AITP-0008 §3.1; ``tct-024``). Only the
+    caller's own ``policy`` can change it. Nothing in the input artifact
+    can, because no wire member is signed configuration.
+    """
+    return resolve_fail_mode(policy_of(inp).get("fail_mode", "fail_closed"))
 
 
 def snapshot_is_stale(body: dict[str, Any], policy: dict[str, Any], now: int) -> bool:
@@ -251,26 +272,12 @@ def verify_snapshot_trust(snapshot: Any) -> dict[str, Any]:
 
 
 def verify_revocation_snapshot(inp: dict[str, Any], now: int | None = None) -> dict[str, Any]:
-    # `policy` is one of this entry point's own top-level call arguments (like
-    # `snapshot`/`now`/`expected_issuer`), assembled by the calling
-    # application rather than carried on any AITP wire artifact -- see
-    # `tests/test_boundary_contract.py`'s own note on that boundary. It is
-    # still validated rather than bracket-indexed raw: a non-dict `policy`
-    # (or a `max_staleness_secs` of the wrong shape inside it) used to reach
-    # `int(policy["max_staleness_secs"])` and escape as a raw `KeyError`,
-    # `OverflowError`, `ValueError`, `TypeError`, or `AttributeError` --
-    # found during this plan's finalization pass, the same bug class Phase 3
-    # (`tct.py`) and Phase 4 (`delegation.py`) had already found and fixed on
-    # their own `policy["max_staleness_secs"]` reads, on this module's own
-    # exact formula, one call away. `resolve_fail_mode`/`snapshot_is_stale`
-    # below are shared with both of those, so all three entry points now
-    # treat a malformed `policy` identically: never a structural rejection
-    # (there is no wire schema for a local call argument to violate), always
-    # resolving toward the conservative `fail_closed` reading instead.
-    policy = inp["policy"]
-    policy_dict = policy if isinstance(policy, dict) else {}
+    # `policy` is a local call argument, not a wire artifact, so a malformed
+    # one is never a structural rejection: like an absent one it resolves to
+    # the default `fail_closed` (`policy_of`/`policy_fail_mode`).
+    policy_dict = policy_of(inp)
+    fail_mode = policy_fail_mode(inp)
     now = int(inp["now"]) if now is None else now
-    fail_mode = resolve_fail_mode(policy_dict.get("fail_mode", "fail_closed"))
 
     # 1-3. Structural validation, member-set, signature (rev-005/006/007/008).
     body = verify_snapshot_trust(inp["snapshot"])

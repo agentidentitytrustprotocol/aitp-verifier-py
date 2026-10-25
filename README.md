@@ -65,28 +65,32 @@ opaque `extensions` slot (`fields`); RFC-AITP-0013 (TCT renewal) is not implemen
 keypairs and runs it against this implementation:
 
 ```
-python run_conformance.py --spec-dir ../agentidentitytrustprotocol [--profile v0.2|v0.1]
+python run_conformance.py --spec-dir ../agentidentitytrustprotocol [--profile core|v0.1]
 ```
 
-The run exits nonzero on any FAIL. `--profile` (default `v0.2`, the fixture key the spec
-keeps for the `aitp/0.3` core tier) also gates on the spec's runner enforcement rules: a
-`status: core` fixture required by the profile MUST execute, so a SKIP of one fails the run
-too (RFC-AITP-0001 §10 item 9). A missing `required_for_v0_N` flag counts as required.
-The one exemption is a fixture outside the current core tier whose assertion an implemented
-feature negates, and the runner prints it on stderr: under `v0.1`, `del-004` expects
-`DELEGATION_MULTIHOP_NOT_SUPPORTED`, and this verifier implements multi-hop delegation.
-Core fixtures run with no feature opted in, so `del-007` is executed, not exempted.
+The run exits nonzero on any FAIL. `--profile` (default `core`) also gates on the spec's
+runner enforcement rules: a `status: core` fixture whose `required_for_core` flag is set
+MUST execute, so a SKIP of one fails the run too (RFC-AITP-0001 §10 item 9). A missing flag
+counts as required. The one exemption is a fixture outside the current core tier whose
+assertion an implemented feature negates, and the runner prints it on stderr: under `v0.1`,
+`del-004` expects `DELEGATION_MULTIHOP_NOT_SUPPORTED`, and this verifier implements
+multi-hop delegation. Core fixtures run with no feature opted in, so `del-007` is executed,
+not exempted.
 
-Current status at spec `v0.3.1-draft` (`deee6a9`, `aitp/0.3`; the runner prints the live number, and the pack grows with the spec): **99 fixtures pass, 0 fail, 9 skipped**. All 82 core fixtures pass (the core tier is still keyed `required_for_v0_2` in the fixtures, deliberately not renamed). So do both Draft opt-ins (`experimental-multihop-delegation`,
-`experimental-session-bundle`), the `aitp-self-attestation` extension, and all multi-step sequences (PoP
-challenge/response `tct-006`/`tct-007`, handshake replay `mh-001`). The surface — envelope, TCT (incl.
-`alg:none`, alg-confusion, `typ`-confusion, expiry-after-Manifest,
-revocation-ordering), grant voucher, single- **and multi-hop** delegation,
-Manifest, revocation snapshots, session bundles, and the full mutual-handshake / identity family
-(OIDC and pinned-key bindings, nonce echo, round-2 PoP, embedded peer-issued
-TCT) — is validated byte-for-byte against `known-answer/keypairs.json`,
-`jwk-thumbprints.json`, `jcs-sha256.json`, the `signed-examples/` artifacts
-(including both envelope KATs, `kat-envelope-001-p256` and `kat-envelope-002-ed25519`), and the id-007 pinned-key proof vector.
+Current status at the pinned spec commit (`SPEC_VERSION`, `ac481f8`, `aitp/0.3`; the runner
+prints the live number): **111 fixtures pass, 0 fail, 22 skipped**. All 94 core fixtures
+pass. So do both Draft opt-ins (`experimental-multihop-delegation`,
+`experimental-session-bundle`), the `aitp-self-attestation` extension, and all multi-step
+sequences (PoP challenge/response `tct-006`/`tct-007`, issuer-side PoP enforcement `tct-026`,
+handshake replay `mh-001`). The surface — envelope, TCT (incl. `alg:none`, alg-confusion,
+`typ`-confusion, expiry-after-Manifest, revocation-ordering, no revocation source, and the
+issuer-side check of RFC-AITP-0005 §10.5), grant voucher, single- **and multi-hop**
+delegation, Manifest, revocation snapshots, session bundles, and the full mutual-handshake /
+identity family (OIDC and pinned-key bindings, the receiver's identity-type policy, nonce
+echo, round-2 PoP, embedded peer-issued TCT) — is validated byte-for-byte against
+`known-answer/keypairs.json`, `jwk-thumbprints.json`, `jcs-sha256.json`, the
+`signed-examples/` artifacts (including both envelope KATs, `kat-envelope-001-p256` and
+`kat-envelope-002-ed25519`), and the id-007 pinned-key proof vector.
 
 The skips are reported explicitly, never as a silent pass (PLACEHOLDERS.md §"Operation key"):
 
@@ -95,6 +99,25 @@ The skips are reported explicitly, never as a silent pass (PLACEHOLDERS.md §"Op
 - **`id-013`…`id-016`, `id-019`…`id-022`** — the optional pinned-admission profile
   (RFC-AITP-0002 §3.4, `feature: aitp-pinned-admission`), which this verifier does not
   claim.
+- **`id-024`…`id-030`** — the Draft `spiffe` identity branch
+  (`feature: experimental-spiffe-identity`), not yet implemented.
+- **`a2a-001`…`a2a-006`** — the Draft A2A Agent Card binding (RFC-AITP-0014,
+  `feature: aitp-a2a-agent-card`), not implemented.
+
+## CI and the spec pin
+
+The required checks in `ci.yml` run against the spec commit pinned in
+[`SPEC_VERSION`](SPEC_VERSION), never the spec's moving `main`. A spec merge therefore
+cannot turn this repo red without a PR here. On a conformance-relevant spec push, the
+spec's `notify-spec-consumers.yml` dispatches `spec-released`, and
+[`bump-spec.yml`](.github/workflows/bump-spec.yml) calls `aitp-ci`'s `bump-spec-ref` to
+open a PR that moves the pin. The PR is held for review and its own CI runs the new
+fixtures.
+
+[`spec-canary.yml`](.github/workflows/spec-canary.yml) is the wire canary. It runs daily,
+and on demand, against the spec's floating `main`. It is not a required check. When it fails
+it comments on one tracking issue ("Spec canary: conformance fails against spec main"),
+opening it if none is open, and a green run closes that issue.
 
 ## Usage and error contract
 

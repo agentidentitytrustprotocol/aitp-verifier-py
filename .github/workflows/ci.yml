@@ -4,35 +4,17 @@ on:
   push:
     branches: [main]
   pull_request:
-  # This repo does not pin the spec: the "Check out the AITP spec" step below
-  # always pulls agentidentitytrustprotocol@main, floating on purpose (the
-  # spec's own notify-spec-consumers.yml says so explicitly: "aitp-verifier-py
-  # tracks the spec on `main` (floating), so it is intentionally not
-  # notified"). That means a spec merge can turn this repo red with zero
-  # commits here, and without a schedule nobody finds out until the next
-  # unrelated push. This cron is that canary.
-  schedule:
-    # 06:17 UTC daily. Picked, not defaulted: by this time most spec merges
-    # from both US-evening and APAC-morning contributors have landed, so a
-    # drift check here is unlikely to just be racing an in-flight PR. The
-    # :17 (not :00) dodges the top-of-hour queueing GitHub's own docs warn
-    # scheduled workflows are subject to.
-    - cron: "17 6 * * *"
-  # Lets anyone re-run the drift check on demand instead of waiting for the
-  # next 06:17 UTC tick, e.g. right after watching a spec PR merge.
   workflow_dispatch:
 
+# Every job here runs against the spec commit pinned in SPEC_VERSION, so a spec
+# merge cannot turn this repo's required checks red without a PR here. The spec
+# repo's notify-spec-consumers.yml dispatches `spec-released`, and bump-spec.yml
+# opens a held PR that moves the pin; that PR's own CI shows whether the new
+# fixtures still pass. The floating-`main` drift check is spec-canary.yml.
+
 concurrency:
-  # event_name is part of the group, not just ref, because schedule and
-  # workflow_dispatch runs resolve github.ref to the same
-  # refs/heads/main as an ordinary push to main. Without this, a routine
-  # push could cancel the scheduled drift canary mid-run (cancel-in-progress
-  # would silently eat the one signal this job exists to produce), or a
-  # manual re-run could cancel/be-cancelled by unrelated push CI. Keeping
-  # push, pull_request, schedule, and workflow_dispatch in separate groups
-  # preserves the original behavior (rapid pushes to the same ref still
-  # supersede each other; each PR ref is already its own group) while giving
-  # the canary its own lane.
+  # event_name is in the group so a manual workflow_dispatch run and push CI
+  # on the same ref neither cancel nor are cancelled by each other.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
@@ -57,14 +39,17 @@ jobs:
         with:
           path: aitp-verifier-py
       # The conformance runner + tests read the byte-pinned golden vectors from
-      # the canonical spec checkout via --spec-dir. Pull it as a sibling so this
-      # repo genuinely re-verifies against the spec's vectors on every push —
-      # the whole point of an independent second implementation.
-      - name: Check out the AITP spec
+      # the spec checkout via --spec-dir, at the commit SPEC_VERSION pins.
+      - name: Read the pinned spec commit
+        id: spec
+        shell: bash
+        run: echo "sha=$(tr -d '[:space:]' < aitp-verifier-py/SPEC_VERSION)" >> "$GITHUB_OUTPUT"
+      - name: Check out the AITP spec at the pinned commit
         uses: actions/checkout@v7
         with:
           repository: agentidentitytrustprotocol/agentidentitytrustprotocol
           path: agentidentitytrustprotocol
+          ref: ${{ steps.spec.outputs.sha }}
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
@@ -125,11 +110,16 @@ jobs:
         uses: actions/checkout@v7
         with:
           path: aitp-verifier-py
-      - name: Check out the AITP spec
+      - name: Read the pinned spec commit
+        id: spec
+        shell: bash
+        run: echo "sha=$(tr -d '[:space:]' < aitp-verifier-py/SPEC_VERSION)" >> "$GITHUB_OUTPUT"
+      - name: Check out the AITP spec at the pinned commit
         uses: actions/checkout@v7
         with:
           repository: agentidentitytrustprotocol/agentidentitytrustprotocol
           path: agentidentitytrustprotocol
+          ref: ${{ steps.spec.outputs.sha }}
       - uses: actions/setup-python@v7
         with:
           # The lowest supported interpreter, to match the lowest dependencies.
@@ -208,11 +198,16 @@ jobs:
         uses: actions/checkout@v7
         with:
           path: aitp-verifier-py
-      - name: Check out the AITP spec
+      - name: Read the pinned spec commit
+        id: spec
+        shell: bash
+        run: echo "sha=$(tr -d '[:space:]' < aitp-verifier-py/SPEC_VERSION)" >> "$GITHUB_OUTPUT"
+      - name: Check out the AITP spec at the pinned commit
         uses: actions/checkout@v7
         with:
           repository: agentidentitytrustprotocol/agentidentitytrustprotocol
           path: agentidentitytrustprotocol
+          ref: ${{ steps.spec.outputs.sha }}
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
@@ -248,11 +243,16 @@ jobs:
         uses: actions/checkout@v7
         with:
           path: aitp-verifier-py
-      - name: Check out the AITP spec
+      - name: Read the pinned spec commit
+        id: spec
+        shell: bash
+        run: echo "sha=$(tr -d '[:space:]' < aitp-verifier-py/SPEC_VERSION)" >> "$GITHUB_OUTPUT"
+      - name: Check out the AITP spec at the pinned commit
         uses: actions/checkout@v7
         with:
           repository: agentidentitytrustprotocol/agentidentitytrustprotocol
           path: agentidentitytrustprotocol
+          ref: ${{ steps.spec.outputs.sha }}
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"

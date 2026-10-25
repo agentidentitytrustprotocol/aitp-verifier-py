@@ -48,6 +48,7 @@ from aitp_verifier.jws import encode_jws
 from aitp_verifier.keys import load_kat_keys
 from aitp_verifier.manifest import verify_manifest
 from aitp_verifier.minter import mint_input
+from run_conformance import _receiver_policy
 from aitp_verifier.revocation import verify_revocation_snapshot
 from aitp_verifier.tct import verify_tct
 from aitp_verifier.timeutil import REFERENCE_CLOCK
@@ -901,14 +902,12 @@ def test_tct_discarded_snapshot_follows_a_permissive_policy(defect: str, fail_mo
     assert "grants" in verify_tct(minted)
 
 
-# ── Absence policy (issue #30): `verify_tct` gains an optional top-level
-#    `policy` key, spelled exactly as `verify_revocation_snapshot`'s own
-#    required one, plus honoring the per-wrapper `issuer_revocation_list.
-#    fail_mode` the spec's `tct-004` fixture already carries. The effective
-#    mode answers ONE question -- what to do when no trusted, applicable,
-#    fresh snapshot was supplied -- in this precedence: (1) a top-level
-#    `policy` is authoritative; (2) else the wrapper's `fail_mode`; (3) else
-#    `fail_open`, today's behavior byte for byte. ─────────────────────────
+# ── Absence policy: `verify_tct` takes an optional top-level `policy` key,
+#    spelled exactly as `verify_revocation_snapshot`'s own. The mode answers
+#    ONE question -- what to do when no trusted, applicable, fresh snapshot
+#    was supplied. Without a `policy` it is the default `fail_closed`
+#    (RFC-AITP-0008 §3.1, `tct-024`). The wrapper's `fail_mode` is never
+#    read: it is unsigned input, not configuration. ────────────────────────
 
 
 def _tct_policy_input(**policy: Any) -> dict[str, Any]:
@@ -954,24 +953,16 @@ def _tct_applicable_snapshot_input(**body_overrides: Any) -> dict[str, Any]:
     return inp
 
 
-def test_tct_no_policy_and_no_snapshot_raises_key_error(spec_dir: Path) -> None:
-    """Resolution rule 3, stated as its own test rather than left to the
-    unrelated assertions that happen to cover it: with no `policy` key and no
-    `issuer_revocation_list`, `verify_tct` made no revocation decision at
-    all, and raises `KeyError("policy")` rather than silently defaulting to
-    `fail_open` -- a `/reconcile` reversal of this module's own initial
-    design (see `ASSUMPTIONS.md`/`DECISIONS.md`), applied before any real
-    caller could depend on the permissive default. The spec's own `tct-012`
-    (`required_for_v0_2`) is exactly this input shape; `run_conformance.py`
-    supplies the deployment's own policy for it rather than editing the
-    fixture, the same role it already plays for other call-time-only inputs.
-    """
+def test_tct_no_policy_and_no_snapshot_is_default_fail_closed(spec_dir: Path) -> None:
+    """No `policy` and no revocation source: the verifier runs its default
+    revocation policy, whose mode is the schema default `fail_closed`, so
+    unknown status is revoked (RFC-AITP-0008 §3.1; the spec's `tct-024`)."""
     keys = load_kat_keys(spec_dir)
     inp = _tct_policy_input()
     del inp["policy"]
-    minted = mint_input(inp, REFERENCE_CLOCK, keys)
-    with pytest.raises(KeyError):
-        verify_tct(minted)
+    with pytest.raises(AitpError) as exc:
+        verify_tct(mint_input(inp, REFERENCE_CLOCK, keys))
+    assert exc.value.code == "TCT_REVOKED"
 
 
 def test_tct_policy_fail_closed_with_no_snapshot_is_revoked(spec_dir: Path) -> None:
@@ -1057,58 +1048,22 @@ def test_tct_policy_non_str_fail_mode_is_fail_closed(junk: Any, spec_dir: Path) 
     assert exc.value.code == "TCT_REVOKED"
 
 
-@pytest.mark.parametrize("junk", [5, None, [], True], ids=["int", "none", "list", "bool"])
-def test_tct_wrapper_non_str_fail_mode_is_fail_closed(junk: Any, spec_dir: Path) -> None:
-    """The same rule on the other source: a wrapper carrying a wrong-typed
-    `fail_mode`, with no top-level `policy` to outrank it, resolves to
-    `fail_closed` rather than falling back to rule 3's `fail_open`.
-    """
+@pytest.mark.parametrize("wrapper_mode", ["soft_fail", "fail_open", 5, "fail_klosed"])
+def test_tct_wrapper_fail_mode_is_never_read(wrapper_mode: Any, spec_dir: Path) -> None:
+    """The wrapper is unsigned, so its `fail_mode` is not configuration. With
+    no top-level `policy` the default `fail_closed` governs whatever the
+    wrapper says: a wrong-issuer snapshot leaves status unknown, so revoked."""
     keys = load_kat_keys(spec_dir)
-    minted = mint_input(_tct_different_issuer_input(fail_mode=junk), REFERENCE_CLOCK, keys)
+    minted = mint_input(_tct_different_issuer_input(fail_mode=wrapper_mode), REFERENCE_CLOCK, keys)
     with pytest.raises(AitpError) as exc:
         verify_tct(minted)
     assert exc.value.code == "TCT_REVOKED"
 
 
-def test_tct_wrapper_misspelled_fail_mode_is_fail_closed(spec_dir: Path) -> None:
-    """The `str`-typed half of the rule above, which the wrong-typed sweep
-    cannot reach: a wrapper `fail_mode` that IS a string but is not one of
-    §3.1's three (`"fail_klosed"`) resolves to `fail_closed`, not to rule 3's
-    `fail_open` fall-through.
-
-    Worth its own case because the two halves fail differently under the
-    tempting alternative implementation: an `isinstance(..., str)` guard that
-    falls through to the default would send `fail_mode: 5` to `fail_open`
-    while catching this one, so only a membership check against the mode set
-    -- which is what `revocation.py::resolve_fail_mode` does -- gets both right.
-    """
-    keys = load_kat_keys(spec_dir)
-    minted = mint_input(_tct_different_issuer_input(fail_mode="fail_klosed"), REFERENCE_CLOCK, keys)
-    with pytest.raises(AitpError) as exc:
-        verify_tct(minted)
-    assert exc.value.code == "TCT_REVOKED"
 
 
-def test_tct_wrapper_without_a_fail_mode_and_no_policy_raises_key_error(spec_dir: Path) -> None:
-    """Resolution rule 3 reached through a *present* wrapper, rather than
-    through no `issuer_revocation_list` at all: the wrapper exists but
-    declares no `fail_mode`, and no top-level `policy` was supplied -- no
-    decision was made through either channel, so this raises `KeyError`
-    rather than falling through to `fail_open` (the `/reconcile` reversal;
-    see `ASSUMPTIONS.md`/`DECISIONS.md`).
 
-    The `del` is the point of the test -- `_tct_revocation_input`'s wrapper
-    always carries `fail_mode: "fail_closed"` (mirroring `tct-004-revoked`),
-    so without removing it rule 2 would answer and rule 3's `in`-check
-    (`"fail_mode" in revlist`) would never be exercised on a dict that lacks
-    the key.
-    """
-    keys = load_kat_keys(spec_dir)
-    inp = _tct_different_issuer_input()
-    del inp["issuer_revocation_list"]["fail_mode"]
-    assert "policy" not in inp
-    with pytest.raises(KeyError):
-        verify_tct(mint_input(inp, REFERENCE_CLOCK, keys))
+
 
 
 @pytest.mark.parametrize("wrapper_mode", ["soft_fail", "fail_open"])
@@ -1128,11 +1083,8 @@ def test_tct_wrapper_fail_mode_cannot_downgrade_an_explicit_policy(wrapper_mode:
     posture, and exactly what this module already refuses for the sibling
     unsigned member `issuer_revocation_list["issuer"]`.
 
-    This test is the one that pins that correction: invert the two branches in
-    `_effective_fail_mode` and it fails (the wrapper's permissive mode wins and
-    the TCT verifies), which is what makes it non-vacuous rather than merely
-    green. The companion direction -- the wrapper IS honored when no `policy`
-    was supplied -- is pinned by the two `different_issuer` tests below.
+    The wrapper's mode is never read at all
+    (`test_tct_wrapper_fail_mode_is_never_read`), so it cannot win here.
     """
     keys = load_kat_keys(spec_dir)
     inp = _tct_different_issuer_input(fail_mode=wrapper_mode)
@@ -1143,20 +1095,16 @@ def test_tct_wrapper_fail_mode_cannot_downgrade_an_explicit_policy(wrapper_mode:
     assert exc.value.code == "TCT_REVOKED"
 
 
-def test_tct_revocation_snapshot_different_issuer_under_wrapper_fail_closed_is_revoked(spec_dir: Path) -> None:
+def test_tct_revocation_snapshot_different_issuer_under_default_policy_is_revoked(spec_dir: Path) -> None:
     """A snapshot genuinely signed, but by an issuer other than this TCT's own
     `iss`, does not speak for it: the deny-list scan is skipped (the snapshot
     is not a defect -- it may be perfectly valid, just for a different issuer),
     leaving this TCT's revocation status **unknown**.
 
-    This test asserted plain success before this phase, because the wrapper's
-    declared `fail_mode` was never read at all. It supplies no top-level
-    `policy`, so resolution rule 2 governs and `_tct_revocation_input`'s own
-    `fail_mode: "fail_closed"` -- the member `tct-004-revoked.json` ships --
-    is honored: unknown status under `fail_closed` is treated as revoked. The
-    `soft_fail` half of the same input is pinned immediately below, so the
-    applicability skip itself is still proven to work rather than merely
-    replaced by a rejection.
+    It supplies no top-level `policy`, so the default `fail_closed` governs:
+    unknown status is treated as revoked. The `soft_fail` half of the same
+    input is pinned immediately below, so the applicability skip itself is
+    still proven to work rather than merely replaced by a rejection.
     """
     keys = load_kat_keys(spec_dir)
     minted = mint_input(_tct_different_issuer_input(), REFERENCE_CLOCK, keys)
@@ -1165,16 +1113,16 @@ def test_tct_revocation_snapshot_different_issuer_under_wrapper_fail_closed_is_r
     assert exc.value.code == "TCT_REVOKED"
 
 
-def test_tct_revocation_snapshot_different_issuer_under_wrapper_soft_fail_verifies(spec_dir: Path) -> None:
-    """The other half of the flipped case, and rule 2's permissive direction:
-    the identical wrapper with `fail_mode: "soft_fail"` still verifies. The
-    wrong-issuer snapshot lists this TCT's own jti, so a verifier that had
-    quietly dropped the signed-issuer applicability check would revoke here --
-    success is a real pass of the skip, not an absence of checking.
+def test_tct_revocation_snapshot_different_issuer_under_soft_fail_verifies(spec_dir: Path) -> None:
+    """The permissive half: the identical wrapper under `policy: soft_fail`
+    verifies. The wrong-issuer snapshot lists this TCT's own jti, so a
+    verifier that had quietly dropped the signed-issuer applicability check
+    would revoke here -- success is a real pass of the skip.
     """
     keys = load_kat_keys(spec_dir)
-    minted = mint_input(_tct_different_issuer_input(fail_mode="soft_fail"), REFERENCE_CLOCK, keys)
-    assert verify_tct(minted) == {"grants": ["macp.mode.task.v1"]}
+    inp = _tct_different_issuer_input()
+    inp["policy"] = {"fail_mode": "soft_fail"}
+    assert verify_tct(mint_input(inp, REFERENCE_CLOCK, keys)) == {"grants": ["macp.mode.task.v1"]}
 
 
 @pytest.mark.parametrize(
@@ -1302,24 +1250,16 @@ def test_tct_non_dict_policy_with_a_snapshot_present_still_governs_as_fail_close
     assert exc.value.code == "TCT_REVOKED"
 
 
-def test_tct_staleness_is_not_evaluated_without_a_top_level_policy(spec_dir: Path) -> None:
-    """Freshness is gated on a top-level `policy` being supplied, and that
-    gating is deliberate rather than incidental -- it is what makes this diff
-    auditable: with no `policy` key, `verify_tct` behaves exactly as it did for
-    every input that reaches it.
-
-    The wrapper here carries `fail_mode: "fail_closed"` and its snapshot is
-    both expired and far staler than any plausible bound, yet the TCT verifies:
-    the wrapper's `fail_mode` selects what happens *on* absence, it does not
-    switch on freshness evaluation, because `max_staleness_secs` is a
-    deployment value with no per-wrapper spelling in the fixture shape. Pass a
-    `policy` and the same input rejects -- pinned directly above.
-    """
+def test_tct_expiry_is_evaluated_under_the_default_policy(spec_dir: Path) -> None:
+    """With no `policy` the default still bounds freshness by the snapshot's
+    own `expires_at` (RFC-AITP-0008 §3.2): an expired snapshot is absent, and
+    the default `fail_closed` rejects."""
     keys = load_kat_keys(spec_dir)
-    inp = _tct_applicable_snapshot_input(published_at=NOW - 10_000, expires_at=NOW - 1)
+    inp = _tct_applicable_snapshot_input(expires_at=NOW - 1)
     assert "policy" not in inp
-    assert inp["issuer_revocation_list"]["fail_mode"] == "fail_closed"
-    assert verify_tct(mint_input(inp, REFERENCE_CLOCK, keys)) == {"grants": ["macp.mode.task.v1"]}
+    with pytest.raises(AitpError) as exc:
+        verify_tct(mint_input(inp, REFERENCE_CLOCK, keys))
+    assert exc.value.code == "TCT_REVOKED"
 
 
 def test_tct_policy_fail_open_does_not_suppress_a_genuine_deny_list_hit(spec_dir: Path) -> None:
@@ -1358,6 +1298,8 @@ def _load_conformance_input(spec_dir: Path, fixture_id: str) -> dict[str, Any]:
         if d.get("id") == fixture_id:
             inp: dict[str, Any] = copy.deepcopy(d["input"])
             inp["_feature"] = d.get("feature")
+            if inp.get("operation") == "verify_handshake_payload":
+                _receiver_policy(fixture_id, inp)  # the runner's receiver defaults
             return inp
     raise AssertionError(f"conformance fixture {fixture_id!r} not found under {conf_dir}")
 
@@ -1738,52 +1680,29 @@ def test_delegation_absent_snapshot_fail_open_verifies(fixture_id: str, spec_dir
 
 
 @_BOTH_DELEGATION_PATHS
-def test_delegation_absent_snapshot_no_policy_raises_key_error(
+def test_delegation_absent_snapshot_no_policy_is_default_fail_closed(
     fixture_id: str, spec_dir: Path
 ) -> None:
-    """Resolution rule 2, as its own test rather than left to the conformance
-    runner: with no `policy` key at all, this entry point has no fallback
-    source for a decision (unlike `tct.py`'s wrapper rung), so it raises
-    `KeyError("policy")` rather than silently defaulting to `fail_open` -- a
-    `/reconcile` reversal of this module's own initial design (see
-    `ASSUMPTIONS.md`/`DECISIONS.md`), applied before any real caller could
-    depend on the permissive default. `del-001`/`del-mh-001` are both
-    success fixtures shipping exactly this input shape;
-    `run_conformance.py` supplies the deployment's own policy for them
-    rather than editing the fixtures, the same role it already plays for
-    other call-time-only inputs.
-    """
+    """No `policy` and no snapshot of A's own deny list: the default
+    `fail_closed` treats the source TCT's unknown status as revoked."""
     keys = load_kat_keys(spec_dir)
     inp = _delegation_policy_input(spec_dir, fixture_id)
     del inp["policy"]
-    with pytest.raises(KeyError):
+    with pytest.raises(AitpError) as exc:
         verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys))
+    assert exc.value.code == "DELEGATION_SOURCE_TCT_REVOKED"
 
 
-@_BOTH_DELEGATION_PATHS
-def test_delegation_no_policy_with_a_fresh_applicable_snapshot_still_raises_key_error(
-    fixture_id: str, spec_dir: Path
-) -> None:
-    """Regression guard for `_check_source_tct_revocation`'s eager, not lazy,
-    resolution -- distinct from the sibling test above, which supplies no
-    revocation data at all and so cannot tell eager and lazy resolution
-    apart (both reach the same absence branch either way).
-
-    Here `applicable` is genuinely non-empty: a fresh, self-signed snapshot
-    for `self_aid` that lists nothing, so absent lazy resolution the
-    function would never reach the branch that calls `_effective_fail_mode`
-    at all and would return successfully with `policy` never having been
-    consulted -- exactly the "caller with always-fresh snapshots discovers
-    the missing key only in production, on the first stale day" gap the
-    module docstring records `/reconcile` closing. With `policy` resolved
-    eagerly, this still raises `KeyError("policy")` immediately.
-    """
+def test_delegation_no_policy_with_a_fresh_applicable_snapshot_verifies(spec_dir: Path) -> None:
+    """The default answers absence only: a fresh, self-signed snapshot for
+    `self_aid` that lists nothing is real revocation data, so the single-hop
+    delegation verifies with no `policy` at all. (Multi-hop would also need
+    a snapshot for every hop issuer.)"""
     keys = load_kat_keys(spec_dir)
-    inp = _delegation_policy_input(spec_dir, fixture_id)
+    inp = _delegation_policy_input(spec_dir, "del-001")
     del inp["policy"]
     inp["revocation_snapshots"] = [_delegation_snapshot_record(issuer=ISSUER, entries=[])]
-    with pytest.raises(KeyError):
-        verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys))
+    assert verify_delegation_token(mint_input(inp, REFERENCE_CLOCK, keys)) == _DELEGATION_GRANTS
 
 
 @_BOTH_DELEGATION_PATHS
@@ -2127,7 +2046,7 @@ def _hello_input(self_aid: str, sender_aid: str, **payload_extra: Any) -> dict[s
         "payload": payload,
         "signature": "__VALID_ENVELOPE_SIG__",
     }
-    return {"self_aid": self_aid, "trust_store": [sender_aid], "envelope": env}
+    return {"self_aid": self_aid, "trust_store": [sender_aid], "self_accepted_identity_types": ["pinned_key"], "envelope": env}
 
 
 def test_handshake_payload_unknown_field_rejected(spec_dir: Path) -> None:
@@ -2330,7 +2249,7 @@ def test_verify_identity_pinned_key_missing_pop_nonce_is_identity_failed_not_a_c
             env["payload"]["identity"],
             env,
             minted.get("self_aid", ""),
-            trust_anchors=minted.get("self_trust_anchors"),
+            trust_anchors=minted.get("self_trust_anchors", ()),
             trust_store=minted.get("trust_store"),
             issuer_keys=minted.get("resolved_issuer_keys", {}),
             now=REFERENCE_CLOCK,

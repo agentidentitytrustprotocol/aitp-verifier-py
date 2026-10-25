@@ -20,27 +20,18 @@ signature, via ``revocation.py::verify_snapshot_trust``) before its ``entries``
 are consulted — not merely consulted at face value — and the deny-list index is
 keyed on each snapshot's own *verified* issuer, not a caller-supplied label.
 
-``verify_delegation_token``'s input carries a top-level ``policy`` key,
-spelled exactly as ``verify_tct``'s and ``verify_revocation_snapshot``'s own
-(``{"fail_mode": ..., "max_staleness_secs": ...}``) — one shape, not a third
-spelling. It answers the single question RFC-AITP-0008 §3.1 reserves for
-``fail_mode``: what to do when **no trusted, applicable revocation snapshot
-for ``self_aid`` was supplied at all** — "unknown is treated as revoked"
-(``DELEGATION_SOURCE_TCT_REVOKED``) under ``fail_closed``, proceed under
-``soft_fail``/``fail_open``. It never answers what to do about a snapshot
-that *was* supplied and cannot be trusted: §1.5 decides that first, and
-``verify_snapshot_trust`` still reports that snapshot's own defect under
-every mode. **A revocation decision is mandatory, not optional**: unlike
-``tct.py``, this entry point has no per-wrapper fallback, so a caller
-supplying no ``policy`` at all gets a raw ``KeyError("policy")``, the same
-failure mode this function already gives a caller who omits any of its other
-required top-level arguments — never a silent ``fail_open``. A caller with
-no revocation infrastructure must say so explicitly:
-``policy={"fail_mode": "fail_open"}``. See ``_effective_fail_mode`` for the
-precedence and ``ASSUMPTIONS.md``/``DECISIONS.md`` for why a mandatory
-decision, not a configured default, governs the no-policy case — reversed
-from this module's own initial design via `/reconcile` before any real
-caller could depend on the permissive default.
+``verify_delegation_token``'s input takes an optional top-level ``policy``
+key, spelled exactly as ``verify_tct``'s and ``verify_revocation_snapshot``'s
+own (``{"fail_mode": ..., "max_staleness_secs": ...}``). It answers the single
+question RFC-AITP-0008 §3.1 reserves for ``fail_mode``: what to do when **no
+trusted, applicable revocation snapshot for ``self_aid`` was supplied at
+all**. Under ``fail_closed`` unknown is treated as revoked
+(``DELEGATION_SOURCE_TCT_REVOKED``); under ``soft_fail``/``fail_open``
+verification proceeds. It never answers what to do about a snapshot that *was*
+supplied and cannot be trusted: §1.5 decides that first. With no ``policy`` the
+verifier runs its default, ``fail_closed`` (``revocation.policy_fail_mode``).
+A caller with no revocation infrastructure must say so explicitly:
+``policy={"fail_mode": "fail_open"}``.
 
 That policy governs **A's own deny list and nothing else** — the §4 step 7 /
 RFC-AITP-0011 §6 source-TCT lookup, which both the single-hop and the multi-hop
@@ -72,7 +63,7 @@ from .fields import check_types, reject_unknown_fields, require_members
 from .jcs import canonicalize
 from .jws import parse_compact, verify_jws
 from .manifest import resolve_key_from_manifests
-from .revocation import resolve_fail_mode, snapshot_is_stale, verify_snapshot_trust
+from .revocation import policy_fail_mode, policy_of, snapshot_is_stale, verify_snapshot_trust
 from .timeutil import REFERENCE_CLOCK
 from .version import PROTOCOL_VERSION
 from .voucher import check_voucher_claims_shape
@@ -282,52 +273,6 @@ def _revocation_index(bodies: list[dict[str, Any]]) -> dict[str, set[str]]:
     return index
 
 
-def _effective_fail_mode(inp: dict[str, Any]) -> str:
-    """Resolve the ``fail_mode`` that governs *absence* on this entry point.
-
-    Two rules, where ``tct.py`` has three:
-
-    1. A top-level ``policy`` key, when supplied, is authoritative. A ``policy``
-       dict without ``fail_mode`` resolves to ``fail_closed``, matching
-       ``revocation.py``'s own ``policy.get("fail_mode", "fail_closed")`` -- so
-       ``policy: {}`` is enough to opt into fail-closed. A non-dict ``policy``
-       resolves to ``fail_closed`` too, never to a raw ``AttributeError``.
-    2. Else -- no ``policy`` key at all -- **raise ``KeyError("policy")``**. A
-       revocation decision is mandatory: this entry point has no per-wrapper
-       rung (see below) for a caller to fall back on, so "no `policy`" here
-       means no decision was made at all, not merely a lenient one. See
-       ``ASSUMPTIONS.md``/``DECISIONS.md`` for the full reasoning, including
-       why the conformance-pack constraint that originally justified a
-       permissive default does not force it: ``run_conformance.py`` supplies
-       the deployment's own policy for fixtures that carry none, so
-       ``del-001``/``del-mh-001`` (both ``required_for_v0_2``/draft-opt-in
-       success fixtures with no revocation data) still pass without their
-       inputs being edited.
-
-    ``tct.py``'s rule 2 -- the per-wrapper ``issuer_revocation_list["fail_mode"]``
-    -- has **no counterpart here, on purpose**. The wire shape a delegation
-    input carries is ``revocation_snapshots: [{issuer_aid, snapshot}]``
-    (``schemas/conformance/PLACEHOLDERS.md``), whose records have no policy
-    member at all; honoring one would be *widening the accepted wire shape*
-    rather than reading what the spec already puts on the wire, and it would
-    hand an unsigned caller-assembled wrapper a say in this deployment's
-    revocation posture. Absent that rung, and unlike ``tct.py``, there is no
-    fallback source for a decision here at all: ``policy`` is this entry
-    point's only way to make one, so it is unconditionally required. ``policy``
-    joins this function's other required top-level call arguments in that
-    sense (not a wire artifact, so a raw ``KeyError`` on its absence is
-    consistent with how every other required top-level argument already fails
-    when a caller omits it -- see ``tests/test_boundary_contract.py``'s own
-    documented scope exclusion for exactly this category of key).
-    """
-    if "policy" in inp:
-        policy = inp["policy"]
-        if not isinstance(policy, dict):
-            return "fail_closed"
-        return resolve_fail_mode(policy.get("fail_mode", "fail_closed"))
-    raise KeyError("policy")
-
-
 def _apply_absence(fail_mode: str, detail: str) -> None:
     """RFC-AITP-0008 §3.1 applied to the *absent* case only: under
     ``fail_closed`` an absent deny list means the source TCT's revocation
@@ -378,56 +323,23 @@ def _check_source_tct_revocation(
       unknown as an empty one -- B cannot answer whether A revoked a TCT A
       issued. "Data was supplied" is not an escape from absence;
     * every such snapshot is expired or staler than ``max_staleness_secs``,
-      evaluated against the caller's ``policy``. Unlike ``tct.py``, this rung
-      is not conditionally gated on ``policy`` being present: this entry
-      point has no wrapper-level fallback (see the module docstring and
-      ``_effective_fail_mode`` below), so ``policy`` is unconditionally
-      required to reach this point at all -- freshness is evaluated on
-      *every* successful call, with no no-``policy`` path left to gate it
-      against.
+      evaluated against the caller's ``policy`` (or the default, which bounds
+      freshness by each snapshot's own ``expires_at`` only).
 
     The deny-list scan then reads only the applicable, still-fresh snapshots'
     own ``entries``, never a stale one's -- §3.2 treats a stale snapshot as
     data this verifier has no business reading rather than as a deny list to
-    consult anyway. ``ASSUMPTIONS.md`` records that this entry point used to
-    share one counter-intuitive consequence with ``tct.py`` and with
-    ``revocation.py``'s own pre-existing stage-4 ordering -- an explicitly
-    *permissive* ``policy`` over a stale snapshot that genuinely lists
-    ``src_jti`` verifies, where the identical input with no ``policy`` at all
-    rejected -- but that asymmetry is now structurally impossible to
-    construct **here**: with ``policy`` mandatory and no wrapper fallback, the
-    "no ``policy`` at all" arm no longer reaches this scan; it raises
-    ``KeyError`` before either arm's outcome could be compared. The asymmetry
-    survives only on ``tct.py``, whose wrapper fallback (rung 2) still lets a
-    no-top-level-``policy`` call reach a successful verification without
-    freshness ever being evaluated.
+    consult anyway.
 
     Per-hop issuer deny lists are the multi-hop sweep's job, under the same
     ``fail_mode`` -- see the module docstring.
-
-    ``_effective_fail_mode`` is resolved **eagerly, unconditionally, before**
-    the applicability/freshness filtering below -- not lazily, only once
-    absence is actually about to be reported. A caller who omits ``policy``
-    entirely must find out on every call, not only on the first call whose
-    supplied snapshot happens to be missing or stale: resolving lazily would
-    let a caller who always supplies a fresh, applicable snapshot ship for
-    months before discovering the missing key in production on the first
-    stale day.
     """
-    fail_mode = _effective_fail_mode(inp)
+    fail_mode = policy_fail_mode(inp)
     applicable = [body for body in bodies if body["issuer"] == self_aid]
     detail = "no trusted snapshot signed by this verifier was supplied"
     if applicable:
-        # `_effective_fail_mode` above already raised KeyError if `policy` is
-        # absent -- unlike tct.py (which has a wrapper-fallback rung),
-        # reaching this line at all means `"policy" in inp`, so that used to
-        # be an explicit conjunct here is now guaranteed, not conditional.
-        policy = inp["policy"]
-        applicable = [
-            body
-            for body in applicable
-            if not snapshot_is_stale(body, policy if isinstance(policy, dict) else {}, now)
-        ]
+        policy = policy_of(inp)
+        applicable = [body for body in applicable if not snapshot_is_stale(body, policy, now)]
         detail = "every snapshot signed by this verifier is expired or stale"
 
     if not applicable:
@@ -536,14 +448,10 @@ def _verify_multihop(
     # The per-hop sweep (RFC-AITP-0011 §6). A hop issuer with no fresh, trusted
     # snapshot -- none supplied, or discarded (RFC-AITP-0008 §1.5) -- is absent
     # and `fail_mode` decides (RFC-AITP-0008 §3.1).
-    policy = inp["policy"]
-    fresh = [
-        body
-        for body in bodies
-        if not snapshot_is_stale(body, policy if isinstance(policy, dict) else {}, now)
-    ]
+    policy = policy_of(inp)
+    fresh = [body for body in bodies if not snapshot_is_stale(body, policy, now)]
     revoked = _revocation_index(fresh)
-    fail_mode = _effective_fail_mode(inp)
+    fail_mode = policy_fail_mode(inp)
     for hop in hops:
         hc = parse_compact(hop, structural_code="DELEGATION_INVALID_SIGNATURE").claims
         iss = str(hc.get("iss"))

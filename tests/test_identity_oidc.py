@@ -157,7 +157,7 @@ def _verify(
         identity,
         env,
         self_aid,
-        trust_anchors=trust_anchors,
+        trust_anchors=[ISSUER] if trust_anchors is None else trust_anchors,
         trust_store=None,
         issuer_keys=issuer_keys or {},
         now=now,
@@ -818,7 +818,7 @@ def test_verify_identity_non_mapping_issuer_keys_falsy_is_key_resolution_failed_
     with pytest.raises(AitpError) as exc_info:
         verify_identity(
             identity, env, SENDER_AID,
-            trust_anchors=None, trust_store=None, issuer_keys=0,  # type: ignore[arg-type]
+            trust_anchors=[ISSUER], trust_store=None, issuer_keys=0,  # type: ignore[arg-type]
             now=NOW,
         )
     assert _err(exc_info) == "KEY_RESOLUTION_FAILED"

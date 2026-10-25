@@ -7,14 +7,14 @@ implementation, prints a per-fixture PASS/FAIL/SKIP table, and exits nonzero on
 any FAIL. Operations this implementation does not yet support are reported SKIP
 — explicitly, never as a silent pass (PLACEHOLDERS.md §"Operation key").
 
-``--profile`` (default ``v0.2``) selects the gate: a ``status: core`` fixture
-whose ``required_for_v0_N`` flag is set for the profile MUST execute, so a SKIP
-of one also exits nonzero (RFC-AITP-0001 §10 item 9; the spec's conformance
-README, "Conformance runner enforcement rules"). ``v0.2`` is the fixture key the
-spec keeps for the ``aitp/0.3`` core tier.
+``--profile`` (default ``core``) selects the gate: a ``status: core`` fixture
+whose flag is set for the profile (``required_for_core``, or the legacy
+``required_for_v0_1``) MUST execute, so a SKIP of one also exits nonzero
+(RFC-AITP-0001 §10 item 9; the spec's conformance README, "Conformance runner
+enforcement rules").
 
 Usage:
-    python run_conformance.py --spec-dir ../agentidentitytrustprotocol [--profile v0.2|v0.1]
+    python run_conformance.py --spec-dir ../agentidentitytrustprotocol [--profile core|v0.1]
 """
 
 from __future__ import annotations
@@ -43,10 +43,22 @@ PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 # scope (Draft not-yet-implemented, or a v0.1-frozen fixture).
 SUPPORTED_FEATURES = {"experimental-multihop-delegation", "experimental-session-bundle", "aitp-self-attestation"}
 
-# `--profile` -> the fixture flag it gates on. `v0.2` is the current
-# revision's core tier (aitp/0.3 keeps the key name).
-PROFILES = {"v0.2": "required_for_v0_2", "v0.1": "required_for_v0_1"}
-CURRENT_TIER = PROFILES["v0.2"]
+# `--profile` -> the fixture flag it gates on. `core` is the current
+# revision's core tier.
+PROFILES = {"core": "required_for_core", "v0.1": "required_for_v0_1"}
+CURRENT_TIER = PROFILES["core"]
+
+# The runner-minted OIDC test issuer (PLACEHOLDERS.md, "Identity-issuer keys"):
+# the receiver's only trust anchor when a fixture states no `self_trust_anchors`.
+RUNNER_OIDC_ISSUER = "https://auth.openai.com"
+
+# The policy for a fixture that supplies no revocation input: it is not testing
+# revocation, so every lookup reads "not revoked" (README, "Revocation inputs").
+NOT_TESTED = {"fail_mode": "fail_open"}
+
+
+class FixtureError(Exception):
+    """A fixture whose inputs contradict each other; reported, never guessed at."""
 
 # A rejection a feature-less implementation asserts, mapped to the supported
 # feature whose opt-in makes the assertion inapplicable (aitp-rs's
@@ -62,7 +74,7 @@ NEGATED_BY_FEATURE = {
 
 
 def is_required(fixture: dict[str, Any], flag: str) -> bool:
-    """A core fixture's ``required_for_v0_N``; absent counts as required, as
+    """A core fixture's gate flag; absent counts as required, as
     in aitp-rs, so a fixture missing its metadata is never quietly skipped."""
     return fixture.get("status", "core") == "core" and fixture.get(flag, True) is True
 
@@ -87,8 +99,14 @@ class _SeqState:
 
 
 def _pop_required(inp: dict[str, Any]) -> bool:
-    marked = set(inp.get("issuer_policy", {}).get("pop_required_grants", []))
-    return bool(marked & set(inp.get("tct_token_claims", {}).get("grants", [])))
+    """PoP is required for an invocation when the posture is enforce-for-all,
+    when the grant is marked (RFC-AITP-0005 §6.2), or when the TCT comes back
+    to its own issuer, which has no other source for the presenter (§10.5)."""
+    policy = inp.get("issuer_policy", {})
+    claims = inp.get("tct_token_claims", {})
+    if policy.get("pop_posture") == "enforce-for-all" or inp.get("self_aid") == claims.get("iss"):
+        return True
+    return bool(set(policy.get("pop_required_grants", [])) & set(claims.get("grants", [])))
 
 
 def _run_step(state: _SeqState, step: dict[str, Any], inp: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str | None, dict[str, Any]] | None:
@@ -188,6 +206,61 @@ def _cover_unsupplied_issuers(inp: dict[str, Any]) -> dict[str, Any]:
     return {**inp, "revocation_snapshots": [*snaps, *added]} if added else inp
 
 
+def _revocation_conventions(op: str, inp: dict[str, Any]) -> dict[str, Any]:
+    """Map a fixture's revocation inputs onto the verifier's (the spec's
+    conformance README, "Revocation inputs").
+
+    * No revocation input: not testing revocation, so ``NOT_TESTED``.
+    * ``issuer_revocation_list.fail_mode`` is the verifier's configured
+      ``revocation_policy.mode``, so it becomes ``policy``. When it is absent
+      the verifier runs its own default, which is the point of ``tct-024``.
+    * ``available: false`` is "no revocation source for the issuer", so the
+      verifier gets no snapshot at all, never an empty one. Beside a
+      ``snapshot`` it contradicts itself, which is a fixture error.
+
+    A fixture's own top-level ``policy`` (the ``rev-*`` family) always wins.
+    """
+    out = dict(inp)
+    if op == "verify_delegation_token":
+        if "revocation_snapshots" not in out:
+            out.setdefault("policy", NOT_TESTED)
+        return out
+    if op not in ("verify_tct", "verify_attestation", "verify_tct_as_issuer"):
+        return out
+    revlist = out.get("issuer_revocation_list")
+    if revlist is None:
+        out.setdefault("policy", NOT_TESTED)
+        return out
+    if not isinstance(revlist, dict):
+        return out
+    revlist = dict(revlist)
+    mode = revlist.pop("fail_mode", None)
+    available = revlist.pop("available", True)
+    if not isinstance(available, bool):
+        raise FixtureError(f"issuer_revocation_list.available is {available!r}, not a boolean")
+    if available:
+        out["issuer_revocation_list"] = revlist
+    elif "snapshot" in revlist:
+        raise FixtureError("issuer_revocation_list has available: false beside a snapshot")
+    else:
+        del out["issuer_revocation_list"]
+    if mode is not None:
+        out.setdefault("policy", {"fail_mode": mode})
+    return out
+
+
+def _receiver_policy(fixture_id: str, inp: dict[str, Any]) -> None:
+    """The receiver's policy for a handshake fixture (README, "Receiver policy
+    inputs"). Its OIDC trust anchors default to the runner-minted issuer
+    alone. An ``id-*`` fixture checks the identity binding (step 6) and does
+    not run step 8, so a receiver that always runs step 8 accepts the type the
+    fixture presents; an ``mh-*`` fixture keeps the verifier's default."""
+    inp.setdefault("self_trust_anchors", [RUNNER_OIDC_ISSUER])
+    identity = inp.get("envelope", {}).get("payload", {}).get("identity")
+    if fixture_id.startswith("id-") and isinstance(identity, dict):
+        inp.setdefault("self_accepted_identity_types", [identity.get("type")])
+
+
 def run_fixture(fixture: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str]:
     inp = fixture.get("input", {})
     expected = fixture.get("expected", {})
@@ -205,43 +278,34 @@ def run_fixture(fixture: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str
         return SKIP, f"could not mint fixture: {exc}"
     minted["_feature"] = fixture.get("feature")
 
-    # `verify_tct`/`verify_delegation_token` require a top-level `policy` key
-    # (a revocation decision is mandatory, not optional -- a caller must say
-    # explicitly how to treat absent revocation data, per `/reconcile` on
-    # `plans/archive/hardening-issues-30-31.md`). This runner is a deployment, the
-    # same role it already plays via `_feature` above, and most conformance
-    # fixtures predate `policy` entirely: supply the pack's own long-standing
-    # default (`fail_open`, i.e. run the fixture as every implementation ran
-    # it before `policy` existed) for one that carries none, exactly as a
-    # real deployment would supply its own configured policy rather than
-    # leaving the decision unmade. A fixture that DOES carry a `policy`
-    # always wins -- `setdefault` only fills the gap, never overrides.
-    #
-    # Two narrower gaps take the fixture's own declared decision instead
-    # (RFC-AITP-0008 §1.5, 0.3.1-draft): a `verify_tct` wrapper declaring
-    # `fail_mode` is the fixture's decision (`tct-022`/`tct-023`), so no
-    # top-level `policy` is added over it; and a delegation fixture carrying
-    # `revocation_snapshots` gets the schema default `fail_closed`
-    # (`del-mh-006`), since its expected outcome is stated under that default.
-    revlist = minted.get("issuer_revocation_list")
-    declares_mode = isinstance(revlist, dict) and "fail_mode" in revlist
-    if op == "verify_delegation_token" and "revocation_snapshots" in minted:
-        minted.setdefault("policy", {"fail_mode": "fail_closed"})
-    elif op in ("verify_tct", "verify_attestation", "verify_delegation_token") and not declares_mode:
-        minted.setdefault("policy", {"fail_mode": "fail_open"})
-
     try:
-        OPERATIONS[op](minted)
+        minted = _revocation_conventions(op, minted)
+    except FixtureError as exc:
+        return FAIL, f"malformed fixture: {exc}"
+    if op == "verify_handshake_payload":
+        _receiver_policy(fixture["id"], minted)
+
+    result: dict[str, Any] = {}
+    try:
+        result = OPERATIONS[op](minted)
         outcome, code = "success", None
     except AitpError as exc:
         outcome, code = "failure", exc.code
     except Exception as exc:  # noqa: BLE001 - a crash is a fixture failure, not a runner abort
         return FAIL, f"verifier raised {type(exc).__name__}: {exc}"
 
+    authorized = expected.get("side_effects", {}).get("capability_authorized")
+    if authorized is not None and authorized != (outcome == "success"):
+        return FAIL, f"side effect capability_authorized={outcome == 'success'}, expected {authorized}"
+
     if expected.get("outcome") == "success":
-        if outcome == "success":
-            return PASS, "success"
-        return FAIL, f"expected success, got failure/{code}"
+        if outcome != "success":
+            return FAIL, f"expected success, got failure/{code}"
+        if op == "verify_tct_as_issuer":
+            for key in ("presenter_aid", "grants"):
+                if key in expected and result.get(key) != expected[key]:
+                    return FAIL, f"{key} {result.get(key)!r}, expected {expected[key]!r}"
+        return PASS, "success"
 
     exp_code = expected.get("error_code")
     if outcome == "failure" and code == exp_code:
@@ -263,7 +327,7 @@ class PackResult:
         return 1 if self.counts[FAIL] or self.violations else 0
 
 
-def run_pack(conf_dir: Path, keys: dict[str, Any], profile: str = "v0.2") -> PackResult:
+def run_pack(conf_dir: Path, keys: dict[str, Any], profile: str = "core") -> PackResult:
     """Run every fixture in *conf_dir* and apply the *profile* gate."""
     flag = PROFILES[profile]
     res = PackResult()
@@ -291,8 +355,8 @@ def run_pack(conf_dir: Path, keys: dict[str, Any], profile: str = "v0.2") -> Pac
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--spec-dir", required=True, type=Path, help="path to the agentidentitytrustprotocol spec repo")
-    ap.add_argument("--profile", choices=sorted(PROFILES), default="v0.2",
-                    help="core tier to gate on (default v0.2, the aitp/0.3 core tier)")
+    ap.add_argument("--profile", choices=sorted(PROFILES), default="core",
+                    help="tier to gate on (default core)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 

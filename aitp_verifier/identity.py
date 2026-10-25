@@ -36,7 +36,7 @@ Two binding types feed the mutual handshake:
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Collection, Mapping
 
 from .aid import parse_aid
 from .b64 import b64url_decode
@@ -92,7 +92,7 @@ def verify_identity(
     envelope: dict[str, Any],
     self_aid: str,
     *,
-    trust_anchors: list[str] | None,
+    trust_anchors: Collection[str],
     trust_store: list[str] | None,
     issuer_keys: Mapping[str, Any],
     now: int,
@@ -115,7 +115,7 @@ def _verify_oidc(
     identity: dict[str, Any],
     envelope: dict[str, Any],
     self_aid: str,
-    trust_anchors: list[str] | None,
+    trust_anchors: Collection[str],
     issuer_keys: Mapping[str, Any],
     now: int,
 ) -> None:
@@ -129,9 +129,8 @@ def _verify_oidc(
     0. ``identity.public_key`` MUST be absent (RFC-AITP-0002 §1: forbidden
        for the ``oidc`` branch — the AID's own key is the only key).
     1. ``identity.issuer`` MUST be present and a string.
-    2. ``issuer`` MUST be in ``trust_anchors`` when a trust-anchor list is
-       configured (``None`` means "not modelled here", not "trust nothing").
-       This gate is deliberately checked before any crypto so an untrusted
+    2. ``issuer`` MUST be in ``trust_anchors``; an empty collection trusts
+       no issuer. This gate is deliberately checked before any crypto so an untrusted
        issuer is rejected as untrusted, never masked by an unrelated
        resolution or signature failure.
     3. ``proof`` MUST be a strict 3-segment compact JWS (``jws.parse_compact``).
@@ -177,9 +176,9 @@ def _verify_oidc(
     if not isinstance(issuer, str):
         raise AitpError("IDENTITY_FAILED", "OIDC identity missing string issuer")
 
-    # Trust-anchor gate runs before any crypto (see docstring step 2). `None`
-    # means the caller has not modelled trust anchors for this check at all.
-    if trust_anchors is not None and issuer not in trust_anchors:
+    # Trust-anchor gate runs before any key fetch (RFC-AITP-0004 §5.1 step 6,
+    # check 2; see docstring step 2).
+    if issuer not in trust_anchors:
         raise AitpError("INCOMPATIBLE_TRUST_ANCHORS", "OIDC issuer not a trusted anchor")
 
     parsed = parse_compact(identity.get("proof", ""), structural_code="IDENTITY_FAILED")

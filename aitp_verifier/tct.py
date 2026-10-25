@@ -15,26 +15,19 @@ issuer's revocation snapshot, once supplied, is itself fully verified
 ``verify_snapshot_trust``) before its ``entries`` are consulted — not merely
 consulted at face value.
 
-``verify_tct``'s input carries a top-level ``policy`` key, spelled exactly as
-``verify_revocation_snapshot``'s own (``{"fail_mode": ..., "max_staleness_secs":
-...}``). It answers the single question RFC-AITP-0008 §3.1 reserves for
-``fail_mode``: what to do when **no trusted, applicable revocation snapshot
-was supplied at all** — "unknown is treated as revoked" under
-``fail_closed``, proceed under ``soft_fail``/``fail_open``. It never answers
-what to do about a snapshot that *was* obtained and cannot be trusted; §1.5
-decides that first, and ``verify_snapshot_trust`` still reports that
-snapshot's own defect under every mode. **A revocation decision is
-mandatory, not optional**: a caller supplying neither a top-level ``policy``
-nor a wrapper-declared ``fail_mode`` (``issuer_revocation_list.fail_mode``)
-gets a raw ``KeyError("policy")``, the same failure mode this function
-already gives a caller who omits any of its other required top-level
-arguments (``tct_token``, ...) — never a silent ``fail_open``. A caller with
-no revocation infrastructure must say so explicitly:
-``policy={"fail_mode": "fail_open"}``. See ``_effective_fail_mode`` for the
-full precedence and ``ASSUMPTIONS.md``/``DECISIONS.md`` for why a mandatory
-decision, not a configured default, governs the no-policy case — reversed
-from this module's own initial design via `/reconcile` before any real
-caller could depend on the permissive default.
+``verify_tct``'s input takes an optional top-level ``policy`` key, spelled
+exactly as ``verify_revocation_snapshot``'s own (``{"fail_mode": ...,
+"max_staleness_secs": ...}``). It answers the single question RFC-AITP-0008
+§3.1 reserves for ``fail_mode``: what to do when **no trusted, applicable
+revocation snapshot was obtained at all**. Under ``fail_closed`` unknown is
+treated as revoked; under ``soft_fail``/``fail_open`` verification proceeds. It
+never answers what to do about a snapshot that *was* obtained and cannot be
+trusted: §1.5 decides that first. With no ``policy`` the verifier runs its
+default, ``fail_closed`` (``revocation.policy_fail_mode``; ``tct-024``). A
+caller with no revocation infrastructure must say so explicitly:
+``policy={"fail_mode": "fail_open"}``. The input artifact never sets the mode:
+an ``issuer_revocation_list`` wrapper is unsigned, so a ``fail_mode`` member on
+it is never read.
 
 ``check_tct_claims_shape`` is exported so ``handshake.py`` and
 ``sessionbundle.py`` -- which each verify an *embedded* peer-issued TCT
@@ -51,16 +44,20 @@ import re
 from typing import Any
 
 from .aid import parse_aid
+from .b64 import b64url_decode
+from .crypto import sha256
+from .envelope import envelope_signing_input, validate_envelope_shape
 from .errors import AitpError
 from .fields import check_types, reject_unknown_fields, require_members
 from .identity import trust_store_entry
 from .jwk import thumbprint
 from .jws import parse_compact, verify_jws
-from .revocation import resolve_fail_mode, snapshot_is_stale, verify_snapshot_trust
+from .revocation import policy_fail_mode, policy_of, snapshot_is_stale, verify_snapshot_trust
+from .sigfield import decode_tagged_signature
 from .timeutil import REFERENCE_CLOCK
 from .version import PROTOCOL_VERSION
 
-__all__ = ["verify_tct", "TCT_CLAIM_FIELDS", "TCT_CNF_FIELDS", "check_tct_claims_shape", "outlives_manifest"]
+__all__ = ["verify_tct", "verify_tct_as_issuer", "TCT_CLAIM_FIELDS", "TCT_CNF_FIELDS", "check_tct_claims_shape", "outlives_manifest"]
 
 # aitp-tct.schema.json: additionalProperties: false. `ext` is the
 # RFC-AITP-0012 §1.1 extensions slot on this claims object -- listing it here
@@ -178,6 +175,115 @@ def verify_tct(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any
     return {"grants": claims["grants"]}
 
 
+def verify_tct_as_issuer(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any]:
+    """A TCT presented back to the peer that issued it (RFC-AITP-0005 §10.5).
+
+    Inputs: ``self_aid`` (the verifier, which MUST be ``iss``), ``tct_token``,
+    and the presenter's authenticated source, which is one of:
+
+    * ``envelope``, a ``pop_response`` answering a challenge in
+      ``outstanding_pop_challenges`` (``[{tct_jti, nonce, expires_at}]``, the
+      challenges this verifier issued); or
+    * ``channel_bound_aid``, the AID whose key the transport channel proves.
+
+    There is no third source, so with neither the TCT is rejected
+    ``POP_RESPONSE_INVALID`` whatever the grant's PoP policy (§10.5 item 3).
+    The expected audience comes only from that source, never from the token
+    (item 5). Revocation runs last (item 6), under ``policy`` as for
+    ``verify_tct``. Returns the presenter AID and the authorized grants.
+    """
+    token = inp["tct_token"]
+    self_aid = inp["self_aid"]
+    iss = parse_compact(token, structural_code="TCT_SIGNATURE_INVALID").claims.get("iss")
+    # Item 1: in this mode only our own tokens are verified, under our own key.
+    if iss != self_aid:
+        raise AitpError("TCT_SIGNATURE_INVALID", "issuer-side verification of a TCT this verifier did not issue")
+    claims = verify_jws(
+        token,
+        iss_aid=str(self_aid),
+        expected_typ="aitp-tct+jwt",
+        typ_err="TOKEN_TYP_MISMATCH",
+        alg_err="TOKEN_ALG_MISMATCH",
+        sig_err="TCT_SIGNATURE_INVALID",
+        after_typ_check=lambda c: check_tct_claims_shape(c, shape_code="TCT_SIGNATURE_INVALID"),
+    )
+
+    # Item 2: §7.2 step 5 read from the issuer's side.
+    if claims["ver"] != PROTOCOL_VERSION:
+        raise AitpError("UNKNOWN_VERSION", f"unknown ver {claims['ver']!r}")
+    if claims["aud"] != claims["sub"]:
+        raise AitpError("TCT_SIGNATURE_INVALID", "issuer-side TCT whose aud != sub")
+    if now >= int(claims["exp"]):
+        raise AitpError("TCT_EXPIRED", "TCT exp is in the past")
+    check_grant_context(claims)
+    try:
+        sub_aid = parse_aid(claims["sub"])
+    except ValueError as exc:
+        raise AitpError("TCT_SIGNATURE_INVALID", f"TCT claims.sub is not a valid AID: {exc}") from exc
+    if claims["cnf"].get("jkt") != thumbprint(sub_aid):
+        raise AitpError("TCT_CNF_MISMATCH", "cnf.jkt does not bind the subject key")
+
+    # Items 3 and 4: the presenter AID, from PoP or a channel binding only.
+    if inp.get("envelope") is not None:
+        presenter = _presenter_from_pop(inp, claims, now)
+    elif inp.get("channel_bound_aid") is not None:
+        presenter = inp["channel_bound_aid"]
+    else:
+        raise AitpError("POP_RESPONSE_INVALID", "no downstream PoP and no channel binding for the presenter")
+    if presenter != claims["sub"]:
+        raise AitpError("POP_RESPONSE_INVALID", "presenter AID is not the TCT sub")
+
+    _check_revocation(claims, inp, now)
+    return {"presenter_aid": presenter, "grants": claims["grants"]}
+
+
+def _presenter_from_pop(inp: dict[str, Any], claims: dict[str, Any], now: int) -> str:
+    """RFC-AITP-0005 §6.2 over a challenge this verifier issued for ``jti``.
+    Returns ``sub``, the only AID a valid response can establish."""
+    try:
+        env = validate_envelope_shape(inp["envelope"])
+        sender = parse_aid(env["sender"]["agent_id"])
+    except (AitpError, ValueError) as exc:
+        raise AitpError("POP_RESPONSE_INVALID", f"pop_response envelope is malformed: {exc}") from exc
+    payload = env["payload"]
+    if env["message_type"] != "pop_response" or not all(
+        isinstance(payload.get(k), str) for k in ("tct_jti", "nonce_echo", "pop_signature")
+    ):
+        raise AitpError("POP_RESPONSE_INVALID", "not a pop_response with tct_jti, nonce_echo and pop_signature")
+
+    # §6.2 step 1: the response envelope signature.
+    raw = decode_tagged_signature(env["signature"], sender, sig_err="POP_RESPONSE_INVALID")
+    if not sender.public_key.verify_digest(sha256(envelope_signing_input(env)), raw):
+        raise AitpError("POP_RESPONSE_INVALID", "pop_response envelope signature invalid")
+
+    # The challenge it answers: one we issued for this jti, still live.
+    if payload["tct_jti"] != claims["jti"]:
+        raise AitpError("POP_RESPONSE_INVALID", "pop_response names a different tct_jti")
+    challenges = [
+        c for c in inp.get("outstanding_pop_challenges") or []
+        if isinstance(c, dict) and c.get("tct_jti") == claims["jti"] and c.get("nonce") == payload["nonce_echo"]
+    ]
+    if not challenges:
+        # §6.2 step 2: the echo matches no challenge this verifier sent.
+        raise AitpError("POP_RESPONSE_INVALID", "nonce_echo matches no outstanding challenge for this jti")
+    challenge = challenges[0]
+    expires_at = challenge.get("expires_at")
+    if not isinstance(expires_at, int) or isinstance(expires_at, bool) or now >= expires_at:
+        raise AitpError("POP_CHALLENGE_INVALID", "the challenge is expired or malformed")
+    try:
+        nonce = b64url_decode(challenge["nonce"])
+    except ValueError as exc:
+        raise AitpError("POP_CHALLENGE_INVALID", f"challenge nonce is not base64url: {exc}") from exc
+
+    # §6.2 steps 3-4: signed by the key in `sub`, and `cnf.jkt` binds that
+    # key (checked by the caller). Any other key, however valid, fails.
+    sub_aid = parse_aid(claims["sub"])
+    sig = decode_tagged_signature(payload["pop_signature"], sub_aid, sig_err="POP_RESPONSE_INVALID")
+    if not sub_aid.public_key.verify_digest(sha256(nonce), sig):
+        raise AitpError("POP_RESPONSE_INVALID", "pop_signature does not verify under the sub key")
+    return str(claims["sub"])
+
+
 def outlives_manifest(claims: dict[str, Any], manifest: dict[str, Any]) -> bool:
     """RFC-AITP-0005 §10.4: a token MUST NOT outlive its issuer's Manifest.
     Equal is within the bound. Shared by every Manifest-capped check."""
@@ -249,67 +355,6 @@ def _attestation_pre_signature(claims: dict[str, Any], trust_store: Any) -> None
         raise AitpError("TCT_SIGNATURE_INVALID", "attestation issuer is not in trust_store")
 
 
-def _effective_fail_mode(inp: dict[str, Any], revlist: Any) -> str:
-    """Resolve the ``fail_mode`` that governs *absence*, in strict precedence.
-
-    1. A top-level ``policy`` key, when supplied, is **authoritative** and
-       cannot be overridden by anything in the input artifact. A ``policy``
-       dict without ``fail_mode`` resolves to ``fail_closed``, matching
-       ``revocation.py``'s own ``policy.get("fail_mode", "fail_closed")`` --
-       so ``policy: {}`` is enough to opt into fail-closed. A non-dict
-       ``policy`` resolves to ``fail_closed`` too, never to a raw
-       ``AttributeError``.
-    2. Else ``issuer_revocation_list["fail_mode"]``, the member the spec's own
-       ``tct-004-revoked`` fixture already carries and this module read
-       nowhere before (issue #30's "the wrapper's declared members are never
-       read at all").
-    3. Else -- no ``policy`` key and no wrapper ``fail_mode`` -- **raise
-       ``KeyError("policy")``**. A revocation decision is mandatory: a caller
-       supplying neither a top-level ``policy`` nor a wrapper-declared
-       ``fail_mode`` has made no decision at all, and this module's earlier
-       behavior of silently treating that as ``fail_open`` reintroduced
-       exactly the "revocation check skipped by omission, not by choice" bug
-       class issue #30 was filed against -- merely made optional to close
-       rather than impossible to have. ``policy`` joins ``tct_token`` and
-       ``self_aid`` as one of this function's own required top-level call
-       arguments (see ``tests/test_boundary_contract.py``'s own documented
-       scope exclusion for exactly this category of key); it is not a wire
-       artifact, so a raw ``KeyError`` here is consistent with how every
-       other required top-level argument already fails when a caller omits
-       it, not a violation of this library's "``AitpError`` or a verdict"
-       contract for artifacts that actually arrive over the wire. See
-       ``ASSUMPTIONS.md`` and ``DECISIONS.md`` for the full reasoning,
-       including why the conformance-pack constraint that originally
-       justified the permissive default does not, on inspection, force it:
-       ``run_conformance.py`` supplies the deployment's own policy for
-       fixtures that carry none, the same role it already plays for other
-       call-time-only inputs.
-
-    **Why 1 outranks 2, and why that ordering is security-relevant.**
-    ``issuer_revocation_list.fail_mode`` is an *unsigned* member of the
-    caller-supplied wrapper -- the snapshot signature covers only the inner
-    ``revocation_list`` body -- and for a real integrator that wrapper is a
-    remote ``ListRevoked`` response with a locally-added envelope. Were it to
-    outrank the top-level ``policy``, a deployment that had explicitly
-    configured ``fail_closed`` could be silently downgraded to
-    ``soft_fail``/``fail_open`` by whatever assembled the wrapper. It is the
-    same reason the sibling member ``issuer_revocation_list["issuer"]`` is
-    ignored for every trust decision below: neither unsigned label may ever
-    override something the deployment or the signature has already said. In
-    the one position it does hold -- the deployment said nothing -- the
-    wrapper's ``fail_mode`` is monotone-safe: rule 3's default is
-    ``fail_open``, the most permissive mode, so the wrapper can only tighten.
-    """
-    if "policy" in inp:
-        policy = inp["policy"]
-        if not isinstance(policy, dict):
-            return "fail_closed"
-        return resolve_fail_mode(policy.get("fail_mode", "fail_closed"))
-    if isinstance(revlist, dict) and "fail_mode" in revlist:
-        return resolve_fail_mode(revlist["fail_mode"])
-    raise KeyError("policy")
-
-
 def _apply_absence(fail_mode: str, detail: str) -> None:
     """RFC-AITP-0008 §3.1 applied to the *absent* case only: under
     ``fail_closed`` an absent snapshot means revocation status is unknown, and
@@ -333,55 +378,33 @@ def _apply_absence(fail_mode: str, detail: str) -> None:
 def _check_revocation(claims: dict[str, Any], inp: dict[str, Any], now: int) -> None:
     """RFC-AITP-0008 §3.3 + §3.1, in that order.
 
-    **A discarded snapshot is an absent one** (RFC-AITP-0008 §1.5,
-    0.3.1-draft). A supplied snapshot MUST itself be trusted (structurally
-    valid, correctly shaped, genuinely signed by its own claimed issuer)
-    before its ``entries`` are consulted -- ``verify_snapshot_trust``
-    (``revocation.py``) is what closed issue #24's gap, where a forged/unsigned
-    snapshot was accepted at face value via a bare ``.get()`` chain. When that
-    check fails, the snapshot's own code (``REVOCATION_SNAPSHOT_INVALID``/
-    ``UNKNOWN_FIELD``/``REVOCATION_SNAPSHOT_SIGNATURE_INVALID``) is what
-    ``verify_revocation_snapshot`` reports about the snapshot itself; the
-    *token* decision instead discards it and applies ``fail_mode``, exactly as
-    for an unreachable endpoint (``tct-022``/``tct-023``). Discarding never
-    means "no check needed": under ``fail_closed`` the token is rejected with
-    ``TCT_REVOKED``, so corrupting a snapshot in transit cannot turn
-    fail-closed into fail-open.
+    **A discarded snapshot is an absent one** (RFC-AITP-0008 §1.5). A supplied
+    snapshot MUST itself be trusted (structurally valid, correctly shaped,
+    genuinely signed by its own claimed issuer) before its ``entries`` are
+    consulted. When that check fails, ``verify_revocation_snapshot`` would
+    report the snapshot's own code; the *token* decision instead discards it
+    and applies ``fail_mode``, exactly as for an unreachable endpoint
+    (``tct-022``/``tct-023``). So under ``fail_closed`` corrupting a snapshot
+    in transit cannot turn fail-closed into fail-open.
 
-    **Absence** -- the case ``fail_mode`` answers (issue #30) -- is the
-    discarded case above plus exactly three things:
+    **Absence** is the discarded case above plus:
 
-    * (a) ``issuer_revocation_list`` missing or not a dict: nothing was
-      obtained;
+    * (a) ``issuer_revocation_list`` missing or not an object: no source, nothing obtained
+      (``tct-024``/``tct-025``);
     * (b) the trusted snapshot's **signed** ``issuer`` is not this TCT's
-      ``iss``: a perfectly valid snapshot that does not speak for this
-      issuer leaves this TCT's status unknown (the wrapper's own unsigned
-      ``issuer`` label is deliberately never consulted -- the signed value
-      wins, as ``delegation.py::_revocation_index`` already establishes);
-    * (c) **only when a top-level ``policy`` is supplied**: the snapshot is
-      expired or staler than ``max_staleness_secs``. Gating (c) on ``policy``
-      is what keeps this diff auditable -- with no ``policy`` key at all,
-      freshness and expiry are never evaluated (they were never evaluated
-      before this key existed either, and that much is unaffected by
-      `/reconcile`'s mandatory-decision reversal below). What DID change: a
-      caller supplying neither a top-level ``policy`` nor a wrapper-level
-      ``fail_mode`` no longer silently resolves to ``fail_open`` -- see
-      ``_effective_fail_mode``'s rule 3, which now raises ``KeyError``
-      instead. A wrapper carrying ``fail_mode`` with no top-level ``policy``
-      still governs the outcome on absence via rule 2, unaffected by that
-      reversal. The wrapper's ``fail_mode`` selects what happens *on*
-      absence; it does not switch on freshness evaluation, because
-      ``max_staleness_secs`` is a deployment value with no per-wrapper
-      spelling in the fixture shape.
+      ``iss``. The wrapper's own unsigned ``issuer`` label is never
+      consulted;
+    * (c) the snapshot is expired or staler than the policy's
+      ``max_staleness_secs`` (RFC-AITP-0008 §3.2).
 
-    Present, trusted and applicable ⇒ the deny-list scan, unchanged.
+    Present, trusted, applicable and fresh ⇒ the deny-list scan.
     """
+    fail_mode = policy_fail_mode(inp)
     revlist = inp.get("issuer_revocation_list")
-    fail_mode = _effective_fail_mode(inp, revlist)
 
     # (a) Nothing was obtained at all.
     if not isinstance(revlist, dict):
-        _apply_absence(fail_mode, "no issuer_revocation_list was supplied")
+        _apply_absence(fail_mode, "no revocation source for the issuer")
         return
 
     # Trust before the deny-list scan, always. A snapshot that fails it is
@@ -393,22 +416,15 @@ def _check_revocation(claims: dict[str, Any], inp: dict[str, Any], now: int) -> 
         return
 
     # (b) A snapshot signed by someone other than this TCT's own issuer does
-    # not speak for it. The snapshot itself may be perfectly valid, so this is
-    # not a defect in it -- it just leaves this TCT's revocation status
-    # unknown, which is what `fail_mode` is for.
+    # not speak for it.
     if body["issuer"] != claims.get("iss"):
         _apply_absence(fail_mode, "the supplied snapshot is signed by a different issuer")
         return
 
-    # (c) Freshness, evaluated only under an explicitly supplied policy. A
-    # non-dict `policy` has already resolved `fail_mode` to `fail_closed`
-    # above; it carries no readable `max_staleness_secs`, so only the
-    # snapshot's own `expires_at` bound applies to it.
-    if "policy" in inp:
-        policy = inp["policy"]
-        if snapshot_is_stale(body, policy if isinstance(policy, dict) else {}, now):
-            _apply_absence(fail_mode, "the supplied snapshot is expired or stale")
-            return
+    # (c) Freshness.
+    if snapshot_is_stale(body, policy_of(inp), now):
+        _apply_absence(fail_mode, "the supplied snapshot is expired or stale")
+        return
 
     if any(e.get("jti") == claims.get("jti") for e in body["entries"]):
         raise AitpError("TCT_REVOKED", "TCT jti is on the issuer revocation snapshot")

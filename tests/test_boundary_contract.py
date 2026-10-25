@@ -69,6 +69,7 @@ _ARTIFACT_ROOTS: dict[str, str] = {
     "verify_envelope": "envelope",
     "verify_manifest": "manifest",
     "verify_tct": "tct_token_claims",
+    "verify_tct_as_issuer": "envelope",
     "verify_attestation": "tct_token_claims",
     "verify_grant_voucher": "voucher_token_claims",
     "verify_delegation_token": "delegation_token_claims",
@@ -223,16 +224,6 @@ def _sweep(spec_dir: Path, op: str) -> list[str]:
                     # finding about the verifier under test, which hasn't
                     # been called yet.
                     continue
-                # `verify_tct`/`verify_delegation_token` require a top-level
-                # `policy` key (a revocation decision is mandatory -- see
-                # `/reconcile` on `plans/archive/hardening-issues-30-31.md`), which is
-                # a Python-calling-convention argument this harness's own
-                # documented scope deliberately never mutates or deletes (see
-                # module docstring). Supply the harness's own default so every
-                # mutation still reaches the wire-artifact field under test,
-                # the same role `run_conformance.py` plays for its fixtures.
-                if op in ("verify_tct", "verify_attestation", "verify_delegation_token"):
-                    minted.setdefault("policy", {"fail_mode": "fail_open"})
                 try:
                     OPERATIONS[op](minted)
                 except AitpError:
@@ -294,7 +285,8 @@ def test_boundary_contract_identity_never_raises_a_bare_exception(spec_dir: Path
         menv = minted["envelope"]
         base_identity = menv["payload"]["identity"]
         self_aid = minted.get("self_aid", "")
-        trust_anchors = minted.get("self_trust_anchors")
+        # The runner's default anchor, so mutations reach past the trust-anchor gate.
+        trust_anchors = minted.get("self_trust_anchors", ["https://auth.openai.com"])
         trust_store = minted.get("trust_store")
         issuer_keys = minted.get("resolved_issuer_keys", {})
 

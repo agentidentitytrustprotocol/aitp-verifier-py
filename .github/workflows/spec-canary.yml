@@ -1,0 +1,86 @@
+name: spec canary
+
+# The wire canary: conformance against the spec's floating `main`, not the
+# SPEC_VERSION pin that ci.yml's required checks use. It is not a required
+# check, so a spec merge that breaks this repo shows up here (and in one
+# tracking issue) without blocking any PR. The fix is a bump of SPEC_VERSION,
+# which bump-spec.yml normally opens on its own.
+on:
+  schedule:
+    # 06:17 UTC daily: most spec merges from US-evening and APAC-morning
+    # contributors have landed by then, and :17 dodges top-of-hour queueing.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  ISSUE_TITLE: "Spec canary: conformance fails against spec main"
+
+jobs:
+  canary:
+    name: conformance against spec main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the verifier
+        uses: actions/checkout@v7
+        with:
+          path: aitp-verifier-py
+      - name: Check out the AITP spec at main
+        uses: actions/checkout@v7
+        with:
+          repository: agentidentitytrustprotocol/agentidentitytrustprotocol
+          path: agentidentitytrustprotocol
+      - id: spec
+        run: echo "sha=$(git -C agentidentitytrustprotocol rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install
+        working-directory: aitp-verifier-py
+        run: python -m pip install --upgrade pip && pip install -e ".[dev]"
+      - name: Conformance
+        working-directory: aitp-verifier-py
+        run: python run_conformance.py --spec-dir ../agentidentitytrustprotocol
+      - name: Unit tests
+        working-directory: aitp-verifier-py
+        env:
+          AITP_SPEC: ${{ github.workspace }}/agentidentitytrustprotocol
+        run: pytest -q
+
+      # One tracking issue, updated in place: a comment per failing run, never
+      # a new issue per run. A green run closes it.
+      - name: Report failure on the tracking issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SPEC_SHA: ${{ steps.spec.outputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body="Spec main \`${SPEC_SHA}\` fails conformance here: ${RUN_URL}. Pinned spec: \`$(cat aitp-verifier-py/SPEC_VERSION)\`."
+          num=$(gh issue list --state open --search "in:title \"$ISSUE_TITLE\"" --json number,title \
+                --jq "map(select(.title == env.ISSUE_TITLE)) | .[0].number // empty")
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --body "$body"
+          else
+            gh issue create --title "$ISSUE_TITLE" --body "$body"
+          fi
+      - name: Close the tracking issue on recovery
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SPEC_SHA: ${{ steps.spec.outputs.sha }}
+        run: |
+          num=$(gh issue list --state open --search "in:title \"$ISSUE_TITLE\"" --json number,title \
+                --jq "map(select(.title == env.ISSUE_TITLE)) | .[0].number // empty")
+          if [ -n "$num" ]; then
+            gh issue close "$num" --comment "Spec main \`${SPEC_SHA}\` passes again."
+          fi
