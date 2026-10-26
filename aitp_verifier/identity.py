@@ -36,7 +36,7 @@ Two binding types feed the mutual handshake:
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Collection, Mapping
 
 from .aid import parse_aid
 from .b64 import b64url_decode
@@ -45,7 +45,9 @@ from .errors import AitpError
 from .fields import describe_value, reject_unknown_fields
 from .jwk import IssuerKey, issuer_keys_from, thumbprint
 from .jws import parse_compact
+from .proofinput import PINNED_KEY_DOMAIN, handshake_proof_input
 from .sigfield import decode_tagged_signature
+from .spiffe import verify_spiffe
 
 __all__ = ["pinned_key_proof_input", "trust_store_entry", "verify_identity"]
 
@@ -66,25 +68,16 @@ _IAT_TOLERANCE_SECS = 300
 # fail-closed reading of an ambiguity, but a false rejection if the other side
 # was right. Spec PR #42 collapsed the two definitions into one and added
 # `extensions` here; id-009 now pins acceptance.
-_IDENTITY_FIELDS = frozenset({"type", "issuer", "subject", "proof", "public_key", "extensions"})
+_IDENTITY_FIELDS = frozenset({"type", "issuer", "subject", "proof", "public_key", "svid_type", "x5c", "extensions"})
+# Members only the `spiffe` branch defines (RFC-AITP-0002 §6.1).
+_SPIFFE_ONLY_FIELDS = frozenset({"svid_type", "x5c"})
 
 
 def pinned_key_proof_input(
     sender_aid: str, receiver_aid: str, message_id: str, timestamp: int, pop_nonce: str
 ) -> bytes:
     """Build the RFC-AITP-0002 §3.1 five-field pinned-key proof input."""
-    return (
-        b"aitp-pinned-key-v1\x00"
-        + sender_aid.encode("utf-8")
-        + b"\x00"
-        + receiver_aid.encode("utf-8")
-        + b"\x00"
-        + message_id.encode("utf-8")
-        + b"\x00"
-        + str(int(timestamp)).encode("ascii")
-        + b"\x00"
-        + b64url_decode(pop_nonce)
-    )
+    return handshake_proof_input(PINNED_KEY_DOMAIN, sender_aid, receiver_aid, message_id, timestamp, pop_nonce)
 
 
 def verify_identity(
@@ -92,14 +85,25 @@ def verify_identity(
     envelope: dict[str, Any],
     self_aid: str,
     *,
-    trust_anchors: list[str] | None,
+    trust_anchors: Collection[str],
     trust_store: list[str] | None,
     issuer_keys: Mapping[str, Any],
     now: int,
+    spiffe_bundles: Any = None,
 ) -> None:
-    """Verify the identity binding in a handshake payload. Raises on failure."""
+    """Verify the identity binding in a handshake payload. Raises on failure.
+
+    *spiffe_bundles* is the SPIFFE bundle store (RFC-AITP-0002 §6.2). ``None``
+    means the Draft ``spiffe`` type is not enabled, so a ``spiffe`` descriptor
+    is an unknown type; an enabled, empty store trusts no trust domain.
+    """
     reject_unknown_fields(identity, _IDENTITY_FIELDS, shape_code="IDENTITY_FAILED", what="identity descriptor")
     itype = identity.get("type")
+    if itype == "spiffe" and spiffe_bundles is not None:
+        verify_spiffe(identity, envelope, self_aid, spiffe_bundles, now)
+        return
+    if itype in ("oidc", "pinned_key") and _SPIFFE_ONLY_FIELDS & identity.keys():
+        raise AitpError("IDENTITY_FAILED", f"{itype} descriptor MUST NOT carry {sorted(_SPIFFE_ONLY_FIELDS & identity.keys())}")
     if itype == "oidc":
         _verify_oidc(identity, envelope, self_aid, trust_anchors, issuer_keys, now)
     elif itype == "pinned_key":
@@ -115,7 +119,7 @@ def _verify_oidc(
     identity: dict[str, Any],
     envelope: dict[str, Any],
     self_aid: str,
-    trust_anchors: list[str] | None,
+    trust_anchors: Collection[str],
     issuer_keys: Mapping[str, Any],
     now: int,
 ) -> None:
@@ -129,9 +133,8 @@ def _verify_oidc(
     0. ``identity.public_key`` MUST be absent (RFC-AITP-0002 §1: forbidden
        for the ``oidc`` branch — the AID's own key is the only key).
     1. ``identity.issuer`` MUST be present and a string.
-    2. ``issuer`` MUST be in ``trust_anchors`` when a trust-anchor list is
-       configured (``None`` means "not modelled here", not "trust nothing").
-       This gate is deliberately checked before any crypto so an untrusted
+    2. ``issuer`` MUST be in ``trust_anchors``; an empty collection trusts
+       no issuer. This gate is deliberately checked before any crypto so an untrusted
        issuer is rejected as untrusted, never masked by an unrelated
        resolution or signature failure.
     3. ``proof`` MUST be a strict 3-segment compact JWS (``jws.parse_compact``).
@@ -177,9 +180,9 @@ def _verify_oidc(
     if not isinstance(issuer, str):
         raise AitpError("IDENTITY_FAILED", "OIDC identity missing string issuer")
 
-    # Trust-anchor gate runs before any crypto (see docstring step 2). `None`
-    # means the caller has not modelled trust anchors for this check at all.
-    if trust_anchors is not None and issuer not in trust_anchors:
+    # Trust-anchor gate runs before any key fetch (RFC-AITP-0004 §5.1 step 6,
+    # check 2; see docstring step 2).
+    if issuer not in trust_anchors:
         raise AitpError("INCOMPATIBLE_TRUST_ANCHORS", "OIDC issuer not a trusted anchor")
 
     parsed = parse_compact(identity.get("proof", ""), structural_code="IDENTITY_FAILED")

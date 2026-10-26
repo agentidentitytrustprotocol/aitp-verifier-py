@@ -72,6 +72,9 @@ NON_CANONICAL_VECTORS = {
     "kat-p256-jcs-sign-001",
     "kat-manifest-pop-002-p256",
     "kat-derived-uuid-001",
+    # The X509-SVID proof input (RFC-AITP-0002 §6.4.1), for the draft spiffe
+    # branch; not the JCS form of an object.
+    "kat-spiffe-x509-proof-001",
 }
 
 

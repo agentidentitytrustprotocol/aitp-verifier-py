@@ -222,7 +222,9 @@ def test_session_bundle_signed_example_runs_the_real_verifier(spec_dir: Path) ->
     `_kat_input` (a sibling of `session_bundle` in the file) never enters it.
     That matters now that the wrapper rejects any member beside
     `session_bundle`: passing the file through unaltered would be rejected
-    for the metadata, which would look like a signature failure.
+    for the metadata, which would look like a signature failure. The
+    coordinator's key comes from its committed, signed Manifest example
+    (RFC-AITP-0010 §5 step 5).
     """
     wrapped = _se(spec_dir, "session-bundle/kat-keypair-001-bundle.json")
     body = wrapped["session_bundle"]
@@ -233,6 +235,7 @@ def test_session_bundle_signed_example_runs_the_real_verifier(spec_dir: Path) ->
             "self_aid": participant,
             "now": int(body["issued_at"]) + 100,
             "session_bundle": {"session_bundle": body},
+            "coordinator_manifest": _se(spec_dir, "manifest/kat-keypair-001-manifest.json")["manifest"],
         }
     )
     assert out == {"ok": True}

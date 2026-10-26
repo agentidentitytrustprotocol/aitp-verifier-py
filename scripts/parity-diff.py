@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Diff two conformance reports fixture for fixture.
+
+    python scripts/parity-diff.py native.json adapter.json
+
+`native.json` comes from `run_conformance.py --report`, `adapter.json` from
+`aitp-conformance run --target aitp-verifier-adapter --report`. Both run this
+verifier; only the front end differs, so their outcomes must agree. The diff
+fails on any disagreement not listed below, and on a listed fixture that now
+agrees: the entry is stale and must be deleted.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+
+# Fixtures the two runners schedule differently by design. A skip on one side
+# is expected; any other disagreement is still a mismatch.
+RUNNER_POLICY = {
+    # aitp-conformance skips it when experimental-multihop-delegation is enabled
+    # (feature negation); run_conformance.py opts features in per fixture, so
+    # it runs del-007 feature-less.
+    "del-007": "negated by experimental-multihop-delegation under aitp-conformance",
+    # The same negation for the frozen v0.1 multi-hop rejection, which
+    # run_conformance.py runs as a feature-less core fixture.
+    "del-004": "negated by experimental-multihop-delegation under aitp-conformance",
+}
+
+# Defects in the aitp-conformance runner at the pinned aitp-rs commit, reported
+# upstream: the adapter's outcome is wrong because the runner sent it a wrong
+# input, not because the verifier differs. Empty at aitp-rs be12224, which
+# carries every fix (#364, #367, #369). An entry added here needs an upstream
+# issue, and is deleted when the pinned commit carries its fix.
+KNOWN_RUNNER_GAPS: dict[str, str] = {}
+
+
+def outcomes(path: str) -> dict[str, dict[str, str]]:
+    with open(path, encoding="utf-8") as handle:
+        return {r["id"]: r for r in json.load(handle)["results"]}
+
+
+def main() -> int:
+    native, adapter = outcomes(sys.argv[1]), outcomes(sys.argv[2])
+    problems = []
+    for fid in sorted(set(native) | set(adapter)):
+        a, b = native.get(fid), adapter.get(fid)
+        if a is None or b is None:
+            problems.append(f"{fid}: only in the {'adapter' if a is None else 'native'} report")
+            continue
+        agree = a["outcome"] == b["outcome"]
+        if fid in KNOWN_RUNNER_GAPS:
+            if agree:
+                problems.append(f"{fid}: now agrees ({a['outcome']}); delete its KNOWN_RUNNER_GAPS entry")
+            else:
+                print(f"known {fid}: native {a['outcome']}, adapter {b['outcome']} ({KNOWN_RUNNER_GAPS[fid]})")
+            continue
+        if agree:
+            continue
+        if "skip" in (a["outcome"], b["outcome"]) and fid in RUNNER_POLICY:
+            print(f"note {fid}: native {a['outcome']}, adapter {b['outcome']} ({RUNNER_POLICY[fid]})")
+            continue
+        detail = b.get("reason") or a.get("reason") or ""
+        problems.append(f"{fid}: native {a['outcome']}, adapter {b['outcome']} {detail}".rstrip())
+    for line in problems:
+        print(f"MISMATCH {line}")
+    print(f"{len(native)} fixtures compared, {len(problems)} mismatches")
+    return 1 if problems else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

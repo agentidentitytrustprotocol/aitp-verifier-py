@@ -1,20 +1,24 @@
 [build-system]
-requires = ["setuptools>=83"]
+requires = ["setuptools>=84.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "aitp-verifier"
-version = "0.1.0"
+version = "0.1.2"
 description = "Independent Python implementation of the AITP verification core (second, spec-only implementation that cross-checks the reference one)"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
+authors = [{ name = "AITP contributors" }]
+keywords = ["aitp", "agent-identity", "verifier", "conformance", "jws"]
 # Floors are set so the oldest supported install carries no known OSV
 # advisory, and CI's `floors` job holds them to it. This is hygiene, not
 # incident response: none of the advisories fixed between 42.0 and 50.0 is
-# reachable from the APIs used here -- no x509, pkcs7, or pkcs12 is imported,
-# and the only curve constructed is SECP256R1, never a SECT curve. The cost is
+# reachable from the APIs used here -- no pkcs7 or pkcs12 is imported, x509 is
+# used only for SPIFFE X509-SVID chains (RFC-AITP-0002 §6.4, hand-rolled path
+# validation; never Web PKI or the system trust store), and the only curve
+# constructed is SECP256R1, never a SECT curve. The cost is
 # real and accepted: cryptography dropped Intel-macOS and win32 wheels at
 # 49.0.0, and pyOpenSSL <=26.2.0 caps cryptography below 49.
 dependencies = [
@@ -25,8 +29,7 @@ dependencies = [
 # above), and pairing that with a classifier-form license is a build error, not
 # a warning. Every string below was checked against PyPI's live classifier list
 # (https://pypi.org/pypi?%3Aaction=list_classifiers) so none is invented.
-# "3 - Alpha" is the honest status for a 0.1.0 release that has not been
-# published to PyPI yet.
+# "3 - Alpha" is the honest status for a 0.x release.
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -41,6 +44,17 @@ classifiers = [
     "Typing :: Typed",
 ]
 
+[project.urls]
+Homepage = "https://github.com/agentidentitytrustprotocol/aitp-verifier-py"
+Source = "https://github.com/agentidentitytrustprotocol/aitp-verifier-py"
+Issues = "https://github.com/agentidentitytrustprotocol/aitp-verifier-py/issues"
+Changelog = "https://github.com/agentidentitytrustprotocol/aitp-verifier-py/blob/main/CHANGELOG.md"
+Specification = "https://github.com/agentidentitytrustprotocol/agentidentitytrustprotocol"
+
+[project.scripts]
+# The aitp-conformance subprocess adapter (aitp_verifier/adapter.py).
+aitp-verifier-adapter = "aitp_verifier.adapter:main"
+
 [project.optional-dependencies]
 # mypy is floored at its first cp314 release, not for an advisory (it has
 # none) and not for a strict-mode change -- 1.10 and 1.20 both pass this
@@ -49,6 +63,10 @@ dev = ["pytest>=9.0.3", "mypy>=1.18.1"]
 
 [tool.setuptools.packages.find]
 include = ["aitp_verifier*"]
+
+[tool.setuptools.package-data]
+# The KAT keypairs the conformance minter signs with (aitp_verifier/keys.py).
+aitp_verifier = ["kat/*.json"]
 
 [tool.mypy]
 strict = true

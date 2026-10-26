@@ -272,3 +272,26 @@ stale docstring in `delegation.py` still describing the superseded permissive de
 missing regression test for the eager-resolution fix, and a dead conjunct). CI green 8/8 on
 first push; merged `82b05e7` via squash. `main` now carries the mandatory-`policy` design
 this decision called for.
+
+
+## 2026-10-25 — VP1.1: the revocation default follows the spec
+
+- **Context:** spec `ac481f8` adds `tct-024`/`tct-025`. RFC-AITP-0008 §3.1 and the
+  conformance README ("Revocation inputs") say that with no `fail_mode` the runner MUST
+  run the verifier with *its default* revocation policy, and that the default mode is
+  `fail_closed`. The `/reconcile` decision above made `policy` mandatory
+  (`KeyError("policy")`), so the library had no default to test.
+- **Chose:** a missing `policy` is the default policy, `fail_closed`, with no staleness
+  bound beyond each snapshot's `expires_at` (`revocation.policy_of`/`policy_fail_mode`).
+  This keeps that decision's intent, which was never to default permissively: a caller who
+  omits `policy` is rejected on absence rather than crashing, and a caller with no
+  revocation infrastructure still has to write `fail_open` explicitly.
+- **Also chose:** `verify_tct` stops reading `issuer_revocation_list.fail_mode`. The old
+  rule 2 was described as "monotone-safe" because the default it fell back from was
+  permissive. Under a `fail_closed` default an unsigned wrapper could loosen the mode, so
+  it is now ignored. The conformance runner maps the fixture's `fail_mode`, which the spec
+  defines as the verifier's configured mode, onto `policy`.
+- **Rejected:** keeping `KeyError` and having the runner pass an explicit `fail_closed`
+  for `tct-024`. The fixture forbids that ("not with an explicit `fail_closed`: the
+  fixture tests the default").
+- **Status:** DONE (VP1.1, issue #75).

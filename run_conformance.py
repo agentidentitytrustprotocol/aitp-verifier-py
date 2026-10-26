@@ -7,21 +7,27 @@ implementation, prints a per-fixture PASS/FAIL/SKIP table, and exits nonzero on
 any FAIL. Operations this implementation does not yet support are reported SKIP
 — explicitly, never as a silent pass (PLACEHOLDERS.md §"Operation key").
 
-``--profile`` (default ``v0.2``) selects the gate: a ``status: core`` fixture
-whose ``required_for_v0_N`` flag is set for the profile MUST execute, so a SKIP
-of one also exits nonzero (RFC-AITP-0001 §10 item 9; the spec's conformance
-README, "Conformance runner enforcement rules"). ``v0.2`` is the fixture key the
-spec keeps for the ``aitp/0.3`` core tier.
+``--claim`` (default ``AITP v0.3``) names the RFC-AITP-0001 §10 claim to
+gate on, as the spec's ``docs/conformance-badge.md`` defines it. Every fixture
+behind the claim MUST pass: for ``AITP v0.3`` that is each ``status: core``
+fixture with ``required_for_core``, so a SKIP of one also exits nonzero (§10
+item 9; the conformance README, "Conformance runner enforcement rules"). An
+extension claim gates on every fixture carrying its ``feature``.
 
 Usage:
-    python run_conformance.py --spec-dir ../agentidentitytrustprotocol [--profile v0.2|v0.1]
+    python run_conformance.py --spec-dir ../agentidentitytrustprotocol [--claim "AITP v0.3"] [--only 'env-*']
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import subprocess
 import sys
+from datetime import datetime, timezone
+from fnmatch import fnmatchcase
+from importlib.metadata import PackageNotFoundError, version
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -29,7 +35,7 @@ from typing import Any
 from aitp_verifier.aid import parse_aid
 from aitp_verifier.b64 import b64url_decode, b64url_encode
 from aitp_verifier.crypto import sha256
-from aitp_verifier.errors import AitpError
+from aitp_verifier.harness import FixtureError, pop_required, run_operation
 from aitp_verifier.keys import load_kat_keys
 from aitp_verifier.minter import MinterError, mint_input
 from aitp_verifier.timeutil import REFERENCE_CLOCK
@@ -38,41 +44,46 @@ from aitp_verifier.version import PROTOCOL_VERSION
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 
-# Draft opt-in features this implementation now exercises. A non-required
-# fixture is run when its `feature` is one of these; otherwise it is out of
-# scope (Draft not-yet-implemented, or a v0.1-frozen fixture).
-SUPPORTED_FEATURES = {"experimental-multihop-delegation", "experimental-session-bundle", "aitp-self-attestation"}
-
-# `--profile` -> the fixture flag it gates on. `v0.2` is the current
-# revision's core tier (aitp/0.3 keeps the key name).
-PROFILES = {"v0.2": "required_for_v0_2", "v0.1": "required_for_v0_1"}
-CURRENT_TIER = PROFILES["v0.2"]
-
-# A rejection a feature-less implementation asserts, mapped to the supported
-# feature whose opt-in makes the assertion inapplicable (aitp-rs's
-# `negated_by_feature`). This runner opts features in per fixture (`_feature`),
-# so a current-tier fixture still runs feature-less and its "not supported"
-# assertion is really exercised (del-007 passes). Only a fixture outside the
-# current tier -- frozen in an older shape this aitp/0.3-only implementation
-# does not parse, e.g. del-004 -- is exempted, never silently.
-NEGATED_BY_FEATURE = {
-    "DELEGATION_MULTIHOP_NOT_SUPPORTED": "experimental-multihop-delegation",
-    "BUNDLE_NOT_SUPPORTED": "experimental-session-bundle",
+# Draft opt-in features this implementation now exercises. A fixture with a
+# `feature` is run when it is one of these; otherwise it is out of scope.
+SUPPORTED_FEATURES = {
+    "experimental-multihop-delegation",
+    "experimental-session-bundle",
+    "experimental-spiffe-identity",
+    "aitp-self-attestation",
 }
 
+# The RFC-AITP-0001 §10 claim strings (conformance-badge.md, "Claims") -> the
+# fixture `feature` an extension claim gates on. The core claim, None, gates on
+# `required_for_core`. There are no other claims and no named profiles.
+CORE_CLAIM = "AITP v0.3"
+CLAIMS: dict[str, str | None] = {
+    CORE_CLAIM: None,
+    "AITP v0.3 pinned-admission": "aitp-pinned-admission",
+    "AITP v0.3 self-attestation": "aitp-self-attestation",
+}
 
-def is_required(fixture: dict[str, Any], flag: str) -> bool:
-    """A core fixture's ``required_for_v0_N``; absent counts as required, as
-    in aitp-rs, so a fixture missing its metadata is never quietly skipped."""
-    return fixture.get("status", "core") == "core" and fixture.get(flag, True) is True
+def is_required(fixture: dict[str, Any]) -> bool:
+    """A core fixture's ``required_for_core`` flag; absent counts as required,
+    as in aitp-rs, so a fixture missing its metadata is never quietly skipped."""
+    return fixture.get("status", "core") == "core" and fixture.get("required_for_core", True) is True
 
 
-def negating_feature(fixture: dict[str, Any]) -> str | None:
-    """The supported feature that negates *fixture*'s assertion, if any."""
-    if is_required(fixture, CURRENT_TIER):
-        return None
-    feature = NEGATED_BY_FEATURE.get(str(fixture.get("expected", {}).get("error_code")))
-    return feature if feature in SUPPORTED_FEATURES else None
+def in_scope(fixture: dict[str, Any]) -> bool:
+    """Whether this runner executes *fixture*: every feature-less ``core``
+    fixture, required or not (a ``required_for_v0_1``-only one such as
+    ``del-004`` still has a defined verdict, and aitp-conformance runs it),
+    and every fixture of a feature this verifier implements."""
+    feature = fixture.get("feature")
+    if feature is None:
+        return bool(fixture.get("status", "core") == "core")
+    return bool(feature in SUPPORTED_FEATURES)
+
+
+def gates(fixture: dict[str, Any], claim: str) -> bool:
+    """Whether *fixture* is behind *claim*."""
+    feature = CLAIMS[claim]
+    return is_required(fixture) if feature is None else fixture.get("feature") == feature
 
 
 class _SeqState:
@@ -84,11 +95,6 @@ class _SeqState:
         self.pop_response: dict[str, str] | None = None
         self.pop_challenge_issued = False
         self.capability_authorized = False
-
-
-def _pop_required(inp: dict[str, Any]) -> bool:
-    marked = set(inp.get("issuer_policy", {}).get("pop_required_grants", []))
-    return bool(marked & set(inp.get("tct_token_claims", {}).get("grants", [])))
 
 
 def _run_step(state: _SeqState, step: dict[str, Any], inp: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str | None, dict[str, Any]] | None:
@@ -122,7 +128,7 @@ def _run_step(state: _SeqState, step: dict[str, Any], inp: dict[str, Any], keys:
         return ("success", None, {}) if ok else ("failure", "POP_RESPONSE_INVALID", {})
 
     if op == "authorize_capability_invocation":  # marked grant -> verifier MUST issue a challenge (§6.2)
-        if _pop_required(inp):
+        if pop_required(inp, inp.get("tct_token_claims", {})):
             state.pop_challenge_issued = True
         return "success", None, {}
     if op == "expect_pop_challenge_issued":
@@ -153,41 +159,6 @@ def _run_sequence(inp: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str]:
     return PASS, "sequence"
 
 
-def _cover_unsupplied_issuers(inp: dict[str, Any]) -> dict[str, Any]:
-    """The spec's per-issuer fixture convention (conformance README, "Revocation
-    inputs", spec 59407d2). In a delegation fixture that supplies
-    ``revocation_snapshots``, an issuer with no entry is not under test and
-    reads "not revoked" whatever the mode. Only the supplied entries are
-    evaluated, including being discarded under RFC-AITP-0008 §1.5.
-
-    The library applies ``fail_mode`` to an issuer with no snapshot (RFC-AITP-0008
-    §3.1, RFC-AITP-0011 §6), which is right for a deployment. Here it would make
-    ``del-mh-004``/``del-mh-006`` pass on A's or C's absence rather than on the
-    supplied entry. So the adapter gives every uncovered issuer (``self_aid``,
-    the token's ``iss`` and each hop's ``iss``) a fresh, empty, genuinely signed
-    snapshot, which is what "not revoked" means to the verifier.
-    """
-    snaps = inp.get("revocation_snapshots")
-    if inp.get("operation") != "verify_delegation_token" or not isinstance(snaps, list):
-        return inp
-    claims = inp.get("delegation_token_claims") or {}
-    hop_issuers = [h.get("iss") for h in claims.get("chain_claims") or []]
-    covered = {r.get("issuer_aid") for r in snaps if isinstance(r, dict)}
-    now = int(inp.get("now", REFERENCE_CLOCK))
-    added = []
-    for aid in dict.fromkeys([inp.get("self_aid"), claims.get("iss"), *hop_issuers]):
-        if isinstance(aid, str) and aid not in covered:
-            body = {
-                "version": PROTOCOL_VERSION,
-                "issuer": aid,
-                "published_at": now,
-                "expires_at": now + 3600,
-                "entries": [],
-            }
-            added.append({"issuer_aid": aid, "snapshot": {"revocation_list": body, "signature": "__VALID_B_SIG__"}})
-    return {**inp, "revocation_snapshots": [*snaps, *added]} if added else inp
-
-
 def run_fixture(fixture: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str]:
     inp = fixture.get("input", {})
     expected = fixture.get("expected", {})
@@ -200,48 +171,31 @@ def run_fixture(fixture: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str
         return SKIP, f"unsupported operation: {op}"
 
     try:
-        minted = mint_input(_cover_unsupplied_issuers(inp), REFERENCE_CLOCK, keys)
+        minted = mint_input(inp, REFERENCE_CLOCK, keys)
     except (MinterError, KeyError) as exc:
         return SKIP, f"could not mint fixture: {exc}"
     minted["_feature"] = fixture.get("feature")
 
-    # `verify_tct`/`verify_delegation_token` require a top-level `policy` key
-    # (a revocation decision is mandatory, not optional -- a caller must say
-    # explicitly how to treat absent revocation data, per `/reconcile` on
-    # `plans/archive/hardening-issues-30-31.md`). This runner is a deployment, the
-    # same role it already plays via `_feature` above, and most conformance
-    # fixtures predate `policy` entirely: supply the pack's own long-standing
-    # default (`fail_open`, i.e. run the fixture as every implementation ran
-    # it before `policy` existed) for one that carries none, exactly as a
-    # real deployment would supply its own configured policy rather than
-    # leaving the decision unmade. A fixture that DOES carry a `policy`
-    # always wins -- `setdefault` only fills the gap, never overrides.
-    #
-    # Two narrower gaps take the fixture's own declared decision instead
-    # (RFC-AITP-0008 §1.5, 0.3.1-draft): a `verify_tct` wrapper declaring
-    # `fail_mode` is the fixture's decision (`tct-022`/`tct-023`), so no
-    # top-level `policy` is added over it; and a delegation fixture carrying
-    # `revocation_snapshots` gets the schema default `fail_closed`
-    # (`del-mh-006`), since its expected outcome is stated under that default.
-    revlist = minted.get("issuer_revocation_list")
-    declares_mode = isinstance(revlist, dict) and "fail_mode" in revlist
-    if op == "verify_delegation_token" and "revocation_snapshots" in minted:
-        minted.setdefault("policy", {"fail_mode": "fail_closed"})
-    elif op in ("verify_tct", "verify_attestation", "verify_delegation_token") and not declares_mode:
-        minted.setdefault("policy", {"fail_mode": "fail_open"})
-
     try:
-        OPERATIONS[op](minted)
-        outcome, code = "success", None
-    except AitpError as exc:
-        outcome, code = "failure", exc.code
+        code, result = run_operation(op, minted, keys, accept_presented_type=fixture["id"].startswith("id-"))
+    except FixtureError as exc:
+        return FAIL, f"malformed fixture: {exc}"
     except Exception as exc:  # noqa: BLE001 - a crash is a fixture failure, not a runner abort
         return FAIL, f"verifier raised {type(exc).__name__}: {exc}"
+    outcome = "success" if code is None else "failure"
+
+    authorized = expected.get("side_effects", {}).get("capability_authorized")
+    if authorized is not None and authorized != (outcome == "success"):
+        return FAIL, f"side effect capability_authorized={outcome == 'success'}, expected {authorized}"
 
     if expected.get("outcome") == "success":
-        if outcome == "success":
-            return PASS, "success"
-        return FAIL, f"expected success, got failure/{code}"
+        if outcome != "success":
+            return FAIL, f"expected success, got failure/{code}"
+        if op == "verify_tct_as_issuer":
+            for key in ("presenter_aid", "grants"):
+                if key in expected and result.get(key) != expected[key]:
+                    return FAIL, f"{key} {result.get(key)!r}, expected {expected[key]!r}"
+        return PASS, "success"
 
     exp_code = expected.get("error_code")
     if outcome == "failure" and code == exp_code:
@@ -250,57 +204,185 @@ def run_fixture(fixture: dict[str, Any], keys: dict[str, Any]) -> tuple[str, str
 
 
 class PackResult:
-    """Per-fixture rows plus the profile gate's verdict."""
+    """Per-fixture rows plus the claim gate's verdict."""
 
     def __init__(self) -> None:
         self.counts: Counter[str] = Counter()
         self.rows: list[tuple[str, str, str]] = []
         self.violations: list[str] = []
-        self.exempted: list[str] = []
+        # Fixture id -> the fixture, for the report's copied metadata.
+        self.fixtures: dict[str, dict[str, Any]] = {}
 
     @property
     def exit_code(self) -> int:
         return 1 if self.counts[FAIL] or self.violations else 0
 
 
-def run_pack(conf_dir: Path, keys: dict[str, Any], profile: str = "v0.2") -> PackResult:
-    """Run every fixture in *conf_dir* and apply the *profile* gate."""
-    flag = PROFILES[profile]
+def run_pack(conf_dir: Path, keys: dict[str, Any], claim: str = CORE_CLAIM,
+             only: str | None = None) -> PackResult:
+    """Run matching fixtures in *conf_dir* and apply the *claim* gate."""
     res = PackResult()
     for path in sorted(conf_dir.glob("*.json")):
         fixture = json.loads(path.read_text(encoding="utf-8"))
         if "id" not in fixture or "input" not in fixture:
             continue  # not a scenario fixture (e.g. a schema helper)
         fid = fixture["id"]
-        required = is_required(fixture, flag)
-        feature = negating_feature(fixture)
-        if required and feature is not None:
-            status, detail = SKIP, f"feature `{feature}` enabled — assertion no longer applies"
-            res.exempted.append(f"{fid}: {detail}")
-        elif required or is_required(fixture, CURRENT_TIER) or fixture.get("feature") in SUPPORTED_FEATURES:
+        if fixture.get("status") == "reserved":
+            continue  # ignored by every runner (conformance README)
+        if only is not None and not fnmatchcase(fid, only):
+            continue
+        res.fixtures[fid] = fixture
+        if in_scope(fixture):
             status, detail = run_fixture(fixture, keys)
-            if required and status == SKIP:
-                res.violations.append(f"{fid}: SKIP of a required fixture — {detail}")
         else:
-            status, detail = SKIP, "not core (draft/extension/v0.1-frozen)"
+            status, detail = SKIP, f"feature {fixture.get('feature')} not implemented"
+        if status == SKIP and gates(fixture, claim):
+            res.violations.append(f"{fid}: SKIP of a fixture behind the claim — {detail}")
         res.counts[status] += 1
         res.rows.append((status, fid, detail))
     return res
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
+# ── Conformance report (spec docs/conformance-badge.md, report_version "1") ──
+
+REPOSITORY = "https://github.com/agentidentitytrustprotocol/aitp-verifier-py"
+OUTCOMES = {PASS: "pass", FAIL: "fail", SKIP: "skip"}
+
+
+class ReportError(Exception):
+    """The report's provenance cannot be established, so none is written."""
+
+
+def _git(repo: Path, *args: str) -> str | None:
+    try:
+        out = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return out.stdout.strip()
+
+
+def spec_provenance(spec_dir: Path, commit: str | None, spec_version: str | None) -> dict[str, str]:
+    """``spec.commit`` and ``spec.version``, never guessed: the flags, else a
+    clean spec checkout's ``HEAD`` and its newest ``v*`` tag."""
+    if commit is None:
+        if _git(spec_dir, "status", "--porcelain", "--", "schemas/conformance") != "":
+            raise ReportError(f"{spec_dir} is not a clean git checkout; pass --spec-commit")
+        commit = _git(spec_dir, "rev-parse", "HEAD")
+    if commit is None or len(commit) != 40:
+        raise ReportError("cannot determine the spec commit; pass --spec-commit")
+    if spec_version is None:
+        spec_version = _git(spec_dir, "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", commit)
+    if not spec_version:
+        raise ReportError("no v* tag at or before the spec commit; pass --spec-version")
+    return {"commit": commit, "version": spec_version, "protocol": PROTOCOL_VERSION}
+
+
+def fixtures_dir_digest(conf_dir: Path) -> str:
+    """``sha256:`` + SHA-256 of the ``sha256sum`` listing of the top-level
+    ``*.json`` files, sorted by name in byte order (conformance-badge.md)."""
+    names = sorted((p.name for p in conf_dir.glob("*.json") if p.is_file()), key=lambda n: n.encode())
+    listing = "".join(f"{hashlib.sha256((conf_dir / n).read_bytes()).hexdigest()}  {n}\n" for n in names)
+    return "sha256:" + hashlib.sha256(listing.encode()).hexdigest()
+
+
+def _implementation() -> dict[str, str]:
+    try:
+        impl = {"name": "aitp-verifier-py", "version": version("aitp-verifier"), "repository": REPOSITORY}
+    except PackageNotFoundError:
+        impl = {"name": "aitp-verifier-py", "version": "unknown", "repository": REPOSITORY}
+    here = Path(__file__).resolve().parent
+    commit = _git(here, "rev-parse", "HEAD")
+    if commit and _git(here, "status", "--porcelain", "--", "aitp_verifier") == "":
+        impl["commit"] = commit
+    return impl
+
+
+def build_report(res: PackResult, conf_dir: Path, spec: dict[str, str], features: list[str],
+                 ci_run_url: str | None = None) -> dict[str, Any]:
+    results = []
+    for status, fid, detail in res.rows:
+        fixture = res.fixtures[fid]
+        row: dict[str, Any] = {
+            "id": fid,
+            "status": fixture["status"],
+            "feature": fixture.get("feature"),
+            "required_for_core": fixture.get("required_for_core"),
+            "outcome": OUTCOMES[status],
+        }
+        if status != PASS:
+            row["reason"] = detail
+        results.append(row)
+    totals = {tier: {o: 0 for o in ("pass", "fail", "skip", "excluded_by_role")} for tier in ("core", "extension", "draft")}
+    for row in results:
+        totals[row["status"]][row["outcome"]] += 1
+    gate_list = []
+    for claim, feature in CLAIMS.items():
+        if feature is not None and feature not in features:
+            continue  # an extension claim is evaluated only when its feature is enabled
+        blocking = [r["id"] for r in results if gates(res.fixtures[r["id"]], claim) and r["outcome"] != "pass"]
+        covered = feature is None or any(r["feature"] == feature for r in results)
+        gate: dict[str, Any] = {
+            "name": claim,
+            "passed": covered and not blocking,
+            "criteria": "core-required-all-pass" if feature is None else "feature-all-pass",
+        }
+        if blocking:
+            gate["blocking"] = blocking
+        gate_list.append(gate)
+    doc: dict[str, Any] = {
+        "report_version": "1",
+        "implementation": _implementation(),
+        "spec": spec,
+        "fixtures_dir_digest": fixtures_dir_digest(conf_dir),
+        "features_enabled": features,
+        "results": results,
+        "totals": totals,
+        "gates": gate_list,
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    if ci_run_url:
+        doc["provenance"] = {"ci_run_url": ci_run_url}
+    return doc
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--spec-dir", required=True, type=Path, help="path to the agentidentitytrustprotocol spec repo")
-    ap.add_argument("--profile", choices=sorted(PROFILES), default="v0.2",
-                    help="core tier to gate on (default v0.2, the aitp/0.3 core tier)")
+    ap.add_argument("--claim", choices=list(CLAIMS), default=CORE_CLAIM,
+                    help=f"RFC-AITP-0001 §10 claim to gate on (default {CORE_CLAIM!r})")
+    ap.add_argument("--only", metavar="PATTERN", help="run only fixture IDs matching this glob")
+    ap.add_argument("--report", type=Path, metavar="PATH",
+                    help="also write the spec's conformance report (aitp-conformance-report.schema.json)")
+    ap.add_argument("--spec-commit", help="report spec.commit (default: HEAD of a clean --spec-dir checkout)")
+    ap.add_argument("--spec-version", help="report spec.version (default: the newest v* tag at that commit)")
+    ap.add_argument("--ci-run-url", help="report provenance.ci_run_url")
     ap.add_argument("-v", "--verbose", action="store_true")
-    args = ap.parse_args()
+    return ap.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.only is not None and args.report is not None:
+        print("--report requires the full fixture pack; omit --only", file=sys.stderr)
+        return 2
 
     conf_dir = args.spec_dir / "schemas/conformance"
     if not conf_dir.is_dir():
         print(f"conformance dir not found: {conf_dir}", file=sys.stderr)
         return 2
-    res = run_pack(conf_dir, load_kat_keys(args.spec_dir), args.profile)
+    if args.report is not None:
+        try:
+            spec = spec_provenance(args.spec_dir, args.spec_commit, args.spec_version)
+        except ReportError as exc:
+            print(f"--report: {exc}", file=sys.stderr)
+            return 2
+    res = run_pack(conf_dir, load_kat_keys(args.spec_dir), args.claim, only=args.only)
+    if args.only is not None and not res.rows:
+        print(f"no fixture matches --only {args.only}", file=sys.stderr)
+        return 2
+    if args.report is not None:
+        doc = build_report(res, conf_dir, spec, sorted(SUPPORTED_FEATURES), args.ci_run_url)
+        args.report.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 
     # Windows' default stdout encoding is cp1252, which cannot encode the
     # ✓/✗/– markers below -- the runner died with UnicodeEncodeError there
@@ -321,10 +403,8 @@ def main() -> int:
 
     print()
     print(f"{res.counts[PASS]} passed, {res.counts[FAIL]} failed, {res.counts[SKIP]} skipped")
-    for line in res.exempted:
-        print(f"{args.profile} gate: exempted {line}", file=sys.stderr)
     for line in res.violations:
-        print(f"{args.profile} gate: {line}", file=sys.stderr)
+        print(f"{args.claim} gate: {line}", file=sys.stderr)
     return res.exit_code
 
 

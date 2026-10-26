@@ -5,8 +5,16 @@
 * **mutual_hello / mutual_hello_ack** (bootstrap) — Manifest PoP + signature run
   first (before identity, so a bad Manifest surfaces as ``MANIFEST_*`` not
   ``IDENTITY_FAILED``), then the identity-hint/identity type match, then the
-  identity binding (RFC-AITP-0002), then the envelope signature, then the ACK
-  nonce echo.
+  identity binding (RFC-AITP-0002), then the envelope signature, then the
+  receiver's policy (§5.1 step 8), then the ACK nonce echo.
+
+A ``spiffe`` identity (RFC-AITP-0002 §6) is verified only when the input's
+``_feature`` is ``experimental-spiffe-identity``, against the bundle store in
+``trust_anchors_config.spiffe_bundles``.
+
+The receiver's policy is ``self_accepted_identity_types`` (default
+``["oidc"]``, RFC-AITP-0004 §5.1 step 8) and ``self_trust_anchors``, its OIDC
+``trust_anchors`` (default: none, so no OIDC issuer is trusted).
 * **mutual_commit / mutual_commit_ack** (round 2) — envelope signature, the
   round-2 PoP signature over the peer's own nonce, then the embedded
   peer-issued TCT (``aud`` == self, ``grants`` ⊆ the issuer's offered
@@ -28,11 +36,12 @@ from .jwk import thumbprint
 from .jws import parse_compact, verify_jws
 from .manifest import verify_manifest
 from .sigfield import decode_tagged_signature
+from .spiffe import SPIFFE_FEATURE
 from .tct import check_grant_context, check_tct_claims_shape
 from .timeutil import REFERENCE_CLOCK
 from .version import PROTOCOL_VERSION
 
-__all__ = ["verify_handshake_payload"]
+__all__ = ["verify_handshake_payload", "DEFAULT_ACCEPTED_IDENTITY_TYPES"]
 
 _BOOTSTRAP = {"mutual_hello", "mutual_hello_ack"}
 _COMMIT = {"mutual_commit", "mutual_commit_ack"}
@@ -53,6 +62,7 @@ _COMMIT_PAYLOAD_FIELDS = frozenset({"tct", "grant_voucher", "pop_signature", "po
 # a hard presence gate for it would flip currently-accepted input to
 # rejected with no crash to justify it.
 _HELLO_REQUIRED_PAYLOAD_FIELDS = ("identity", "manifest", "requested_grants", "pop_nonce")
+DEFAULT_ACCEPTED_IDENTITY_TYPES = ("oidc",)
 
 
 def verify_handshake_payload(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str, Any]:
@@ -70,6 +80,16 @@ def verify_handshake_payload(inp: dict[str, Any], now: int = REFERENCE_CLOCK) ->
         grants = _verify_commit(inp, env["payload"], inp.get("self_aid"), now)
         return {"grants": grants}
     raise AitpError("INVALID_ENVELOPE", f"unsupported handshake message_type {mtype!r}")
+
+
+def _spiffe_bundles(inp: dict[str, Any]) -> Any:
+    """The SPIFFE bundle store (``trust_anchors_config.spiffe_bundles``,
+    RFC-AITP-0002 §6.2) when the Draft ``spiffe`` type is enabled, else
+    ``None``. Enabled with no configured store, it trusts no trust domain."""
+    if inp.get("_feature") != SPIFFE_FEATURE:
+        return None
+    config = inp.get("trust_anchors_config")
+    return config.get("spiffe_bundles", []) if isinstance(config, dict) else []
 
 
 def _verify_bootstrap(inp: dict[str, Any], env: dict[str, Any], now: int) -> dict[str, Any]:
@@ -107,10 +127,11 @@ def _verify_bootstrap(inp: dict[str, Any], env: dict[str, Any], now: int) -> dic
         identity,
         env,
         inp.get("self_aid", ""),
-        trust_anchors=inp.get("self_trust_anchors"),
+        trust_anchors=_string_list(inp.get("self_trust_anchors", ())),
         trust_store=inp.get("trust_store"),
         issuer_keys=inp.get("resolved_issuer_keys", {}),
         now=now,
+        spiffe_bundles=_spiffe_bundles(inp),
     )
 
     # Envelope signature (RFC-AITP-0004 §5.1 step 7).
@@ -119,12 +140,27 @@ def _verify_bootstrap(inp: dict[str, Any], env: dict[str, Any], now: int) -> dic
     if not aid.public_key.verify_digest(sha256(envelope_signing_input(env)), raw):
         raise AitpError("INVALID_SIGNATURE", "envelope signature invalid")
 
+    # Step 8: the identity type is in the receiver's own accepted types. The
+    # sender's Manifest `accepted_identity_types` is its policy, not ours. The
+    # trust-anchor overlap already ran in step 6 (check 2), before any key
+    # fetch; for `pinned_key` the `pinned_keys` lookup there replaces it.
+    accepted = _string_list(inp.get("self_accepted_identity_types", DEFAULT_ACCEPTED_IDENTITY_TYPES))
+    if identity["type"] not in accepted:
+        raise AitpError("INCOMPATIBLE_IDENTITY_TYPE", f"identity type {identity['type']!r} is not one this receiver accepts")
+
     # ACK nonce echo (§5.2 step 8).
     if env["message_type"] == "mutual_hello_ack" and "sent_pop_nonce" in inp:
         if payload.get("pop_nonce_echo") != inp["sent_pop_nonce"]:
             raise AitpError("NONCE_MISMATCH", "pop_nonce_echo != nonce sent")
 
     return {"ok": True}
+
+
+def _string_list(value: Any) -> tuple[str, ...]:
+    """A configured list of strings; anything else configures nothing."""
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(v for v in value if isinstance(v, str))
 
 
 def _verify_commit(

@@ -1,12 +1,101 @@
 # Changelog
 
-This project has not yet had a tagged release (still `0.1.0` / Alpha, unpublished). This
-file starts tracking security-relevant and other breaking verifier-behavior changes from
-here, so a future integrator has one place to check before upgrading.
+This file tracks security-relevant and other breaking verifier-behavior changes, so an
+integrator has one place to check before upgrading.
 
 ## Unreleased
 
 ### Security-relevant
+
+- **Session bundle: the coordinator key comes only from its Manifest.** RFC-AITP-0010 §5
+  step 5 resolves the coordinator's key from its verified Manifest. `verify_session_bundle`
+  used to fall back to the key in the coordinator AID when no `coordinator_manifest` was
+  supplied, which skipped that step and the participant-TCT Manifest cap. It now fails
+  with `KEY_RESOLUTION_FAILED`, as for a Manifest designating another AID (`bundle-007`).
+  Callers must pass `coordinator_manifest`.
+
+### Changed
+
+- **Adapter: a missing top-level argument is `MALFORMED_REQUEST`** (#101). Each verify
+  operation declares the argument sets it accepts in `verify.REQUIRED_ARGUMENTS`. The
+  adapter checks that table before dispatch and answers a request that completes none of
+  them with `MALFORMED_REQUEST`, naming the argument, e.g.
+  `verify_tct: missing required argument 'tct_token'`. The operation is never called.
+  Before, the `KeyError` surfaced as `ADAPTER_INTERNAL_ERROR`. A request that carries its
+  arguments gets the same verdict as before. The library API is unchanged.
+
+## 0.1.2 — 2026-10-25
+
+### Security-relevant
+
+- **`del-004`: the frozen v0.1 multi-hop token is rejected structurally.** The
+  object-shaped v0.1 `delegation` with a non-empty `chain` now gets
+  `DELEGATION_MULTIHOP_NOT_SUPPORTED`, and any other object-shaped token gets
+  `DELEGATION_INVALID_SIGNATURE`. Neither is ever parsed further. The multi-hop guard runs
+  before `self_aid` is read, and a missing `self_aid` or `delegation_token` is a typed
+  rejection. 0.1.1 raised `KeyError: 'self_aid'` here, which aitp-conformance reported as
+  `ADAPTER_INTERNAL_ERROR`. `del-004` is `required_for_v0_1` only, so the core claim was
+  not affected.
+
+### Other changes
+
+- **The adapter no longer needs a spec checkout.** The KAT key files ship in
+  `aitp_verifier/kat/`, byte-equal to the pinned spec's (`tests/test_keys.py` holds them
+  to it). `AITP_SPEC` is now an optional override. A set `AITP_SPEC` that is not a usable
+  checkout fails `init` with an error naming it. In 0.1.1, every key-needing op failed
+  when it was unset. The adapter gains `--help`.
+- **`run_conformance.py` runs every feature-less `core` fixture, required or not**, as
+  aitp-conformance does. Before, it skipped `del-004`, which hid the crash above. The
+  native count is 119 pass, 0 fail, 14 skip.
+- **CI runs the badge configuration** (extension features only, no `AITP_SPEC`) through
+  aitp-conformance and requires both gates to pass. `del-004` joins `del-007` as a
+  runner-policy skip in the parity diff.
+- **aitp-conformance pinned at aitp-rs `be12224`, with no known runner gaps.** The
+  runner fixes for the OIDC KAT keys, nested `*_claims` companions and the inline
+  Manifest PoP all landed upstream, so `KNOWN_RUNNER_GAPS` is empty. The adapter-parity
+  job now allows only the runner-policy skips.
+
+## 0.1.1 — 2026-10-25
+
+Spec pin `3a78a8f` (#134, RFC-AITP-0002 §6.3 "Key match").
+
+### Security-relevant
+
+- **A JWT-SVID bundle key's `alg` member now pins the header `alg`.** When the selected
+  `jwt-svid` JWK carries `alg`, the JWT-SVID header `alg` MUST equal it. Before, the JWK
+  `alg` was ignored, so an RSA key published as `RS256` also verified `PS*` tokens. The
+  JWK `alg` only narrows: the key's `kty`/`crv` still decides which algorithms it can
+  admit at all. A JWK without `alg` still admits every algorithm that fits its type.
+
+## 0.1.0 — 2026-10-25
+
+The first release, published to PyPI as `aitp-verifier` (Alpha). Spec pin `ddec9f1`
+(v0.3.2-draft).
+
+### Security-relevant
+
+- **The revocation default is `fail_closed`, and only the caller sets the mode (spec
+  `ac481f8`, `tct-024`/`tct-025`).** With no top-level `policy`, `verify_tct`,
+  `verify_attestation` and `verify_delegation_token` now run the default revocation
+  policy, whose mode is the schema default `fail_closed` (RFC-AITP-0008 §3.1). They
+  used to raise `KeyError("policy")`. `verify_tct` no longer reads
+  `issuer_revocation_list.fail_mode`: the wrapper is unsigned, and with a `fail_closed`
+  default it could otherwise loosen the mode. Snapshot freshness (`expires_at`, plus
+  `max_staleness_secs` when the policy sets it) is now evaluated with or without a
+  `policy`. `run_conformance.py` maps a fixture's `fail_mode` onto `policy`, and reads
+  `available: false` as "no revocation source" (no snapshot reaches the verifier). It
+  reports `available: false` beside a `snapshot` as a malformed fixture.
+- **`verify_tct_as_issuer` (RFC-AITP-0005 §10.5).** It verifies a TCT presented back to
+  its own issuer. The presenter AID comes only from downstream PoP over a live challenge
+  this verifier issued, or from a channel binding. With neither, the TCT is rejected
+  (`POP_RESPONSE_INVALID`), so it is never accepted as a bearer token. `aud` must equal
+  `sub`, and both must equal the presenter. Revocation runs last (`tct-026` to
+  `tct-029`).
+- **Handshake receiver policy (RFC-AITP-0004 §5.1 step 8).** `verify_handshake_payload`
+  now checks the payload `identity.type` against `self_accepted_identity_types`, which
+  defaults to `["oidc"]` (`INCOMPATIBLE_IDENTITY_TYPE`, `mh-010` to `mh-014`). A missing
+  `self_trust_anchors` now trusts no OIDC issuer. It used to skip the trust-anchor check.
+  `verify_identity` takes `trust_anchors` as a required collection.
 
 - **A discarded revocation snapshot falls back to `revocation_policy.mode` (RFC-AITP-0008
   0.3.1-draft §1.5, spec `53b92c0`; aitp-rs #271).** A snapshot that fails structural,
@@ -64,6 +153,48 @@ here, so a future integrator has one place to check before upgrading.
 
 ### Other changes
 
+- **The Draft `spiffe` identity type (VP5.1, issue #79; RFC-AITP-0002 §6), behind
+  `experimental-spiffe-identity`.** `aitp_verifier/spiffe.py` verifies a SPIFFE ID
+  subject against the verifier's bundle store (`trust_anchors_config.spiffe_bundles`),
+  as a JWT-SVID (all nine JWT-SVID algorithms, RS/PS/ES 256/384/512, each admitted only
+  by a bundle key of the matching type and curve) or as an
+  X509-SVID with its §6.4.1 proof. X509 path validation is limited to SVID chains and
+  fails closed: no system trust store, no AIA, URI name constraints only, and any
+  unprocessed critical extension rejects the chain. Without the feature, `spiffe` is
+  still an unknown identity type. With it, `oidc` and `pinned_key` descriptors reject
+  `svid_type` and `x5c`, and a Manifest `identity_hint` may be `{type: spiffe,
+  subject}`. The minter mints the test authorities and SVIDs at runtime. `id-024`…`id-030`
+  pass natively and under `aitp-conformance`, and `kat-spiffe-x509-proof-001` is checked.
+  The handshake proof input moved to `proofinput.py`, and the tagged-signature mismatch
+  message now reads "signature algorithm X != signer algorithm Y".
+
+- **PyPI release pipeline (VP3.2, issue #78).** `release.yml` publishes `aitp-verifier`
+  with OIDC trusted publishing: a `v*` tag publishes to PyPI, and a manual run publishes to
+  TestPyPI. Every action is pinned by SHA, and no API token exists. The build fails closed
+  when the tag is not `v` plus the `pyproject.toml` version, and it smoke-tests the
+  installed wheel's adapter before anything is uploaded. The owner's one-time PyPI setup is
+  in `scripts/handoff/pypi-trusted-publisher.md`. `pyproject.toml` gains `project.urls`,
+  `authors` and `keywords`.
+- **aitp-conformance adapter (VP3.1, issue #77).** `aitp-verifier-adapter` (also
+  `python -m aitp_verifier.adapter`) speaks aitp-rs's NDJSON subprocess protocol, so the
+  `aitp-conformance` runner can drive this verifier. Both front ends share
+  `aitp_verifier.harness`, and CI diffs their reports fixture for fixture.
+  `run_conformance.py --report PATH` writes the spec's conformance report
+  (`report_version` "1"). It refuses to guess `spec.commit` or `spec.version`.
+- **Breaking: OIDC test-issuer keys are the pinned ones (spec `ddec9f1`).** The minter
+  signs corpus OIDC JWTs with `known-answer/oidc-test-issuers.json` instead of a key
+  derived from the issuer URL, and it no longer emits `resolved_issuer_keys`. The runner's
+  resolver (`harness.issuer_resolver`) maps `https://auth.openai.com` to
+  `kat-oidc-issuer-001` and resolves no other issuer. A corpus OIDC fixture naming an
+  issuer with no pinned key is a `MinterError`. `load_kat_keys` also returns the issuer
+  keys, under their vector ids, and checks each published public key against its seed.
+  `tct._presenter_from_pop` is now the public `tct.presenter_from_pop`.
+- **Breaking: `run_conformance.py --claim` replaces `--profile` (VP2.1, issue #76).**
+  `--claim` takes one of the RFC-AITP-0001 §10 claim strings: `AITP v0.3` (the default),
+  `AITP v0.3 pinned-admission` or `AITP v0.3 self-attestation`. Each is gated as the
+  spec's `docs/conformance-badge.md` defines it, and a SKIP of any fixture behind the claim
+  fails the run. `--profile` and the `core`/`v0.1` profile names are gone, with no alias,
+  and so is the `del-004` feature-negation exemption that only `v0.1` used.
 - **Conformance runner profile gate.** `run_conformance.py --profile {v0.2,v0.1}`
   (default `v0.2`). A SKIP of a core fixture the profile requires now fails the run;
   before, only FAIL did. A missing `required_for_v0_N` flag counts as required (it used to

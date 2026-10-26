@@ -107,8 +107,10 @@ _IDENTITY_HINT_FIELDS = frozenset({"type", "issuer", "subject", "public_key"})
 # `public_key` forbidden; `else` -> `public_key` required. `type`'s `enum` and
 # `public_key`'s `pattern` (both from the schema, not invented here) are
 # likewise unenforced by `_shape`, which only confirms both are strings.
-_IDENTITY_HINT_TYPE_VALUES = frozenset({"oidc", "pinned_key"})
+_IDENTITY_HINT_TYPE_VALUES = frozenset({"oidc", "pinned_key", "spiffe"})
 _PUBLIC_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43,44}$")
+# $defs/IdentityHint's `spiffe` subject pattern, verbatim.
+_SPIFFE_HINT_SUBJECT = re.compile(r"^spiffe://[a-z0-9._-]{1,255}(/([A-Za-z0-9._-]*[A-Za-z0-9_-][A-Za-z0-9._-]*|\.{3,}))+$")
 
 
 def _validate_identity_hint(hint: dict[str, Any]) -> None:
@@ -136,10 +138,17 @@ def _validate_identity_hint(hint: dict[str, Any]) -> None:
             raise AitpError(
                 "MANIFEST_INVALID", "manifest.identity_hint.public_key is forbidden when type is 'oidc'",
             )
+    elif hint_type == "spiffe":
+        # RFC-AITP-0002 §6.6: the hint is the SPIFFE ID alone, never trust material.
+        for member in ("issuer", "public_key"):
+            if member in hint:
+                raise AitpError("MANIFEST_INVALID", f"manifest.identity_hint.{member} is forbidden when type is 'spiffe'")
+        if len(hint["subject"]) > 2048 or not _SPIFFE_HINT_SUBJECT.fullmatch(hint["subject"]):
+            raise AitpError("MANIFEST_INVALID", "manifest.identity_hint.subject is not a SPIFFE ID")
     elif "public_key" not in hint:
         raise AitpError(
             "MANIFEST_INVALID",
-            "manifest.identity_hint is missing required member(s) ['public_key'] (required when type is not 'oidc')",
+            "manifest.identity_hint is missing required member(s) ['public_key'] (required when type is 'pinned_key')",
         )
     if "public_key" in hint and not _PUBLIC_KEY_PATTERN.match(hint["public_key"]):
         raise AitpError("MANIFEST_INVALID", "manifest.identity_hint.public_key does not match the required pattern")
