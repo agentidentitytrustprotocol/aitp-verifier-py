@@ -87,9 +87,10 @@ keypairs and runs it against this implementation:
 python run_conformance.py --spec-dir ../agentidentitytrustprotocol [--claim "AITP v0.3"] [--only 'env-*']
 ```
 
-CI adds `--min-passed 119` so a fixture that starts being skipped cannot silently
-lower the pass count. When `SPEC_VERSION` is bumped, update the CI floor to the
-reviewed pass count for that pinned spec.
+CI adds `--min-passed` with the floor in [`CONFORMANCE_FLOOR`](CONFORMANCE_FLOOR), so a
+fixture that starts being skipped cannot silently lower the pass count. The unit tests read
+the same file. When `SPEC_VERSION` is bumped, set it to the reviewed pass count for that
+pinned spec.
 
 `--only` matches fixture IDs with a glob and limits both the results and the claim gate
 to those fixtures. A pattern matching no fixtures exits 2. `--only` cannot be combined
@@ -109,10 +110,11 @@ There are no other claims and no named profiles. Core fixtures run with no draft
 opted in, so `del-007`, which expects `DELEGATION_MULTIHOP_NOT_SUPPORTED`, is executed even
 though this verifier implements multi-hop delegation.
 
-Current status at the pinned spec commit (`SPEC_VERSION`, `3a78a8f`, `aitp/0.3`; the runner
-prints the live number): **119 fixtures pass, 0 fail, 14 skipped**. All 94 core fixtures
-pass. So do the three Draft opt-ins (`experimental-multihop-delegation`,
-`experimental-session-bundle`, `experimental-spiffe-identity`), the `aitp-self-attestation` extension, and all multi-step
+Current status at the spec commit pinned in [`SPEC_VERSION`](SPEC_VERSION) (`aitp/0.3`):
+no fixture fails, and every core fixture passes. The runner prints the live counts, and CI
+requires at least [`CONFORMANCE_FLOOR`](CONFORMANCE_FLOOR) passes. So do the three Draft
+opt-ins (`experimental-multihop-delegation`, `experimental-session-bundle`,
+`experimental-spiffe-identity`), the `aitp-self-attestation` extension, and all multi-step
 sequences (PoP challenge/response `tct-006`/`tct-007`, issuer-side PoP enforcement `tct-026`,
 handshake replay `mh-001`). The surface — envelope, TCT (incl. `alg:none`, alg-confusion,
 `typ`-confusion, expiry-after-Manifest, revocation-ordering, no revocation source, and the
