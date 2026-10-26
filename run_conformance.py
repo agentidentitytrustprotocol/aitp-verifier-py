@@ -356,6 +356,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--spec-commit", help="report spec.commit (default: HEAD of a clean --spec-dir checkout)")
     ap.add_argument("--spec-version", help="report spec.version (default: the newest v* tag at that commit)")
     ap.add_argument("--ci-run-url", help="report provenance.ci_run_url")
+    ap.add_argument("--min-passed", type=int, metavar="N",
+                    help="fail if fewer than N fixtures pass")
     ap.add_argument("-v", "--verbose", action="store_true")
     return ap.parse_args(argv)
 
@@ -405,6 +407,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{res.counts[PASS]} passed, {res.counts[FAIL]} failed, {res.counts[SKIP]} skipped")
     for line in res.violations:
         print(f"{args.claim} gate: {line}", file=sys.stderr)
+    if args.min_passed is not None and res.counts[PASS] < args.min_passed:
+        print(f"passed {res.counts[PASS]} < required {args.min_passed}", file=sys.stderr)
+        return 1
     return res.exit_code
 
 

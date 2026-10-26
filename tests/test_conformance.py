@@ -60,6 +60,15 @@ def test_claim_choices_are_the_rfc_0001_claim_strings() -> None:
     assert parse_args(["--spec-dir", "x", "--claim", "AITP v0.3 self-attestation"]).claim == "AITP v0.3 self-attestation"
 
 
+def test_min_passed_floor_accepts_count_and_rejects_drop(spec_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    passed = run_pack(spec_dir / "schemas/conformance", load_kat_keys(spec_dir)).counts[PASS]
+    assert main(["--spec-dir", str(spec_dir), "--min-passed", str(passed)]) == 0
+    capsys.readouterr()
+
+    assert main(["--spec-dir", str(spec_dir), "--min-passed", str(passed + 1)]) == 1
+    assert f"passed {passed} < required {passed + 1}" in capsys.readouterr().err
+
+
 def test_only_filters_rows_counts_and_fixtures(spec_dir: Path) -> None:
     res = run_pack(spec_dir / "schemas/conformance", load_kat_keys(spec_dir), only="del-mh-*")
     assert res.rows

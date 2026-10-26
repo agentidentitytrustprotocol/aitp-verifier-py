@@ -83,7 +83,7 @@ jobs:
         run: pytest tests/test_signed_examples.py -v
       - name: Conformance (independent re-derivation of every golden vector)
         working-directory: aitp-verifier-py
-        run: python run_conformance.py --spec-dir ../agentidentitytrustprotocol
+        run: python run_conformance.py --spec-dir ../agentidentitytrustprotocol --min-passed 119
       - name: Unit tests
         working-directory: aitp-verifier-py
         env:
@@ -141,7 +141,7 @@ jobs:
           uv pip list --system
       - name: Conformance at the floors
         working-directory: aitp-verifier-py
-        run: python run_conformance.py --spec-dir ../agentidentitytrustprotocol
+        run: python run_conformance.py --spec-dir ../agentidentitytrustprotocol --min-passed 119
       - name: Unit tests at the floors
         working-directory: aitp-verifier-py
         env:
@@ -216,7 +216,7 @@ jobs:
         run: python -m pip install --upgrade pip && pip install -e ".[dev]"
       - name: Conformance (independent re-derivation of every golden vector)
         working-directory: aitp-verifier-py
-        run: python run_conformance.py --spec-dir ../agentidentitytrustprotocol
+        run: python run_conformance.py --spec-dir ../agentidentitytrustprotocol --min-passed 119
       - name: Unit tests
         working-directory: aitp-verifier-py
         env:
@@ -284,7 +284,7 @@ jobs:
         run: python -m pip install --upgrade pip && pip install -e ".[dev]"
       - name: Native report (run_conformance.py)
         working-directory: aitp-verifier-py
-        run: python run_conformance.py --spec-dir ../agentidentitytrustprotocol --report "$RUNNER_TEMP/native.json"
+        run: python run_conformance.py --spec-dir ../agentidentitytrustprotocol --report "$RUNNER_TEMP/native.json" --min-passed 119
       - name: Adapter report (aitp-conformance)
         env:
           AITP_SPEC: ${{ github.workspace }}/agentidentitytrustprotocol
@@ -422,4 +422,4 @@ jobs:
           print(f'OK: aitp_verifier installed non-editably at {resolved}')
           "
 
-          "$PY" run_conformance.py --spec-dir "${{ github.workspace }}/agentidentitytrustprotocol"
+          "$PY" run_conformance.py --spec-dir "${{ github.workspace }}/agentidentitytrustprotocol" --min-passed 119
