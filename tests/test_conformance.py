@@ -21,6 +21,8 @@ from aitp_verifier.minter import mint_input
 from aitp_verifier.timeutil import REFERENCE_CLOCK
 from run_conformance import CLAIMS, FAIL, PASS, SKIP, main, parse_args, run_pack
 
+CONFORMANCE_FLOOR = Path(__file__).resolve().parents[1] / "CONFORMANCE_FLOOR"
+
 
 def test_conformance_pack_has_no_failures(spec_dir: Path) -> None:
     res = run_pack(spec_dir / "schemas/conformance", load_kat_keys(spec_dir))
@@ -30,8 +32,8 @@ def test_conformance_pack_has_no_failures(spec_dir: Path) -> None:
     assert res.counts[FAIL] == 0
     assert res.violations == []
     assert res.exit_code == 0
-    # All 94 core + 14 Draft opt-ins + 3 self-attestation at spec ac481f8.
-    assert res.counts[PASS] >= 111
+    # The floor CI passes as --min-passed, reviewed at the SPEC_VERSION pin.
+    assert res.counts[PASS] >= int(CONFORMANCE_FLOOR.read_text(encoding="utf-8"))
 
 
 def test_del_007_runs_feature_less(spec_dir: Path) -> None:
