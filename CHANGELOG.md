@@ -5,8 +5,18 @@ integrator has one place to check before upgrading.
 
 ## Unreleased
 
+## 0.1.3 — 2026-10-27
+
+Tested against spec `v0.3.4-draft`.
+
 ### Security-relevant
 
+- **Handshake: the MUTUAL_HELLO_ACK sender must be the peer the initiator addressed**
+  (RFC-AITP-0004 §5.2 step 3). `verify_handshake_payload` takes a new input, `peer_aid`:
+  the AID the initiator sent MUTUAL_HELLO to. When it is present, an ACK from any other
+  sender fails with the new code `PEER_MISMATCH`, before any Manifest cryptography.
+  Initiators must pass `peer_aid`, taken from the Manifest they fetched. Core fixture
+  `mh-015` covers it; the conformance floor is now 120.
 - **Session bundle: the coordinator key comes only from its Manifest.** RFC-AITP-0010 §5
   step 5 resolves the coordinator's key from its verified Manifest. `verify_session_bundle`
   used to fall back to the key in the coordinator AID when no `coordinator_manifest` was
