@@ -6,7 +6,9 @@
   first (before identity, so a bad Manifest surfaces as ``MANIFEST_*`` not
   ``IDENTITY_FAILED``), then the identity-hint/identity type match, then the
   identity binding (RFC-AITP-0002), then the envelope signature, then the
-  receiver's policy (§5.1 step 8), then the ACK nonce echo.
+  receiver's policy (§5.1 step 8), then the ACK nonce echo. For an ACK, the
+  sender is first compared with ``peer_aid``, the AID the initiator addressed
+  (§5.2 step 3, ``PEER_MISMATCH``), when the input carries it.
 
 A ``spiffe`` identity (RFC-AITP-0002 §6) is verified only when the input's
 ``_feature`` is ``experimental-spiffe-identity``, against the bundle store in
@@ -109,6 +111,13 @@ def _verify_bootstrap(inp: dict[str, Any], env: dict[str, Any], now: int) -> dic
     require_members(payload, _HELLO_REQUIRED_PAYLOAD_FIELDS, shape_code="INVALID_ENVELOPE", what=f"{env['message_type']} payload")
     man = payload["manifest"]
 
+    # RFC-AITP-0004 §5.2 step 3: the initiator accepts a MUTUAL_HELLO_ACK only
+    # from the peer it addressed. `peer_aid` is that intended peer (mh-015);
+    # without it there is nothing to compare against.
+    if env["message_type"] == "mutual_hello_ack" and "peer_aid" in inp:
+        if env["sender"]["agent_id"] != inp["peer_aid"]:
+            raise AitpError("PEER_MISMATCH", "MUTUAL_HELLO_ACK sender is not the peer the initiator addressed")
+
     # Manifest first (mh-002/mh-003 must surface MANIFEST_* before identity).
     verify_manifest({"manifest": man, "now": now}, now)
 
@@ -148,7 +157,7 @@ def _verify_bootstrap(inp: dict[str, Any], env: dict[str, Any], now: int) -> dic
     if identity["type"] not in accepted:
         raise AitpError("INCOMPATIBLE_IDENTITY_TYPE", f"identity type {identity['type']!r} is not one this receiver accepts")
 
-    # ACK nonce echo (§5.2 step 8).
+    # ACK nonce echo (§5.2 step 9).
     if env["message_type"] == "mutual_hello_ack" and "sent_pop_nonce" in inp:
         if payload.get("pop_nonce_echo") != inp["sent_pop_nonce"]:
             raise AitpError("NONCE_MISMATCH", "pop_nonce_echo != nonce sent")
