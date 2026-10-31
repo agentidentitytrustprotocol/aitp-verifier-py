@@ -3,7 +3,8 @@
 Run as ``python -m aitp_verifier.adapter`` or the ``aitp-verifier-adapter``
 script. ``aitp-conformance run --target aitp-verifier-adapter`` spawns it,
 writes one JSON request per line to its stdin and reads one JSON response per
-line from its stdout (aitp-rs ``docs/conformance.md``, "Wire protocol"):
+line from its stdout (the spec's ``schemas/conformance/ADAPTER.md``,
+``adapter-protocol: 1``):
 
 * request ``{"id": "req-N", "op": ..., "params": {...}}``;
 * success ``{"id": ..., "ok": true, "result": {...}}``;

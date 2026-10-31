@@ -29,8 +29,7 @@ RUNNER_POLICY = {
 
 # Defects in the aitp-conformance runner at the pinned aitp-rs commit, reported
 # upstream: the adapter's outcome is wrong because the runner sent it a wrong
-# input, not because the verifier differs. Empty at aitp-rs be12224, which
-# carries every fix (#364, #367, #369). An entry added here needs an upstream
+# input, not because the verifier differs. Empty at aitp-rs v0.24.0. An entry added here needs an upstream
 # issue, and is deleted when the pinned commit carries its fix.
 KNOWN_RUNNER_GAPS: dict[str, str] = {}
 

@@ -138,8 +138,10 @@ The skips are reported explicitly, never as a silent pass (PLACEHOLDERS.md §"Op
 
 The same verifier also runs behind aitp-rs's
 [`aitp-conformance`](https://github.com/agentidentitytrustprotocol/aitp-rs/blob/main/docs/conformance.md)
-runner. `aitp-verifier-adapter` is its NDJSON subprocess adapter: one request per line on
-stdin, one response per line on stdout, logs on stderr only, exit 0 on EOF. aitp-rs
+runner. `aitp-verifier-adapter` is its NDJSON subprocess adapter, speaking the spec's
+[adapter protocol](https://github.com/agentidentitytrustprotocol/agentidentitytrustprotocol/blob/main/schemas/conformance/ADAPTER.md)
+(`adapter-protocol: 1`): one request per line on stdin, one response per line on stdout,
+logs on stderr only, exit 0 on EOF. aitp-rs
 publishes no runner binary, so build it from an aitp-rs checkout:
 
 ```
