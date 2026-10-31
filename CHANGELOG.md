@@ -5,6 +5,12 @@ integrator has one place to check before upgrading.
 
 ## Unreleased
 
+- **aitp-conformance pinned at aitp-rs `aitp-v0.24.0` (`29cb348`).** No verifier change:
+  the runner's CLI, its adapter protocol and the error codes the adapter returns are
+  unchanged, the parity diff still shows no mismatches, and `KNOWN_RUNNER_GAPS` stays
+  empty. The adapter protocol is now documented in the spec's
+  `schemas/conformance/ADAPTER.md`, not in aitp-rs, and the docs point there.
+
 ## 0.1.3 — 2026-10-27
 
 Tested against spec `v0.3.4-draft`.
