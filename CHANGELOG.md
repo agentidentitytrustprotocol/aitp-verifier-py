@@ -26,6 +26,13 @@ Tested against spec `v0.3.4-draft`.
 
 ### Changed
 
+- **Adapter: wrong-typed required arguments are `MALFORMED_REQUEST`** (#110).
+  `verify.REQUIRED_ARGUMENTS` now also declares JSON types. The adapter checks
+  present arguments before fixture conventions or verifier dispatch, naming the
+  argument, expected type and actual type in the error. Nested wire values and
+  non-string `delegation_token` values retain their typed verifier rejections.
+  Real exceptions remain `ADAPTER_INTERNAL_ERROR`; direct Python calls are unchanged.
+
 - **Adapter: a missing top-level argument is `MALFORMED_REQUEST`** (#101). Each verify
   operation declares the argument sets it accepts in `verify.REQUIRED_ARGUMENTS`. The
   adapter checks that table before dispatch and answers a request that completes none of

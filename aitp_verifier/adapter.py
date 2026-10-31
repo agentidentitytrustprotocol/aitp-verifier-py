@@ -16,7 +16,7 @@ two front ends agree fixture for fixture (CI diffs them).
 
 A line that is not UTF-8, not JSON, carries a duplicate key or is not an
 object gets a ``MALFORMED_REQUEST`` line and no verdict, as does a verify
-operation missing a top-level argument it requires (``verify.REQUIRED_ARGUMENTS``;
+operation missing or mistyping a required top-level argument (``verify.REQUIRED_ARGUMENTS``;
 the reason names it). An exception inside an
 operation is reported as ``ADAPTER_INTERNAL_ERROR`` with its reason; the
 process keeps serving. Logs go to stderr only. EOF on stdin exits 0.
@@ -47,7 +47,7 @@ from .harness import FixtureError, pop_required, run_operation, unverified_claim
 from .keys import KAT_FILES, load_kat_keys, load_packaged_kat_keys
 from .tct import presenter_from_pop
 from .timeutil import REFERENCE_CLOCK
-from .verify import OPERATIONS, missing_argument
+from .verify import OPERATIONS, invalid_argument, missing_argument
 
 __all__ = ["Adapter", "main", "parse_request"]
 
@@ -222,6 +222,9 @@ class Adapter:
             missing = missing_argument(op, params)
             if missing is not None:
                 return _err(rid, "MALFORMED_REQUEST", f"{op}: missing required argument {missing!r}")
+            invalid = invalid_argument(op, params)
+            if invalid is not None:
+                return _err(rid, "MALFORMED_REQUEST", f"{op}: {invalid}")
             inp = {"now": self.clock, **params}
             feature = FEATURE_GATED_OPS.get(op)
             if feature is not None:

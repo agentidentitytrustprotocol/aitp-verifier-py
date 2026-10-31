@@ -150,6 +150,16 @@ target/debug/aitp-conformance run \
     --feature aitp-self-attestation --report adapter.json
 ```
 
+
+The adapter validates required argument presence and JSON types from
+`verify.REQUIRED_ARGUMENTS` before calling fixture conventions or verifiers.
+Wrong types return `MALFORMED_REQUEST`, for example
+`verify_handshake_payload: argument 'envelope' must be an object, got null`.
+Nested wire artifacts keep their typed verdicts, as does a non-string
+`delegation_token` (`DELEGATION_INVALID_SIGNATURE`); the table marks that
+exception explicitly. Real exceptions remain `ADAPTER_INTERNAL_ERROR`.
+Direct Python calls are unchanged. (#110)
+
 The adapter needs the spec's KAT keys (`known-answer/keypairs.json` and
 `known-answer/oidc-test-issuers.json`) to mint a fixture's placeholders. For example, it
 signs the per-issuer "not revoked" snapshots of a delegation fixture (conformance README,

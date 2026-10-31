@@ -17,7 +17,7 @@ from aitp_verifier.adapter import Adapter, main, serve
 from aitp_verifier.keys import load_kat_keys
 from aitp_verifier.minter import mint_input
 from aitp_verifier.timeutil import REFERENCE_CLOCK
-from aitp_verifier.verify import OPERATIONS, REQUIRED_ARGUMENTS, missing_argument
+from aitp_verifier.verify import OPERATIONS, REQUIRED_ARGUMENTS, invalid_argument, missing_argument
 
 
 def _run(lines: list[bytes], adapter: Adapter | None = None) -> list[dict[str, Any]]:
@@ -216,6 +216,7 @@ def test_every_corpus_request_carries_its_required_arguments(spec_dir: Path) -> 
         if not isinstance(inp, dict) or inp.get("operation") not in OPERATIONS or "sequence" in inp:
             continue  # sequence steps name a message_id, answered before dispatch
         assert missing_argument(inp["operation"], inp) is None, path.name
+        assert invalid_argument(inp["operation"], inp) is None, path.name
 
 
 def test_without_aitp_spec_the_packaged_kat_keys_are_used(spec_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -267,3 +268,42 @@ def test_subprocess_flushes_each_line_logs_on_stderr_and_exits_0_on_eof() -> Non
     proc.stdin.close()
     assert proc.wait(timeout=30) == 0
     assert proc.stdout.read() == b""
+
+
+@pytest.mark.parametrize(("op", "params", "argument", "expected"), [
+    ("verify_envelope", {"envelope": None}, "envelope", "object"),
+    ("verify_manifest", {"manifest": []}, "manifest", "object"),
+    ("verify_tct", {"tct_token": {}}, "tct_token", "string"),
+    ("verify_tct_as_issuer", {"tct_token": "t", "self_aid": False}, "self_aid", "string"),
+    ("verify_attestation", {"tct_token": "t", "expected_ext_key": 5}, "expected_ext_key", "string"),
+    ("verify_grant_voucher", {"voucher_token": None}, "voucher_token", "string"),
+    ("verify_delegation_token", {"delegation": None}, "delegation", "object"),
+    ("verify_revocation_snapshot", {"snapshot": "s"}, "snapshot", "object"),
+    ("verify_handshake_payload", {"envelope": None}, "envelope", "object"),
+    ("verify_session_bundle", {"self_aid": "a", "session_bundle": []}, "session_bundle", "object"),
+    ("verify_envelope", {"active_tct": "t", "requested_capability": []}, "requested_capability", "string"),
+    ("verify_handshake_payload", {"peer_a": {}, "peer_b": True}, "peer_b", "object"),
+    ("verify_envelope", {"manifest_fetch": None}, "manifest_fetch", "object"),
+    ("verify_envelope", {"needed_key_for": 0}, "needed_key_for", "string"),
+])
+def test_wrong_argument_type_is_malformed_before_dispatch(
+    monkeypatch: pytest.MonkeyPatch, op: str, params: dict[str, Any], argument: str, expected: str
+) -> None:
+    from aitp_verifier import adapter as module
+
+    def never(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("must reject before fixture conventions or verifier dispatch")
+
+    monkeypatch.setattr(module, "run_operation", never)
+    [reply] = _run([_req("req-1", op, **params)])
+    got = {type(None): "null", list: "array", dict: "object", bool: "boolean",
+           int: "number", str: "string"}[type(params[argument])]
+    article = "an" if expected == "object" else "a"
+    assert reply == {"id": "req-1", "ok": False, "error_code": "MALFORMED_REQUEST",
+                     "message": f"{op}: argument {argument!r} must be {article} {expected}, got {got}"}
+
+
+@pytest.mark.parametrize("token", [None, 5, False, {}, []])
+def test_delegation_wire_type_rejections_stay_verdicts(token: Any) -> None:
+    [reply] = _run([_req("req-1", "verify_delegation_token", delegation_token=token)])
+    assert reply["error_code"] == "DELEGATION_INVALID_SIGNATURE"
