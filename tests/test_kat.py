@@ -16,6 +16,7 @@ from aitp_verifier import jcs, jwk
 from aitp_verifier.aid import parse_aid
 from aitp_verifier.b64 import b64url_decode, b64url_encode
 from aitp_verifier.crypto import PrivateKey, sha256
+from aitp_verifier.errors import AitpError
 
 
 def _ka(spec_dir: Path, name: str) -> dict[str, Any]:
@@ -75,6 +76,11 @@ NON_CANONICAL_VECTORS = {
     # The X509-SVID proof input (RFC-AITP-0002 §6.4.1), for the draft spiffe
     # branch; not the JCS form of an object.
     "kat-spiffe-x509-proof-001",
+    # The Draft RFC-AITP-0013 §3.1 renewal PoP input: a concatenated byte
+    # string, not the JCS form of an object. Machine-checked by
+    # test_renewal_pop_kat below.
+    "kat-renewal-pop-001",
+    "kat-renewal-pop-002-p256",
 }
 
 
@@ -305,3 +311,47 @@ def test_pinned_key_proof_kat(spec_dir: Path, vid: str) -> None:
     )
     assert be8 != data
     assert not key.verify_digest(sha256(be8), sig), "8-byte big-endian timestamp must NOT verify"
+
+
+def _renewal_pop_input(issuer_aid: str, jti: str, pop_nonce: bytes) -> bytes:
+    """RFC-AITP-0013 §3.1 (Draft): "aitp-renewal-pop-v1\\0" || issuer_aid ||
+    "\\0" || current_tct_jti || "\\0" || base64url-decoded pop_nonce."""
+    return b"aitp-renewal-pop-v1\x00" + issuer_aid.encode("ascii") + b"\x00" + jti.encode("ascii") + b"\x00" + pop_nonce
+
+
+@pytest.mark.parametrize("vid", ["kat-renewal-pop-001", "kat-renewal-pop-002-p256"])
+def test_renewal_pop_kat(spec_dir: Path, vid: str) -> None:
+    """The Draft renewal PoP vectors (RFC-AITP-0013 §3.1). This verifier does
+    not implement renewal, but the known-answer README says draft entries are
+    reproduced like any other: the tag governs how they may change, not
+    whether they are checked. So rebuild the input and check the signature,
+    including the vectors' MUST-NOT-verify obligations."""
+    from aitp_verifier.sigfield import decode_tagged_signature
+
+    v = _vector(spec_dir, vid)
+    nonce = b64url_decode(v["pop_nonce"])
+    data = _renewal_pop_input(v["issuer_aid"], v["current_tct_jti"], nonce)
+    assert data == bytes.fromhex(v["input_hex"])
+    assert len(data) == v["input_len_bytes"]
+    digest = sha256(data)
+    assert digest.hex() == v["sha256_hex"]
+    assert b64url_encode(digest) == v["sha256_b64url"]
+
+    signer = parse_aid(v["signer_aid"])
+    key = signer.public_key
+    sig = b64url_decode(v["signature_b64url"])
+    if signer.alg == "p256":
+        _check_p256_single_hash(v, digest)
+        with pytest.raises(AitpError):  # a p256 holder MUST emit the tagged form
+            decode_tagged_signature(v["signature_b64url"], signer, sig_err="X")
+    else:
+        assert key.verify_digest(digest, sig)
+        assert decode_tagged_signature(v["signature_b64url"], signer, sig_err="X") == sig
+        assert decode_tagged_signature(f"ed25519.{v['signature_b64url']}", signer, sig_err="X") == sig
+        # The nonce as its base64url string, not its decoded bytes.
+        as_text = _renewal_pop_input(v["issuer_aid"], v["current_tct_jti"], v["pop_nonce"].encode("ascii"))
+        assert not key.verify_digest(sha256(as_text), sig), "base64url-string pop_nonce must NOT verify"
+        # The tagged `aid:pubkey:ed25519:` spelling of the issuer AID.
+        tagged = v["issuer_aid"].replace("aid:pubkey:", "aid:pubkey:ed25519:", 1)
+        alt = _renewal_pop_input(tagged, v["current_tct_jti"], nonce)
+        assert not key.verify_digest(sha256(alt), sig), "tagged issuer_aid spelling must NOT verify"
