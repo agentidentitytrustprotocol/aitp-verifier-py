@@ -5,6 +5,37 @@ integrator has one place to check before upgrading.
 
 ## Unreleased
 
+### Security-relevant
+
+- **Manifest: `verify_manifest` enforces the whole of `aitp-manifest.schema.json`**
+  (RFC-AITP-0003 §5 step 2). These now fail with `MANIFEST_INVALID`, before expiry and
+  before any signature work:
+  - `accepted_signature_algorithms` and `accepted_identity_types`: an item outside the enum.
+  - `offered_capabilities`, `required_peer_capabilities`: an empty item or one with whitespace.
+  - `accepted_trust_anchors`, `identity_hint.issuer`: a value that is not an RFC 3986 URI.
+  - `handshake_endpoint`: a value that is not an `https://` URI.
+  - All five arrays: duplicate items.
+  - `display_name` over 128 characters, an empty `identity_hint.subject`,
+    `published_at` below 0, `expires_at` below 1.
+  - `aid`, `proof_of_possession.challenge` and both signature members outside their
+    patterns. `challenge` is exactly 22 characters.
+  - `identity_hint.public_key` with a trailing newline.
+
+  Publishers of a Manifest carrying JOSE names such as `EdDSA` or `ES256` in
+  `accepted_signature_algorithms` must republish with `ed25519` and `p256`.
+
+### Changed
+
+- **Manifest: some rejections report a different code.** All follow §5 and the registry:
+  - A malformed `signature` or `proof_of_possession.signature` is `MANIFEST_INVALID`, not
+    `MANIFEST_SIGNATURE_INVALID` or `MANIFEST_POP_FAILED`. That includes an unregistered
+    algorithm tag. A registered tag that disagrees with the AID keeps the signature code.
+  - An unknown member is `UNKNOWN_FIELD` only when it is the only defect. Alongside a
+    grammar defect in any Manifest object, the code is `MANIFEST_INVALID`.
+  - A Manifest with an unsupported `version` and an unknown member is
+    `MANIFEST_VERSION_UNKNOWN`, not `UNKNOWN_FIELD`.
+  - An expired Manifest with a grammar defect, or with `expires_at` of 0, is
+    `MANIFEST_INVALID`, not `MANIFEST_EXPIRED`.
 - **aitp-conformance pinned at aitp-rs `aitp-v0.24.0` (`29cb348`).** No verifier change:
   the runner's CLI, its adapter protocol and the error codes the adapter returns are
   unchanged, the parity diff still shows no mismatches, and `KNOWN_RUNNER_GAPS` stays

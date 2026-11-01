@@ -1,9 +1,10 @@
 """Agent Manifest verification (RFC-AITP-0003 §5, JCS profile).
 
-Ordered checklist: shape → version → expiry → proof-of-possession →
-signature. Shape runs first, as elsewhere in this verifier (see
-``sessionbundle.py``): an object carrying a field outside the schema's
-``additionalProperties: false`` set is not worth evaluating semantically
+Ordered checklist: presence and types → version → grammar → member set →
+expiry → proof-of-possession → signature. Presence and types run first, as
+elsewhere in this verifier (see ``sessionbundle.py``), so the version check
+reads a string. Grammar and member set are §5 step 2, in that order, because
+``UNKNOWN_FIELD`` applies only when an unknown member is the only defect
 (RFC-AITP-0001 §7). The Manifest signature covers
 ``sha256(JCS(manifest_body))`` with the top-level ``signature`` member
 removed (§6.1); the PoP covers ``sha256(base64url_decode(challenge))``
@@ -12,14 +13,15 @@ removed (§6.1); the PoP covers ``sha256(base64url_decode(challenge))``
 
 from __future__ import annotations
 
+import ipaddress
 import re
-from typing import Any
+from typing import Any, Callable
 
 from .aid import Aid, parse_aid
 from .b64 import b64url_decode
 from .crypto import sha256
 from .errors import AitpError
-from .fields import canonical_bytes, check_types, decode_b64url, reject_unknown_fields, require_members
+from .fields import canonical_bytes, check_types, describe_value, reject_unknown_fields, require_members
 from .sigfield import decode_tagged_signature
 from .timeutil import REFERENCE_CLOCK
 from .version import PROTOCOL_VERSION
@@ -70,25 +72,17 @@ _REQUIRED_POP_FIELDS = ("challenge", "signature")
 _REQUIRED_IDENTITY_HINT_FIELDS = ("type", "subject")
 
 
-def _shape(obj: Any, required: tuple[str, ...], allowed: frozenset[str],
-           types: dict[str, tuple[type, ...]], what: str) -> None:
-    """Schema validation for one manifest object: presence, member set, types.
+def _shape(obj: Any, required: tuple[str, ...], types: dict[str, tuple[type, ...]], what: str) -> None:
+    """Presence and types for one manifest object.
 
-    Ordered so the reported code is the right one when an object has several
-    defects: presence and type both yield MANIFEST_INVALID and both run first,
-    because UNKNOWN_FIELD applies (per the registry) only when an unknown
-    member is the ONLY defect.
+    The member set is checked separately, after every object's grammar:
+    UNKNOWN_FIELD applies (per the registry) only when an unknown member is
+    the ONLY defect.
     """
     if not isinstance(obj, dict):
         raise AitpError("MANIFEST_INVALID", f"{what} is {type(obj).__name__}, not an object")
     require_members(obj, required, shape_code="MANIFEST_INVALID", what=what)
     check_types(obj, types, shape_code="MANIFEST_INVALID", what=what)
-    # Last, so that an object which is BOTH mistyped and carrying an unknown
-    # member reports the structural code. The registry scopes UNKNOWN_FIELD to
-    # "when the only defect is an unknown member", and revocation.py orders it
-    # the same way -- a divergence here would be invisible, since every fixture
-    # carries one defect at a time.
-    reject_unknown_fields(obj, allowed, shape_code="MANIFEST_INVALID", what=what)
 # The schema's `required` set for the body. `identity_hint` is REQUIRED (it is
 # how a peer states which identity family it will present), so the check below
 # is unconditional rather than `if "identity_hint" in man`.
@@ -111,6 +105,106 @@ _IDENTITY_HINT_TYPE_VALUES = frozenset({"oidc", "pinned_key", "spiffe"})
 _PUBLIC_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43,44}$")
 # $defs/IdentityHint's `spiffe` subject pattern, verbatim.
 _SPIFFE_HINT_SUBJECT = re.compile(r"^spiffe://[a-z0-9._-]{1,255}(/([A-Za-z0-9._-]*[A-Za-z0-9_-][A-Za-z0-9._-]*|\.{3,}))+$")
+# The body's and proof_of_possession's patterns. All of them, like the two
+# above, are applied with `fullmatch`: JSON Schema patterns are ECMA-262, where
+# `$` is the end of the string, and Python's `$` also matches before a final
+# newline.
+_AID_PATTERN = re.compile(r"aid:pubkey:([A-Za-z0-9_-]{43}|ed25519:[A-Za-z0-9_-]{43}|p256:[A-Za-z0-9_-]{44})")
+_CHALLENGE_PATTERN = re.compile(r"[A-Za-z0-9_-]{22}")
+_SIGNATURE_PATTERN = re.compile(r"((ed25519|p256)\.)?[A-Za-z0-9_-]{86}")
+# The capability pattern `^[^\s]+$`, with ECMA-262's `\s` spelled out: Python's
+# adds U+001C-U+001F and U+0085 and omits U+FEFF.
+_CAPABILITY_PATTERN = re.compile(r"[^\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+")
+_SIGNATURE_ALGORITHMS = frozenset({"ed25519", "p256"})
+_DISPLAY_NAME_MAX_LENGTH = 128
+# `format: uri` is RFC 3986's `URI` rule, in full, so that a value is neither
+# rejected nor admitted on a guess. An IP-literal is matched loosely here and
+# finished in `_is_uri`.
+_URI_PCT = r"%[0-9A-Fa-f]{2}"
+_URI_SAFE = r"A-Za-z0-9\-._~!$&'()*+,;="
+_URI_PCHAR = rf"(?:[{_URI_SAFE}:@]|{_URI_PCT})"
+_URI_PATH_REST = rf"(?:/{_URI_PCHAR}*)*"
+_URI_PATTERN = re.compile(
+    r"[A-Za-z][A-Za-z0-9+.\-]*:"
+    r"(?:"
+    rf"//(?:(?:[{_URI_SAFE}:]|{_URI_PCT})*@)?"
+    rf"(?:\[(?P<ip_literal>[^\]/?#]*)\]|(?:[{_URI_SAFE}]|{_URI_PCT})*)(?::[0-9]*)?{_URI_PATH_REST}"
+    rf"|/(?:{_URI_PCHAR}+{_URI_PATH_REST})?"
+    rf"|{_URI_PCHAR}+{_URI_PATH_REST}"
+    r"|"
+    r")"
+    rf"(?:\?(?:{_URI_PCHAR}|[/?])*)?"
+    rf"(?:#(?:{_URI_PCHAR}|[/?])*)?"
+)
+_URI_IP_FUTURE = re.compile(rf"[vV][0-9A-Fa-f]+\.[{_URI_SAFE}:]+")
+
+
+def _is_uri(value: str) -> bool:
+    match = _URI_PATTERN.fullmatch(value)
+    if match is None:
+        return False
+    literal = match["ip_literal"]
+    if literal is None or _URI_IP_FUTURE.fullmatch(literal):
+        return True
+    # `ipaddress` also takes an RFC 4007 zone (`%eth0`), which RFC 3986 does not.
+    if "%" in literal:
+        return False
+    try:
+        ipaddress.IPv6Address(literal)
+    except ValueError:
+        return False
+    return True
+
+
+# Each array member's item rule. All five arrays are also `uniqueItems`.
+_ARRAY_ITEM_RULES: dict[str, Callable[[str], bool]] = {
+    "accepted_trust_anchors": _is_uri,
+    "offered_capabilities": lambda item: _CAPABILITY_PATTERN.fullmatch(item) is not None,
+    "required_peer_capabilities": lambda item: _CAPABILITY_PATTERN.fullmatch(item) is not None,
+    "accepted_identity_types": lambda item: item in _IDENTITY_HINT_TYPE_VALUES,
+    "accepted_signature_algorithms": lambda item: item in _SIGNATURE_ALGORITHMS,
+}
+
+
+def _validate_grammar(man: dict[str, Any]) -> None:
+    """Enforce each body member's enum, pattern, format, bounds and uniqueness.
+
+    `_shape` has already confirmed every present member is correctly typed.
+    Failure is MANIFEST_INVALID, including for the two signature members: the
+    registry forbids reporting a value outside its grammar as a signature
+    failure, since the signature was never reached. A signature inside its
+    pattern whose tag disagrees with the AID goes on to the signature steps
+    (RFC-AITP-0001 §5.4.3 rule 3).
+    """
+    if not _AID_PATTERN.fullmatch(man["aid"]):
+        raise AitpError("MANIFEST_INVALID", "manifest.aid does not match the required pattern")
+    if len(man.get("display_name", "")) > _DISPLAY_NAME_MAX_LENGTH:
+        raise AitpError("MANIFEST_INVALID", f"manifest.display_name exceeds {_DISPLAY_NAME_MAX_LENGTH} characters")
+    endpoint = man["handshake_endpoint"]
+    if not endpoint.startswith("https://") or not _is_uri(endpoint):
+        raise AitpError("MANIFEST_INVALID", "manifest.handshake_endpoint is not an https:// URI")
+    for member, item_is_valid in _ARRAY_ITEM_RULES.items():
+        items = man.get(member, [])
+        for item in items:
+            if not isinstance(item, str):
+                raise AitpError("MANIFEST_INVALID", f"manifest.{member} has an item of type {type(item).__name__}, not str")
+            if not item_is_valid(item):
+                raise AitpError(
+                    "MANIFEST_INVALID", f"manifest.{member} has an item outside its grammar: {describe_value(item)}",
+                )
+        if len(set(items)) != len(items):
+            raise AitpError("MANIFEST_INVALID", f"manifest.{member} has duplicate items")
+    if man["published_at"] < 0:
+        raise AitpError("MANIFEST_INVALID", "manifest.published_at is below its minimum of 0")
+    if man["expires_at"] < 1:
+        raise AitpError("MANIFEST_INVALID", "manifest.expires_at is below its minimum of 1")
+    pop = man["proof_of_possession"]
+    if not _CHALLENGE_PATTERN.fullmatch(pop["challenge"]):
+        raise AitpError("MANIFEST_INVALID", "manifest.proof_of_possession.challenge is not 22 base64url characters")
+    if not _SIGNATURE_PATTERN.fullmatch(pop["signature"]):
+        raise AitpError("MANIFEST_INVALID", "manifest.proof_of_possession.signature does not match the required pattern")
+    if not _SIGNATURE_PATTERN.fullmatch(man["signature"]):
+        raise AitpError("MANIFEST_INVALID", "manifest.signature does not match the required pattern")
 
 
 def _validate_identity_hint(hint: dict[str, Any]) -> None:
@@ -128,6 +222,10 @@ def _validate_identity_hint(hint: dict[str, Any]) -> None:
             "MANIFEST_INVALID",
             f"manifest.identity_hint.type is {hint_type!r}, not one of {sorted(_IDENTITY_HINT_TYPE_VALUES)}",
         )
+    if not hint["subject"]:
+        raise AitpError("MANIFEST_INVALID", "manifest.identity_hint.subject is empty")
+    if "issuer" in hint and not _is_uri(hint["issuer"]):
+        raise AitpError("MANIFEST_INVALID", "manifest.identity_hint.issuer is not a URI")
     if hint_type == "oidc":
         if "issuer" not in hint:
             raise AitpError(
@@ -150,7 +248,7 @@ def _validate_identity_hint(hint: dict[str, Any]) -> None:
             "MANIFEST_INVALID",
             "manifest.identity_hint is missing required member(s) ['public_key'] (required when type is 'pinned_key')",
         )
-    if "public_key" in hint and not _PUBLIC_KEY_PATTERN.match(hint["public_key"]):
+    if "public_key" in hint and not _PUBLIC_KEY_PATTERN.fullmatch(hint["public_key"]):
         raise AitpError("MANIFEST_INVALID", "manifest.identity_hint.public_key does not match the required pattern")
 
 
@@ -159,31 +257,31 @@ def verify_manifest(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str
     # RFC-AITP-0003 §5 step 2: structural validation runs before the
     # cryptographic steps, so a Manifest that does not match its schema is
     # rejected before any proof-of-possession or signature work is spent on it
-    # (man-006). Required members first, then the member set -- a Manifest with
-    # both defects reports the structural one, per the registry's "only defect"
-    # wording for UNKNOWN_FIELD.
-    _shape(man, _REQUIRED_MANIFEST_FIELDS, _MANIFEST_FIELDS, _MANIFEST_TYPES, "manifest")
-    _shape(man["proof_of_possession"], _REQUIRED_POP_FIELDS, _POP_FIELDS, _POP_TYPES, "manifest.proof_of_possession")
-    _shape(man["identity_hint"], _REQUIRED_IDENTITY_HINT_FIELDS, _IDENTITY_HINT_FIELDS,
-           _IDENTITY_HINT_TYPES, "manifest.identity_hint")
-    _validate_identity_hint(man["identity_hint"])
-    # Grammar, not just type: `challenge` is confirmed a `str` above, but a
-    # non-base64url string (or one carrying '=' padding) would otherwise reach
-    # the raw `b64url_decode` below unguarded and escape this module's
-    # `except AitpError` caller as a bare ValueError/binascii.Error. The
-    # registry scopes MANIFEST_INVALID to include "a value outside its
-    # grammar", so this stays part of the structural pass -- the PoP
-    # signature step is never reached for a malformed challenge, keeping a
-    # structural defect from being reported as a signature-family failure.
-    decode_b64url(
-        man["proof_of_possession"]["challenge"], code="MANIFEST_INVALID",
-        what="manifest.proof_of_possession.challenge",
-    )
+    # (man-006). Presence and types first, for every object: step 1 reads
+    # `version` as a string, and the grammar checks read every member as its
+    # declared type.
+    _shape(man, _REQUIRED_MANIFEST_FIELDS, _MANIFEST_TYPES, "manifest")
+    _shape(man["proof_of_possession"], _REQUIRED_POP_FIELDS, _POP_TYPES, "manifest.proof_of_possession")
+    _shape(man["identity_hint"], _REQUIRED_IDENTITY_HINT_FIELDS, _IDENTITY_HINT_TYPES, "manifest.identity_hint")
     now = int(inp.get("now", now))
     supported = inp.get("supported_versions", [PROTOCOL_VERSION])
 
     if man.get("version") not in supported:
         raise AitpError("MANIFEST_VERSION_UNKNOWN", f"unsupported version {man.get('version')!r}")
+    _validate_grammar(man)
+    _validate_identity_hint(man["identity_hint"])
+    # Last in step 2: an object with a grammar defect as well as an unknown
+    # member reports the structural code. The registry scopes UNKNOWN_FIELD to
+    # "when the only defect is an unknown member"; a divergence here would be
+    # invisible to the pack, since every fixture carries one defect at a time.
+    reject_unknown_fields(man, _MANIFEST_FIELDS, shape_code="MANIFEST_INVALID", what="manifest")
+    reject_unknown_fields(
+        man["proof_of_possession"], _POP_FIELDS, shape_code="MANIFEST_INVALID", what="manifest.proof_of_possession",
+    )
+    reject_unknown_fields(
+        man["identity_hint"], _IDENTITY_HINT_FIELDS, shape_code="MANIFEST_INVALID", what="manifest.identity_hint",
+    )
+
     if now >= int(man["expires_at"]):
         raise AitpError("MANIFEST_EXPIRED", "manifest expires_at is in the past")
 
@@ -191,9 +289,9 @@ def verify_manifest(inp: dict[str, Any], now: int = REFERENCE_CLOCK) -> dict[str
         aid = parse_aid(man["aid"])
     except ValueError as exc:
         # `parse_aid` signals a malformed AID with a bare ValueError, which is
-        # not an AitpError and escapes the caller. `aid` is a schema-typed
-        # string, so this is a grammar defect -> MANIFEST_INVALID. Reachable
-        # from a remote `mutual_hello` via handshake.py's inline manifest.
+        # not an AitpError and escapes the caller. `aid` matched its pattern
+        # above, so what remains is a key that does not decode -> MANIFEST_INVALID.
+        # Reachable from a remote `mutual_hello` via handshake.py's inline manifest.
         raise AitpError("MANIFEST_INVALID", f"manifest aid is not a valid AID: {exc}") from exc
 
     pop = man["proof_of_possession"]
