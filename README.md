@@ -61,7 +61,7 @@ opaque `extensions` slot (`fields`); RFC-AITP-0013 (TCT renewal) is not implemen
 | `aitp_verifier.jwk` | RFC 7638 JWK thumbprints for the `cnf.jkt` binding (§5.4.4) |
 | `aitp_verifier.jws` | Strict compact-JWS profile: `typ`/`alg` pinning, no `alg:none`, exact-bytes verify (§5.4.5) |
 | `aitp_verifier.envelope` | Envelope check order (version → member set → signature), `aitp-envelope-v2` signing input, replay controls (§5.4/§5.5) |
-| `aitp_verifier.manifest` | Agent Manifest: version, expiry, PoP, signature (RFC-AITP-0003) |
+| `aitp_verifier.manifest` | Agent Manifest: version, schema grammar, member set, expiry, PoP, signature (RFC-AITP-0003) |
 | `aitp_verifier.tct` | Trust Context Token verification incl. §10.4 Manifest-expiry bound + revocation ordering (RFC-AITP-0005) |
 | `aitp_verifier.voucher` | Grant-voucher verification (RFC-AITP-0005 §8) |
 | `aitp_verifier.delegation` | Single-hop delegation + the multi-hop chain (hop limit, chain-hash commitment, transitive scope, per-hop revocation) (RFC-AITP-0006 / RFC-AITP-0011) |

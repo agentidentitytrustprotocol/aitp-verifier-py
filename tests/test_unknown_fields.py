@@ -428,7 +428,7 @@ def test_manifest_optional_fields_are_not_rejected(spec_dir: Path) -> None:
     keys = load_kat_keys(spec_dir)
     inp = _manifest_input()
     inp["manifest"]["display_name"] = "Test Agent"
-    inp["manifest"]["accepted_signature_algorithms"] = ["EdDSA", "ES256"]
+    inp["manifest"]["accepted_signature_algorithms"] = ["ed25519", "p256"]
     minted = mint_input(inp, REFERENCE_CLOCK, keys)
     assert verify_manifest(minted) == {"aid": SUBJECT}
 
@@ -442,7 +442,9 @@ def test_manifest_identity_hint_unknown_field_rejected(spec_dir: Path) -> None:
     """
     keys = load_kat_keys(spec_dir)
     inp = _manifest_input()
-    inp["manifest"]["identity_hint"] = {"type": "oidc", "subject": "s", "routing_hint": "x"}
+    inp["manifest"]["identity_hint"] = {
+        "type": "oidc", "issuer": "https://auth.example", "subject": "s", "routing_hint": "x",
+    }
     minted = mint_input(inp, REFERENCE_CLOCK, keys)
     with pytest.raises(AitpError) as exc:
         verify_manifest(minted)
