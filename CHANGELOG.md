@@ -3,7 +3,9 @@
 This file tracks security-relevant and other breaking verifier-behavior changes, so an
 integrator has one place to check before upgrading.
 
-## Unreleased
+## 0.2.0 — 2026-11-01
+
+Tested against spec commit `8c6725b` (after `v0.3.4-draft`).
 
 ### Security-relevant
 
